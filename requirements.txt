@@ -3,5 +3,6 @@ sounddevice ; sys_platform == "darwin"
 soundfile
 pydub
 elevenlabs
+requests
 python-dotenv
 numpy

@@ -11,12 +11,13 @@ import os
 import sys
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Logging — write to app.log in the same location as main.js uses
+# Logging
 # ---------------------------------------------------------------------------
 
 LOG_DIR = Path.home() / 'Documents' / 'AI Medical Notes'
@@ -32,6 +33,12 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# ElevenLabs config
+# ---------------------------------------------------------------------------
+
+ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/speech-to-text'
+ELEVENLABS_MODEL   = 'scribe_v1'
 
 # ---------------------------------------------------------------------------
 # Transcription
@@ -40,20 +47,28 @@ log = logging.getLogger(__name__)
 def transcribe(input_path: str, output_path: str) -> None:
     api_key = os.getenv('ELEVENLABS_API_KEY')
     if not api_key:
-        raise ValueError('ELEVENLABS_API_KEY not set in environment / .env file')
+        raise ValueError('ELEVENLABS_API_KEY not set in .env file')
 
-    from elevenlabs import ElevenLabs
-
-    client = ElevenLabs(api_key=api_key)
     log.info(f'Transcribing: {input_path}')
 
     with open(input_path, 'rb') as f:
-        result = client.speech_to_text.convert(
-            file=f,
-            diarize=True
+        response = requests.post(
+            ELEVENLABS_API_URL,
+            headers={'xi-api-key': api_key},
+            files={'file': (os.path.basename(input_path), f)},
+            data={
+                'model_id': ELEVENLABS_MODEL,
+                'diarize': 'true',
+            },
+            timeout=300
         )
 
-    markdown = format_transcript(result)
+    if not response.ok:
+        log.error(f'ElevenLabs API error {response.status_code}: {response.text}')
+        response.raise_for_status()
+
+    data = response.json()
+    markdown = format_transcript(data)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -62,57 +77,43 @@ def transcribe(input_path: str, output_path: str) -> None:
     log.info(f'Transcript saved: {output_path}')
 
 
-def format_transcript(result) -> str:
+def format_transcript(data: dict) -> str:
     """
-    Group consecutive utterances by speaker and format as markdown.
-    Handles both dict-style and object-style API responses.
+    Build markdown from the words array returned by ElevenLabs.
+    Groups consecutive words by speaker into paragraphs.
     """
-    lines = ['## Transcript', '']
+    words = data.get('words', [])
 
-    utterances = []
-
-    # ElevenLabs response may be an object with .utterances or a dict
-    raw_utterances = None
-    if hasattr(result, 'utterances') and result.utterances:
-        raw_utterances = result.utterances
-    elif isinstance(result, dict) and result.get('utterances'):
-        raw_utterances = result['utterances']
-
-    if not raw_utterances:
-        # Fallback: plain text with no diarization
-        text = ''
-        if hasattr(result, 'text'):
-            text = result.text or ''
-        elif isinstance(result, dict):
-            text = result.get('text', '')
-        lines.append(text or '*(No transcription available)*')
-        return '\n'.join(lines)
-
-    # Merge consecutive same-speaker utterances
-    merged = []
-    for utt in raw_utterances:
-        speaker = getattr(utt, 'speaker_id', None) or (utt.get('speaker_id') if isinstance(utt, dict) else None) or 'Unknown'
-        text = getattr(utt, 'text', None) or (utt.get('text') if isinstance(utt, dict) else '') or ''
-        text = text.strip()
-        if not text:
+    # Merge consecutive same-speaker words into utterances
+    segments = []
+    for word_data in words:
+        if word_data.get('type') != 'word':
             continue
-        if merged and merged[-1][0] == speaker:
-            merged[-1] = (speaker, merged[-1][1] + ' ' + text)
+        speaker_id = word_data.get('speaker_id', 'unknown')
+        text = word_data.get('text', '')
+        if segments and segments[-1][0] == speaker_id:
+            segments[-1] = (speaker_id, segments[-1][1] + ' ' + text)
         else:
-            merged.append((speaker, text))
+            segments.append((speaker_id, text))
 
-    # Format speaker labels: Speaker 1, Speaker 2, ...
+    if not segments:
+        # Fallback to plain text if no word-level data
+        plain = data.get('text', '').strip()
+        return f'## Transcript\n\n{plain or "*(No transcription available)*"}\n'
+
+    # Map raw speaker IDs to human-readable labels
     speaker_map = {}
     counter = [1]
 
-    def label(speaker_id):
-        if speaker_id not in speaker_map:
-            speaker_map[speaker_id] = f'Speaker {counter[0]}'
+    def label(sid):
+        if sid not in speaker_map:
+            speaker_map[sid] = f'Speaker {counter[0]}'
             counter[0] += 1
-        return speaker_map[speaker_id]
+        return speaker_map[sid]
 
-    for speaker_id, text in merged:
-        lines.append(f'**{label(speaker_id)}:** {text}')
+    lines = ['## Transcript', '']
+    for sid, text in segments:
+        lines.append(f'**{label(sid)}:** {text.strip()}')
         lines.append('')
 
     return '\n'.join(lines)
@@ -124,15 +125,14 @@ def format_transcript(result) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input',  required=True, help='Path to input .mp3 file')
-    parser.add_argument('--output', required=True, help='Path to output transcript.md')
+    parser.add_argument('--input',  required=True)
+    parser.add_argument('--output', required=True)
     args = parser.parse_args()
 
     try:
         transcribe(args.input, args.output)
     except Exception as e:
         log.error(f'Transcription failed: {e}')
-        # Write a failure note so the case folder always has a transcript file
         try:
             Path(args.output).parent.mkdir(parents=True, exist_ok=True)
             with open(args.output, 'w', encoding='utf-8') as f:
