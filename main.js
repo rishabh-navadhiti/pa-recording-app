@@ -194,6 +194,20 @@ app.whenReady().then(() => {
 })
 
 // ---------------------------------------------------------------------------
+// Helper: wait for a child process to exit (safe if already exited)
+// ---------------------------------------------------------------------------
+
+function waitForExit(proc) {
+  return new Promise(resolve => {
+    if (proc.exitCode !== null || proc.killed) {
+      resolve()
+    } else {
+      proc.once('exit', resolve)
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // IPC Handlers
 // ---------------------------------------------------------------------------
 
@@ -214,7 +228,7 @@ function registerIpcHandlers() {
     // If somehow recording when session is stopped, kill the process
     if (recordingProcess) {
       recordingProcess.kill()
-      await new Promise(resolve => recordingProcess.once('exit', resolve))
+      await waitForExit(recordingProcess)
       recordingProcess = null
     }
     if (tempMp3Path && fs.existsSync(tempMp3Path)) {
@@ -246,7 +260,15 @@ function registerIpcHandlers() {
         win.webContents.send('setup-warning', msg.replace('ERROR: ', ''))
       }
     })
-    recordingProcess.on('exit', code => log(`record.py exited ${code}`))
+    recordingProcess.on('exit', code => {
+      log(`record.py exited ${code}`)
+      // If process died on its own while we're still in RECORDING state, recover
+      if (currentState === STATE.RECORDING) {
+        log('record.py exited unexpectedly — returning to SESSION_ACTIVE')
+        recordingProcess = null
+        setState(STATE.SESSION_ACTIVE)
+      }
+    })
 
     setState(STATE.RECORDING)
     return true
@@ -256,15 +278,14 @@ function registerIpcHandlers() {
   ipcMain.handle('stop-recording', async () => {
     log('stop-recording')
 
-    if (!recordingProcess) {
-      log('WARNING: stop-recording called but no recordingProcess')
-      return false
+    if (recordingProcess) {
+      // Kill and wait for exit so the MP3 is fully written
+      recordingProcess.kill()
+      await waitForExit(recordingProcess)
+      recordingProcess = null
+    } else {
+      log('WARNING: stop-recording called but recordingProcess already gone')
     }
-
-    // Kill and wait for exit so the MP3 is fully written
-    recordingProcess.kill()
-    await new Promise(resolve => recordingProcess.once('exit', resolve))
-    recordingProcess = null
 
     setState(STATE.PROCESSING)
 
