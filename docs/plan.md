@@ -198,6 +198,7 @@ const PYTHON = process.platform === 'win32' ? 'python' : 'python3'
 Expose via `contextBridge.exposeInMainWorld('api', {...})`:
 - `getState()` → `invoke('get-state')`
 - `startSession()` → `invoke('start-session')`
+- `stopSession()` → `invoke('stop-session')`
 - `startRecording()` → `invoke('start-recording')`
 - `stopRecording()` → `invoke('stop-recording')`
 - `submitPatientName(name)` → `invoke('submit-patient-name', name)`
@@ -228,9 +229,11 @@ State → UI:
 | State | Label | Buttons |
 |---|---|---|
 | IDLE | "No active session" | Start Session |
-| SESSION_ACTIVE | "Session active" | Start Recording |
-| RECORDING | "Recording... MM:SS" | Stop |
-| PROCESSING | "Processing..." | (disabled) |
+| SESSION_ACTIVE | "Session active" | Start Recording · Stop Session |
+| RECORDING | "Recording... MM:SS" | Save Case |
+| PROCESSING | "Processing..." | (disabled, ~2-3s max) |
+
+Note: "Save Case" is the button label (not "Stop") — it matches what the scribe is doing: saving the current patient's audio and triggering transcription. After PROCESSING completes (transcription spawned), state immediately returns to SESSION_ACTIVE so the scribe can start the next recording without waiting.
 
 Timer: `setInterval` 1s, format `MM:SS`, cleared on state exit. Prevent double-clear.
 
@@ -260,6 +263,8 @@ let patientNameResolver = null
 
 **`start-session`:** set SESSION_ACTIVE, broadcast
 
+**`stop-session`:** kill any active `recordingProcess` if running, set IDLE, broadcast. (No transcription triggered — if the scribe ends the session mid-recording, the audio is discarded. Phase 2 can add a warning prompt for this.)
+
 **`start-recording`:**
 1. `tempMp3Path = path.join(os.tmpdir(), `rec_${Date.now()}.mp3`)`
 2. Spawn `record.py --output <tempMp3Path>`
@@ -280,6 +285,7 @@ let patientNameResolver = null
 11. Spawn `transcribe.py --input <mp3Dest> --output <transcriptDest>` (non-blocking, `cwd: __dirname`)
 12. `// TODO: Phase 1 — invoke Claude once skill details are confirmed`
 13. Log each step with ISO timestamp
+14. **Set state back to SESSION_ACTIVE, broadcast** ← scribe can now start the next patient's recording immediately
 
 **`submit-patient-name`** (registered once at startup):
 ```javascript

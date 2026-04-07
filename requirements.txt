@@ -1,0 +1,7 @@
+pyaudiowpatch ; sys_platform == "win32"
+sounddevice ; sys_platform == "darwin"
+soundfile
+pydub
+elevenlabs
+python-dotenv
+numpy

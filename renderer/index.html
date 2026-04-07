@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>AI Medical Scribe</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- Status row -->
+    <div id="status-row">
+      <div id="indicator"></div>
+      <span id="status-label">Loading...</span>
+    </div>
+
+    <!-- Timer (visible only while RECORDING) -->
+    <div id="timer" class="hidden">00:00</div>
+
+    <!-- Action buttons -->
+    <div id="action-buttons"></div>
+
+    <!-- Patient name form (shown after Stop) -->
+    <div id="patient-form" class="hidden">
+      <input id="patient-input" type="text" placeholder="Patient name (optional)" autocomplete="off" spellcheck="false" />
+      <div id="form-buttons">
+        <button id="btn-save-name">Save</button>
+        <button id="btn-skip-name" class="secondary">Skip</button>
+      </div>
+      <div id="form-countdown"></div>
+    </div>
+
+    <!-- Setup warning (BlackHole / ffmpeg) -->
+    <div id="setup-warning" class="hidden"></div>
+
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
