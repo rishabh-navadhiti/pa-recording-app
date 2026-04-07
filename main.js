@@ -279,8 +279,16 @@ function registerIpcHandlers() {
     log('stop-recording')
 
     if (recordingProcess) {
-      // Kill and wait for exit so the MP3 is fully written
-      recordingProcess.kill()
+      // Signal Python to stop cleanly via stdin (reliable on Windows).
+      // Python flushes the WAV and converts to MP3 before exiting.
+      // Do NOT use kill() here — TerminateProcess() on Windows gives Python
+      // no chance to run cleanup code.
+      try {
+        recordingProcess.stdin.write('stop\n')
+        recordingProcess.stdin.end()
+      } catch (e) {
+        log(`stdin write failed (process may have already exited): ${e.message}`)
+      }
       await waitForExit(recordingProcess)
       recordingProcess = null
     } else {

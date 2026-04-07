@@ -224,11 +224,26 @@ def main():
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
 
-    # Windows-only: SIGBREAK (Ctrl+Break / TerminateProcess fallback)
+    # Windows-only: SIGBREAK (Ctrl+Break fallback)
     try:
         signal.signal(signal.SIGBREAK, handle_stop)
     except AttributeError:
         pass  # Not available on macOS/Linux
+
+    # Primary stop mechanism on Windows: watch stdin for any input from Node.
+    # Node writes 'stop\n' to stdin instead of killing the process, so Python
+    # gets a chance to flush the WAV and convert to MP3.
+    def watch_stdin():
+        try:
+            sys.stdin.readline()
+        except Exception:
+            pass
+        finally:
+            log.info('stdin closed — stopping...')
+            stop_event.set()
+
+    stdin_thread = threading.Thread(target=watch_stdin, daemon=True)
+    stdin_thread.start()
 
     log.info(f'Output: {args.output}')
     log.info(f'Platform: {sys.platform}')
