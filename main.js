@@ -34,11 +34,17 @@ let patientNameResolver = null
 // Paths
 // ---------------------------------------------------------------------------
 
-const DOCS_DIR = app.getPath('documents')
-const NOTES_DIR = path.join(DOCS_DIR, 'AI Medical Notes')
-const CASES_DIR = path.join(NOTES_DIR, 'Cases')
-const TEMPLATES_DIR = path.join(NOTES_DIR, 'Templates')
-const LOG_FILE = path.join(NOTES_DIR, 'app.log')
+const DOCS_DIR    = app.getPath('documents')
+const NOTES_DIR   = path.join(DOCS_DIR, 'AI Medical Notes')
+const CASES_DIR   = path.join(NOTES_DIR, 'Cases')
+const TEMPLATES_DIR = path.join(NOTES_DIR, 'templates')
+const LOG_FILE    = path.join(NOTES_DIR, 'app.log')
+
+// Bundled Claude config — copied to NOTES_DIR/.claude on first run
+const CLAUDE_CONFIG_SRC = path.join(__dirname, 'notes-claude')
+
+// Hardcoded doctor for demo — will be configurable in a future release
+const DOCTOR = 'sabbag'
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -106,6 +112,46 @@ function togglePopup() {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function spawnSoapGeneration(transcriptAbsPath) {
+  // Build path relative to NOTES_DIR — that's the cwd claude runs from
+  const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
+  const prompt = `generate a note for doctor ${DOCTOR} using transcript ${relTranscript}`
+
+  log(`[soap] Spawning: claude -p "${prompt}"`)
+
+  const claudeProc = spawn('claude', [
+    '-p', prompt,
+    '--dangerously-skip-permissions'
+  ], {
+    cwd: NOTES_DIR,
+    stdio: 'pipe',
+    // On Windows, spawn via shell so PATH is resolved correctly
+    shell: process.platform === 'win32'
+  })
+
+  claudeProc.stdout.on('data', d => log(`[soap] ${d.toString().trim()}`))
+  claudeProc.stderr.on('data', d => log(`[soap ERR] ${d.toString().trim()}`))
+  claudeProc.on('close', code => log(`[soap] claude exited ${code}`))
+  claudeProc.on('error', err => log(`[soap ERR] failed to spawn claude: ${err.message}`))
+}
+
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true })
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath  = path.join(src,  entry.name)
+    const destPath = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath)
+    } else {
+      fs.copyFileSync(srcPath, destPath)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // App ready
 // ---------------------------------------------------------------------------
 
@@ -116,6 +162,13 @@ app.whenReady().then(() => {
   // Ensure runtime directories exist
   fs.mkdirSync(CASES_DIR, { recursive: true })
   fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
+
+  // Copy bundled .claude config to NOTES_DIR on first run (skip if already there)
+  const claudeDest = path.join(NOTES_DIR, '.claude')
+  if (!fs.existsSync(claudeDest)) {
+    copyDirSync(CLAUDE_CONFIG_SRC, claudeDest)
+    log('.claude config copied to AI Medical Notes')
+  }
 
   log('App started')
 
@@ -337,7 +390,12 @@ function registerIpcHandlers() {
 
     transcribeProc.stdout.on('data', d => log(`[transcribe.py] ${d.toString().trim()}`))
     transcribeProc.stderr.on('data', d => log(`[transcribe.py ERR] ${d.toString().trim()}`))
-    transcribeProc.on('exit', code => log(`transcribe.py exited ${code}`))
+    transcribeProc.on('close', code => {
+      log(`transcribe.py exited ${code}`)
+      if (code === 0) {
+        spawnSoapGeneration(transcriptDest)
+      }
+    })
 
     log(`Transcription started for: ${mp3Dest}`)
 
