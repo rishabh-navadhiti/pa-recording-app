@@ -127,7 +127,8 @@ function spawnSoapGeneration(transcriptAbsPath) {
     '--dangerously-skip-permissions'
   ], {
     cwd: NOTES_DIR,
-    stdio: 'pipe',
+    // stdin must be 'ignore' — leaving it open causes Claude to wait for input
+    stdio: ['ignore', 'pipe', 'pipe'],
     // On Windows, spawn via shell so PATH is resolved correctly
     shell: process.platform === 'win32'
   })
@@ -163,11 +164,14 @@ app.whenReady().then(() => {
   fs.mkdirSync(CASES_DIR, { recursive: true })
   fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
 
-  // Copy bundled .claude config to NOTES_DIR on first run (skip if already there)
-  const claudeDest = path.join(NOTES_DIR, '.claude')
-  if (!fs.existsSync(claudeDest)) {
-    copyDirSync(CLAUDE_CONFIG_SRC, claudeDest)
+  // Copy bundled .claude config — check for skill file specifically so a partial
+  // or stale .claude dir gets updated correctly
+  const skillFileDest = path.join(NOTES_DIR, '.claude', 'skills', 'generate-note', 'SKILL.md')
+  if (!fs.existsSync(skillFileDest)) {
+    copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log('.claude config copied to AI Medical Notes')
+  } else {
+    log('.claude config already present')
   }
 
   log('App started')
