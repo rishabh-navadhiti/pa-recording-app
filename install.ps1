@@ -2,13 +2,16 @@
 # Run in an elevated PowerShell terminal:
 #   irm https://raw.githubusercontent.com/rishabh-navadhiti/pa-recording-app/main/install.ps1 | iex
 
+# Allow this process (and child processes like npm.ps1) to run scripts
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $REPO_URL   = "https://github.com/rishabh-navadhiti/pa-recording-app.git"
 $installDir = "$env:LOCALAPPDATA\Programs\AI Medical Scribe"
 $taskName   = "AI Medical Scribe"
-$totalSteps = 10
+$totalSteps = 11
 
 function Refresh-Path {
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
@@ -118,7 +121,15 @@ OK "Config file ready - add your ElevenLabs key in the app after launch"
 # ---- 11. Autostart via Task Scheduler ---------------------------------------
 Step 11 "Registering autostart (Task Scheduler)..."
 
+# Write launch.vbs — launches electron with no console window
 $vbsPath = Join-Path $installDir "launch.vbs"
+@"
+Dim shell
+Set shell = CreateObject("WScript.Shell")
+shell.CurrentDirectory = "$installDir"
+shell.Run "cmd /c npm start", 0, False
+Set shell = Nothing
+"@ | Set-Content $vbsPath -Encoding UTF8
 
 $action = New-ScheduledTaskAction `
     -Execute  "wscript.exe" `
