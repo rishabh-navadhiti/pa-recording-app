@@ -129,7 +129,7 @@ Set shell = CreateObject("WScript.Shell")
 shell.CurrentDirectory = "$installDir"
 shell.Run "cmd /c npm start", 0, False
 Set shell = Nothing
-"@ | Set-Content $vbsPath -Encoding UTF8
+"@ | Set-Content $vbsPath -Encoding ASCII
 
 $action = New-ScheduledTaskAction `
     -Execute  "wscript.exe" `
