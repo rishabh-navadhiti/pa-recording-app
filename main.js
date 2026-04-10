@@ -122,16 +122,19 @@ function spawnSoapGeneration(transcriptAbsPath) {
 
   log(`[soap] Spawning: claude -p "${prompt}"`)
 
-  const claudeProc = spawn('claude', [
-    '-p', prompt,
-    '--dangerously-skip-permissions'
-  ], {
-    cwd: NOTES_DIR,
-    // stdin must be 'ignore' — leaving it open causes Claude to wait for input
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // On Windows, spawn via shell so PATH is resolved correctly
-    shell: process.platform === 'win32'
-  })
+  // On Windows, spawn() with shell:true joins the args array without quoting, so a
+  // prompt containing spaces is split and Claude only receives the first word via -p.
+  // Fix: build the full command string so the prompt is explicitly quoted.
+  const safePrompt = prompt.replace(/"/g, '\\"')
+  const claudeProc = spawn(
+    `claude -p "${safePrompt}" --dangerously-skip-permissions`,
+    [],
+    {
+      cwd: NOTES_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true  // needed on all platforms to resolve 'claude' from PATH
+    }
+  )
 
   claudeProc.stdout.on('data', d => log(`[soap] ${d.toString().trim()}`))
   claudeProc.stderr.on('data', d => log(`[soap ERR] ${d.toString().trim()}`))
@@ -319,8 +322,9 @@ function registerIpcHandlers() {
     })
     recordingProcess.on('exit', code => {
       log(`record.py exited ${code}`)
-      // If process died on its own while we're still in RECORDING state, recover
-      if (currentState === STATE.RECORDING) {
+      // recordingProcess is nulled by stop-recording before it awaits exit,
+      // so a non-null value here means Python died on its own — recover to SESSION_ACTIVE.
+      if (currentState === STATE.RECORDING && recordingProcess !== null) {
         log('record.py exited unexpectedly — returning to SESSION_ACTIVE')
         recordingProcess = null
         setState(STATE.SESSION_ACTIVE)
@@ -336,18 +340,22 @@ function registerIpcHandlers() {
     log('stop-recording')
 
     if (recordingProcess) {
+      // Null recordingProcess BEFORE awaiting exit so the exit handler (registered in
+      // start-recording) knows this is an intentional stop and doesn't fire the
+      // "exited unexpectedly" recovery path.
+      const procToStop = recordingProcess
+      recordingProcess = null
       // Signal Python to stop cleanly via stdin (reliable on Windows).
       // Python flushes the WAV and converts to MP3 before exiting.
       // Do NOT use kill() here — TerminateProcess() on Windows gives Python
       // no chance to run cleanup code.
       try {
-        recordingProcess.stdin.write('stop\n')
-        recordingProcess.stdin.end()
+        procToStop.stdin.write('stop\n')
+        procToStop.stdin.end()
       } catch (e) {
         log(`stdin write failed (process may have already exited): ${e.message}`)
       }
-      await waitForExit(recordingProcess)
-      recordingProcess = null
+      await waitForExit(procToStop)
     } else {
       log('WARNING: stop-recording called but recordingProcess already gone')
     }
