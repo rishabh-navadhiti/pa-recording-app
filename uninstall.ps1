@@ -1,0 +1,53 @@
+# AI Medical Scribe - Uninstaller
+# Registered automatically by install.ps1 and appears in Settings > Apps.
+# Can also be run directly from the install directory.
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "SilentlyContinue"
+
+$installDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$taskName    = "AI Medical Scribe"
+$uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Medical Scribe"
+
+Write-Host ""
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "  AI Medical Scribe  -  Uninstaller        " -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host ""
+
+# ---- Stop running app -------------------------------------------------------
+Write-Host "Stopping app..." -ForegroundColor Yellow
+Get-Process -Name "electron" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+# ---- Remove Task Scheduler task ---------------------------------------------
+Write-Host "Removing autostart task..." -ForegroundColor Yellow
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+# ---- Remove registry uninstall entry ----------------------------------------
+Write-Host "Removing from Settings > Apps..." -ForegroundColor Yellow
+Remove-Item -Path $uninstallKey -Force -ErrorAction SilentlyContinue
+
+# ---- Optionally remove documents --------------------------------------------
+Write-Host ""
+$removeNotes = Read-Host "Remove AI Medical Notes documents from Documents folder? (y/N)"
+if ($removeNotes -eq "y" -or $removeNotes -eq "Y") {
+    $notesDir = "$env:USERPROFILE\Documents\AI Medical Notes"
+    if (Test-Path $notesDir) {
+        Remove-Item -Recurse -Force $notesDir -ErrorAction SilentlyContinue
+        Write-Host "Documents removed." -ForegroundColor Green
+    } else {
+        Write-Host "Documents folder not found - skipping." -ForegroundColor Gray
+    }
+}
+
+# ---- Remove install directory (deferred - this script lives inside it) ------
+Write-Host ""
+Write-Host "Removing app files..." -ForegroundColor Yellow
+$escapedDir = $installDir -replace "'", "''"
+$deferred = "Start-Sleep -Seconds 2; Remove-Item -Recurse -Force '$escapedDir' -ErrorAction SilentlyContinue"
+Start-Process powershell.exe -ArgumentList "-NoProfile -NonInteractive -Command `"$deferred`"" -WindowStyle Hidden
+
+Write-Host ""
+Write-Host "AI Medical Scribe has been uninstalled." -ForegroundColor Cyan
+Write-Host ""

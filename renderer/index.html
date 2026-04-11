@@ -18,6 +18,24 @@
     <!-- Timer (visible only while RECORDING) -->
     <div id="timer" class="hidden">00:00</div>
 
+    <!-- Config warnings (missing ElevenLabs key / doctor name) -->
+    <div id="config-warnings">
+      <div id="warn-elevenlabs" class="config-warn hidden">
+        <div class="warn-header"><span class="warn-icon">&#9888;</span> ElevenLabs API key missing</div>
+        <div class="warn-input-row">
+          <input id="elevenlabs-input" type="text" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+          <button id="btn-save-elevenlabs" class="small">Save</button>
+        </div>
+      </div>
+      <div id="warn-doctor" class="config-warn hidden">
+        <div class="warn-header"><span class="warn-icon">&#9888;</span> Doctor name not set</div>
+        <div class="warn-input-row">
+          <input id="doctor-input" type="text" placeholder="e.g. Dr. Smith" autocomplete="off" spellcheck="false" />
+          <button id="btn-save-doctor" class="small">Save</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Action buttons -->
     <div id="action-buttons"></div>
 

@@ -43,9 +43,6 @@ const LOG_FILE    = path.join(NOTES_DIR, 'app.log')
 // Bundled Claude config — copied to NOTES_DIR/.claude on first run
 const CLAUDE_CONFIG_SRC = path.join(__dirname, 'notes-claude')
 
-// Hardcoded doctor for demo — will be configurable in a future release
-const DOCTOR = 'sabbag'
-
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
@@ -58,6 +55,37 @@ function log(msg) {
   } catch (e) {
     // Log file may not exist yet on first run — ignore
   }
+}
+
+// ---------------------------------------------------------------------------
+// .env helpers
+// ---------------------------------------------------------------------------
+
+const ENV_PATH = path.join(__dirname, '.env')
+
+function readEnv() {
+  try {
+    return Object.fromEntries(
+      fs.readFileSync(ENV_PATH, 'utf8')
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('#') && l.includes('='))
+        .map(l => { const i = l.indexOf('='); return [l.slice(0, i).trim(), l.slice(i + 1).trim()] })
+    )
+  } catch { return {} }
+}
+
+function writeEnvKey(key, value) {
+  let lines = []
+  try { lines = fs.readFileSync(ENV_PATH, 'utf8').split('\n') } catch {}
+  const re = new RegExp(`^${key}=`)
+  if (lines.some(l => re.test(l))) {
+    lines = lines.map(l => re.test(l) ? `${key}=${value}` : l)
+  } else {
+    if (lines.length && lines[lines.length - 1] !== '') lines.push('')
+    lines.push(`${key}=${value}`)
+  }
+  fs.writeFileSync(ENV_PATH, lines.join('\n'), 'utf8')
 }
 
 // ---------------------------------------------------------------------------
@@ -115,10 +143,11 @@ function togglePopup() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function spawnSoapGeneration(transcriptAbsPath) {
+function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath) {
   // Build path relative to NOTES_DIR — that's the cwd claude runs from
   const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
-  const prompt = `generate a note for doctor ${DOCTOR} using transcript ${relTranscript}`
+  const doctor = readEnv()['DOCTOR_NAME'] || 'unknown'
+  const prompt = `generate a note for doctor ${doctor} using transcript ${relTranscript}`
 
   log(`[soap] Spawning: claude -p "${prompt}"`)
 
@@ -138,8 +167,26 @@ function spawnSoapGeneration(transcriptAbsPath) {
 
   claudeProc.stdout.on('data', d => log(`[soap] ${d.toString().trim()}`))
   claudeProc.stderr.on('data', d => log(`[soap ERR] ${d.toString().trim()}`))
-  claudeProc.on('close', code => log(`[soap] claude exited ${code}`))
+  claudeProc.on('close', code => {
+    log(`[soap] claude exited ${code}`)
+    if (code === 0 && soapNoteMdPath) {
+      spawnDocxConversion(soapNoteMdPath)
+    }
+  })
   claudeProc.on('error', err => log(`[soap ERR] failed to spawn claude: ${err.message}`))
+}
+
+function spawnDocxConversion(mdPath) {
+  log(`[docx] Converting: ${mdPath}`)
+  const proc = spawn(PYTHON, [
+    path.join(__dirname, 'python', 'md_to_docx.py'),
+    mdPath
+  ], { cwd: __dirname, stdio: 'pipe' })
+
+  proc.stdout.on('data', d => log(`[docx] Saved: ${d.toString().trim()}`))
+  proc.stderr.on('data', d => log(`[docx ERR] ${d.toString().trim()}`))
+  proc.on('close', code => log(`[docx] exited ${code}`))
+  proc.on('error', err => log(`[docx ERR] failed to spawn md_to_docx: ${err.message}`))
 }
 
 function copyDirSync(src, dest) {
@@ -384,6 +431,7 @@ function registerIpcHandlers() {
     const mp3Filename = name ? `${name}.mp3` : 'recording.mp3'
     const mp3Dest = path.join(caseDir, mp3Filename)
     const transcriptDest = path.join(caseDir, 'transcript.md')
+    const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
 
     if (fs.existsSync(tempMp3Path)) {
       fs.renameSync(tempMp3Path, mp3Dest)
@@ -405,7 +453,7 @@ function registerIpcHandlers() {
     transcribeProc.on('close', code => {
       log(`transcribe.py exited ${code}`)
       if (code === 0) {
-        spawnSoapGeneration(transcriptDest)
+        spawnSoapGeneration(transcriptDest, soapNotePath)
       }
     })
 
@@ -426,5 +474,43 @@ function registerIpcHandlers() {
       patientNameResolver = null
     }
     return true
+  })
+
+  // ---- get-config-status ----
+  ipcMain.handle('get-config-status', () => {
+    const env = readEnv()
+    const apiKey = env['ELEVENLABS_API_KEY'] || ''
+    return {
+      elevenLabsKeyMissing: !apiKey || apiKey === 'your_key_here',
+      doctorName: env['DOCTOR_NAME'] || ''
+    }
+  })
+
+  // ---- save-doctor-name ----
+  ipcMain.handle('save-doctor-name', (_, name) => {
+    try {
+      const trimmed = (name || '').trim()
+      if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
+      writeEnvKey('DOCTOR_NAME', trimmed)
+      log(`Doctor name saved: ${trimmed}`)
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving doctor name: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // ---- save-elevenlabs-key ----
+  ipcMain.handle('save-elevenlabs-key', (_, key) => {
+    try {
+      const trimmed = (key || '').trim()
+      if (!trimmed) return { ok: false, error: 'Key cannot be empty' }
+      writeEnvKey('ELEVENLABS_API_KEY', trimmed)
+      log('ElevenLabs API key saved')
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving ElevenLabs key: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
   })
 }

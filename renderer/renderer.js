@@ -25,6 +25,13 @@ const btnSaveName   = document.getElementById('btn-save-name')
 const btnSkipName   = document.getElementById('btn-skip-name')
 const formCountdown = document.getElementById('form-countdown')
 const setupWarning  = document.getElementById('setup-warning')
+const configWarnings    = document.getElementById('config-warnings')
+const warnElevenLabs    = document.getElementById('warn-elevenlabs')
+const elevenLabsInput   = document.getElementById('elevenlabs-input')
+const btnSaveElevenLabs = document.getElementById('btn-save-elevenlabs')
+const warnDoctor        = document.getElementById('warn-doctor')
+const doctorInput       = document.getElementById('doctor-input')
+const btnSaveDoctor     = document.getElementById('btn-save-doctor')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -192,12 +199,71 @@ function showSetupWarning(msg) {
 }
 
 // ---------------------------------------------------------------------------
+// Config warnings (ElevenLabs key / doctor name)
+// ---------------------------------------------------------------------------
+
+function updateConfigWarningsVisibility() {
+  const anyVisible = !warnElevenLabs.classList.contains('hidden') ||
+                     !warnDoctor.classList.contains('hidden')
+  configWarnings.style.display = anyVisible ? '' : 'none'
+}
+
+async function initConfigWarnings() {
+  const cfg = await api.getConfigStatus()
+
+  if (cfg.elevenLabsKeyMissing) {
+    warnElevenLabs.classList.remove('hidden')
+  }
+
+  if (!cfg.doctorName) {
+    warnDoctor.classList.remove('hidden')
+  } else {
+    doctorInput.value = cfg.doctorName
+  }
+
+  updateConfigWarningsVisibility()
+}
+
+btnSaveElevenLabs.addEventListener('click', async () => {
+  const key = elevenLabsInput.value.trim()
+  if (!key) return
+  btnSaveElevenLabs.disabled = true
+  const res = await api.saveElevenLabsKey(key)
+  if (res.ok) {
+    warnElevenLabs.classList.add('hidden')
+    updateConfigWarningsVisibility()
+  }
+  btnSaveElevenLabs.disabled = false
+})
+
+elevenLabsInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') btnSaveElevenLabs.click()
+})
+
+btnSaveDoctor.addEventListener('click', async () => {
+  const name = doctorInput.value.trim()
+  if (!name) return
+  btnSaveDoctor.disabled = true
+  const res = await api.saveDoctorName(name)
+  if (res.ok) {
+    warnDoctor.classList.add('hidden')
+    updateConfigWarningsVisibility()
+  }
+  btnSaveDoctor.disabled = false
+})
+
+doctorInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') btnSaveDoctor.click()
+})
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 async function init() {
   const state = await api.getState()
   render(state)
+  await initConfigWarnings()
 
   api.onStateChange(render)
   api.onShowPatientForm(showPatientForm)

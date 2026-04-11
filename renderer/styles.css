@@ -143,6 +143,63 @@ button:disabled {
   text-align: center;
 }
 
+/* Config warnings (ElevenLabs key / doctor name) */
+#config-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-warn {
+  background: #221a00;
+  border: 1px solid #5c4400;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #f0a030;
+  line-height: 1.5;
+}
+
+.warn-icon {
+  margin-right: 3px;
+}
+
+.warn-header {
+  margin-bottom: 8px;
+}
+
+.warn-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.warn-input-row input {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #4a3a00;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+}
+
+.warn-input-row input:focus {
+  border-color: #f0a030;
+}
+
+button.small {
+  width: auto;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #f0a030;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+button.small:hover { opacity: 0.85; }
+
 /* Setup warning */
 #setup-warning {
   background: #2d1a00;

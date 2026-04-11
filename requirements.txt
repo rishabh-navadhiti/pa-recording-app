@@ -6,3 +6,4 @@ elevenlabs
 requests
 python-dotenv
 numpy
+python-docx

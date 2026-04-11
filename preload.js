@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('api', {
   stopRecording:     ()     => ipcRenderer.invoke('stop-recording'),
   submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
 
+  getConfigStatus:    ()    => ipcRenderer.invoke('get-config-status'),
+  saveDoctorName:    (name) => ipcRenderer.invoke('save-doctor-name', name),
+  saveElevenLabsKey: (key)  => ipcRenderer.invoke('save-elevenlabs-key', key),
+
   onStateChange:     (cb) => ipcRenderer.on('state-change',    (_, s)   => cb(s)),
   onShowPatientForm: (cb) => ipcRenderer.on('show-patient-form', ()      => cb()),
   onSetupWarning:    (cb) => ipcRenderer.on('setup-warning',   (_, msg) => cb(msg))

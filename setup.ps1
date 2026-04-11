@@ -59,21 +59,34 @@ Write-Host "Installing Node packages..." -ForegroundColor Yellow
 npm install
 Write-Host "Node packages OK" -ForegroundColor Green
 
-# 7. Create .env if missing
-if (-not (Test-Path ".env")) {
-    Copy-Item ".env.example" ".env"
-    Write-Host ""
-    Write-Host ".env created from .env.example" -ForegroundColor Yellow
-    Write-Host "IMPORTANT: Open .env and add your ElevenLabs API key before running the app." -ForegroundColor Red
+# 7. ElevenLabs API key
+Write-Host ""
+Write-Host "[6/6] ElevenLabs API key..." -ForegroundColor Yellow
+
+$existingKey = ""
+
+if (Test-Path ".env") {
+    $keyLine = (Get-Content ".env") | Where-Object { $_ -match "^ELEVENLABS_API_KEY=(.+)$" }
+    if ($keyLine -and ($Matches[1] -ne "your_key_here") -and ($Matches[1].Trim() -ne "")) {
+        $existingKey = $Matches[1].Trim()
+    }
+}
+
+if ($existingKey -eq "") {
+    Write-Host "  ElevenLabs API key is required for transcription." -ForegroundColor Yellow
+    Write-Host "  Get yours: elevenlabs.io -> Profile -> API Keys" -ForegroundColor Cyan
+    do {
+        $apiKey = (Read-Host "  Enter ElevenLabs API key").Trim()
+        if ($apiKey -eq "") { Write-Host "  Key cannot be empty." -ForegroundColor Red }
+    } while ($apiKey -eq "")
+    "ELEVENLABS_API_KEY=$apiKey" | Set-Content ".env" -Encoding UTF8
+    Write-Host "  API key saved to .env" -ForegroundColor Green
 } else {
-    Write-Host ""
-    Write-Host ".env already exists - skipping" -ForegroundColor Gray
+    Write-Host "  API key already set - skipping" -ForegroundColor Green
 }
 
 Write-Host ""
 Write-Host "=== Setup complete ===" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Next steps:"
-Write-Host "  1. Open .env and set your ELEVENLABS_API_KEY"
-Write-Host "  2. Run: npm start"
+Write-Host "Run: npm start"
 Write-Host ""
