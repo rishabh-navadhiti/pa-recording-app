@@ -18,6 +18,14 @@ function Refresh-Path {
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
 }
 
+function Add-ToUserPath($dir) {
+    $current = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($current -notlike "*$dir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$current;$dir", "User")
+        $env:Path = "$env:Path;$dir"
+    }
+}
+
 function Step($n, $msg) {
     Write-Host ""
     Write-Host "[$n/$totalSteps] $msg" -ForegroundColor Yellow
@@ -75,6 +83,9 @@ OK "Build Tools OK"
 Step 6 "Installing Claude CLI..."
 try {
     irm https://claude.ai/install.ps1 | iex
+    # Claude CLI installs to $env:USERPROFILE\.local\bin — ensure it is on PATH
+    $claudeBin = "$env:USERPROFILE\.local\bin"
+    Add-ToUserPath $claudeBin
     OK "Claude CLI installed"
 } catch {
     Write-Host "  WARNING: Claude CLI install failed: $_" -ForegroundColor Red
