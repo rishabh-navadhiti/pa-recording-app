@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $REPO_URL   = "https://github.com/rishabh-navadhiti/pa-recording-app.git"
 $installDir = "$env:LOCALAPPDATA\Programs\AI Medical Scribe"
 $taskName   = "AI Medical Scribe"
-$totalSteps = 11
+$totalSteps = 10
 
 function Refresh-Path {
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
@@ -107,30 +107,13 @@ npm install --silent
 Pop-Location
 OK "Node packages OK"
 
-# ---- 10. ElevenLabs API key -------------------------------------------------
-Step 10 "ElevenLabs API key..."
-$envFile    = Join-Path $installDir ".env"
-$existingKey = ""
-
-if (Test-Path $envFile) {
-    $keyLine = (Get-Content $envFile) | Where-Object { $_ -match "^ELEVENLABS_API_KEY=(.+)$" }
-    if ($keyLine -and ($Matches[1] -ne "your_key_here") -and ($Matches[1].Trim() -ne "")) {
-        $existingKey = $Matches[1].Trim()
-    }
+# ---- 10. Create config file -------------------------------------------------
+Step 10 "Creating config file..."
+$envFile = Join-Path $installDir ".env"
+if (-not (Test-Path $envFile)) {
+    "ELEVENLABS_API_KEY=" | Set-Content $envFile -Encoding UTF8
 }
-
-if ($existingKey -eq "") {
-    Write-Host "  ElevenLabs API key is required for transcription." -ForegroundColor Yellow
-    Write-Host "  Get yours: elevenlabs.io -> Profile -> API Keys" -ForegroundColor Cyan
-    do {
-        $apiKey = (Read-Host "  Enter ElevenLabs API key").Trim()
-        if ($apiKey -eq "") { Write-Host "  Key cannot be empty." -ForegroundColor Red }
-    } while ($apiKey -eq "")
-    "ELEVENLABS_API_KEY=$apiKey" | Set-Content $envFile -Encoding UTF8
-    OK "API key saved to .env"
-} else {
-    OK "API key already set - skipping"
-}
+OK "Config file ready - add your ElevenLabs key in the app after launch"
 
 # ---- 11. Autostart via Task Scheduler ---------------------------------------
 Step 11 "Registering autostart (Task Scheduler)..."
