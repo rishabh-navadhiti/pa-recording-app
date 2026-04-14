@@ -173,14 +173,16 @@ State your selection in one sentence, e.g.:
 
 ### 5c: Generate the SOAP Note
 
-Using **only** information explicitly stated in the transcript, generate the SOAP note following the doctor's template.
+Using **only** information present in the transcript, generate the SOAP note following the doctor's template.
 
 **Rules — no exceptions:**
 
-- Use ONLY information explicitly stated in the transcript. Do not infer or add details not present.
+- **Extract from the entire transcript.** The transcript may contain a conversational portion (doctor-patient dialogue) followed by a structured dictation portion (spoken after the visit). Extract clinical information from BOTH. Do not treat the conversational portion as background noise — it often contains the HPI, symptom history, functional impact, and prior treatment details that the doctor does not re-dictate. Read every line before generating.
+- **Section length and format guidelines are strict requirements, not suggestions.** If the template specifies multiple paragraphs for a section (e.g. "3–8 paragraphs for new patients", "narrative prose — multiple paragraphs"), write multiple paragraphs. Do not compress into fewer paragraphs unless the transcript genuinely lacks enough information after thorough extraction from all parts.
+- **Boilerplate blocks are mandatory when triggered.** Every named boilerplate block in the template with a defined trigger condition must be applied verbatim when that condition is met. Do not paraphrase, condense, or skip. If the condition is met, the exact text must appear.
 - Follow every structural rule, section order, heading, and formatting instruction in the selected template section exactly.
-- Use verbatim boilerplate text wherever the template defines named boilerplate blocks (e.g. `injection_macro_1st_him`, `biopsychosocial_wc`, `thank_you_wc`). Copy these word-for-word.
 - If a field has no information from the transcript (e.g. RADIOGRAPHS, DIAGNOSES in WC notes, insurance details), leave the heading present but the content blank — do not write "N/A" and do not omit the heading.
+- For patient details not present in the transcript (age, DOB, insurance details, claim numbers, etc.), use a clear placeholder such as `[age]`, `[DOB]`, `[Carrier Name]` — do not omit the field or its heading.
 - Do NOT use a generic SOAP format (SUBJECTIVE / OBJECTIVE / ASSESSMENT / PLAN) unless the template explicitly uses those headings. Use exactly the headings the template defines.
 - Do NOT read any other files during generation. Generate exclusively from the transcript and the template loaded above.
 - Follow all Global Style rules in the template: pronoun usage, attribution verbs, tense, abbreviations, and formatting conventions.
