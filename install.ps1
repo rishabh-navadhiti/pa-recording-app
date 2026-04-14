@@ -166,6 +166,19 @@ Register-ScheduledTask `
 
 OK "Task '$taskName' registered"
 
+# ---- Start Menu shortcut ---------------------------------------------------
+Write-Host ""
+Write-Host "[extra] Creating Start Menu shortcut..." -ForegroundColor Yellow
+$startMenuPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
+$WshShell  = New-Object -ComObject WScript.Shell
+$shortcut  = $WshShell.CreateShortcut("$startMenuPath\AI Medical Scribe.lnk")
+$shortcut.TargetPath       = "wscript.exe"
+$shortcut.Arguments        = "`"$vbsPath`""
+$shortcut.WorkingDirectory = $installDir
+$shortcut.Description      = "AI Medical Scribe — audio capture and SOAP note generator"
+$shortcut.Save()
+OK "Start Menu shortcut created"
+
 # ---- Registry: add to Settings > Apps --------------------------------------
 Write-Host ""
 Write-Host "[extra] Registering in Settings > Apps..." -ForegroundColor Yellow

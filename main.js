@@ -143,13 +143,14 @@ function togglePopup() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath) {
+function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, isRetry = false) {
   // Build path relative to NOTES_DIR — that's the cwd claude runs from
   const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
   const doctor = readEnv()['DOCTOR_NAME'] || 'unknown'
   const prompt = `generate a note for doctor ${doctor} using transcript ${relTranscript}`
 
-  log(`[soap] Spawning: claude -p "${prompt}"`)
+  const attempt = isRetry ? ' (retry)' : ''
+  log(`[soap] Spawning${attempt}: claude -p "${prompt}"`)
 
   // On Windows, spawn() with shell:true joins the args array without quoting, so a
   // prompt containing spaces is split and Claude only receives the first word via -p.
@@ -170,7 +171,18 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath) {
   claudeProc.on('close', code => {
     log(`[soap] claude exited ${code}`)
     if (code === 0 && soapNoteMdPath) {
-      spawnDocxConversion(soapNoteMdPath)
+      // Verify the skill actually wrote the SOAP note file.
+      // When the skill is not invoked, Claude dumps the note to stdout only
+      // (no file saved, case folder has 2 files instead of 4).
+      if (fs.existsSync(soapNoteMdPath)) {
+        log(`[soap] SOAP note confirmed: ${soapNoteMdPath}`)
+        spawnDocxConversion(soapNoteMdPath)
+      } else if (!isRetry) {
+        log(`[soap] WARNING: claude exited 0 but SOAP note file not found — skill may not have been invoked. Retrying...`)
+        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, true)
+      } else {
+        log(`[soap] ERROR: SOAP note file still missing after retry — manual intervention required: ${soapNoteMdPath}`)
+      }
     }
   })
   claudeProc.on('error', err => log(`[soap ERR] failed to spawn claude: ${err.message}`))
@@ -468,7 +480,12 @@ function registerIpcHandlers() {
   ipcMain.handle('submit-patient-name', (_, name) => {
     if (patientNameResolver) {
       const sanitized = name
-        ? name.trim().toLowerCase().replace(/\s+/g, '_')
+        ? name.trim().toLowerCase()
+              .replace(/\s+/g, '_')           // spaces → underscore
+              .replace(/[^a-z0-9_-]/g, '')    // strip all non-alphanumeric except _ and -
+              .replace(/_{2,}/g, '_')          // collapse consecutive underscores
+              .replace(/^_|_$/g, '')           // trim leading/trailing underscores
+              || null                          // if result is empty string, treat as no name
         : null
       patientNameResolver(sanitized)
       patientNameResolver = null

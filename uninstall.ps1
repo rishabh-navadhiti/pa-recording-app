@@ -17,12 +17,26 @@ Write-Host ""
 
 # ---- Stop running app -------------------------------------------------------
 Write-Host "Stopping app..." -ForegroundColor Yellow
-Get-Process -Name "electron" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Target only the AI Medical Scribe electron process by matching its working
+# directory (install path), not by process name — which would kill VS Code
+# and any other Electron-based app running on the machine.
+Get-Process -Name "electron" -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.MainModule.FileName -like "*$installDir*" } catch { $false }
+} | Stop-Process -Force -ErrorAction SilentlyContinue
+# Also kill any npm/node process that launched from the install directory
+Get-Process -Name "node","npm" -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.MainModule.FileName -like "*$installDir*" } catch { $false }
+} | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # ---- Remove Task Scheduler task ---------------------------------------------
 Write-Host "Removing autostart task..." -ForegroundColor Yellow
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+# ---- Remove Start Menu shortcut ---------------------------------------------
+Write-Host "Removing Start Menu shortcut..." -ForegroundColor Yellow
+$startMenuLnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AI Medical Scribe.lnk"
+Remove-Item -Path $startMenuLnk -Force -ErrorAction SilentlyContinue
 
 # ---- Remove registry uninstall entry ----------------------------------------
 Write-Host "Removing from Settings > Apps..." -ForegroundColor Yellow

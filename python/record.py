@@ -65,6 +65,8 @@ def record_windows(output_mp3, device_index_override, stop_event):
         frames_written = [0]
 
         def callback(in_data, frame_count, time_info, status):
+            if status:
+                log.warning(f'Audio callback status: {status}')
             if stop_event.is_set():
                 return (None, pyaudio.paComplete)
             wf.writeframes(in_data)
@@ -91,7 +93,18 @@ def record_windows(output_mp3, device_index_override, stop_event):
         stream.close()
         wf.close()
 
-        log.info(f'Recorded {frames_written[0]} frames. Converting to MP3...')
+        log.info(f'Recorded {frames_written[0]} frames.')
+
+        if frames_written[0] == 0:
+            log.error('No audio frames captured — wrong loopback device or no system audio playing.')
+            # Clean up the empty WAV
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            sys.exit(1)
+
+        log.info('Converting to MP3...')
         wav_to_mp3(wav_path, output_mp3, sample_rate)
         log.info(f'Saved: {output_mp3}')
 
@@ -111,21 +124,51 @@ def get_loopback_device(p):
         return None, None
 
     default_speakers = p.get_device_info_by_index(default_output_idx)
-    log.info(f'Default output device: {default_speakers["name"]}')
+    default_name = default_speakers['name']
+    log.info(f'Default output device: {default_name}')
 
-    for i in range(p.get_device_count()):
-        dev = p.get_device_info_by_index(i)
-        if dev.get('isLoopbackDevice') and dev['name'] == default_speakers['name']:
-            return i, dev
-
-    # Fallback: any loopback device
+    # Log all available loopback devices to aid debugging
+    loopback_devices = []
     for i in range(p.get_device_count()):
         dev = p.get_device_info_by_index(i)
         if dev.get('isLoopbackDevice') and dev.get('maxInputChannels', 0) > 0:
-            log.warning(f'Exact match not found; using fallback loopback: {dev["name"]}')
+            loopback_devices.append((i, dev))
+            log.info(f'  Loopback device [{i}]: {dev["name"]}')
+
+    if not loopback_devices:
+        return None, None
+
+    # Pass 1: loopback name starts with the default output name
+    # (WASAPI loopback names are typically "<output name> [Loopback]")
+    for i, dev in loopback_devices:
+        if dev['name'].startswith(default_name):
+            log.info(f'Matched loopback by startswith: [{i}] {dev["name"]}')
             return i, dev
 
-    return None, None
+    # Pass 2: default output name is contained in the loopback name (substring)
+    for i, dev in loopback_devices:
+        if default_name in dev['name']:
+            log.info(f'Matched loopback by substring: [{i}] {dev["name"]}')
+            return i, dev
+
+    # Pass 3: loopback name is contained in the default output name (reverse substring)
+    # Handles cases where the loopback name is slightly shorter than the output name
+    for i, dev in loopback_devices:
+        loopback_base = dev['name'].replace(' [Loopback]', '').strip()
+        if loopback_base in default_name:
+            log.info(f'Matched loopback by reverse substring: [{i}] {dev["name"]}')
+            return i, dev
+
+    # Pass 4: prefer a loopback whose name contains "Speakers" over digital/S/PDIF outputs
+    for i, dev in loopback_devices:
+        if 'Speakers' in dev['name'] or 'Headphone' in dev['name'] or 'Headset' in dev['name']:
+            log.warning(f'No name match found; preferring speaker-type loopback: [{i}] {dev["name"]}')
+            return i, dev
+
+    # Pass 5: last resort — first available loopback
+    i, dev = loopback_devices[0]
+    log.warning(f'No suitable match found; using first available loopback: [{i}] {dev["name"]}')
+    return i, dev
 
 
 # ---------------------------------------------------------------------------
