@@ -101,7 +101,10 @@ if (Test-Path (Join-Path $installDir ".git")) {
     git pull --ff-only
     Pop-Location
 } else {
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+    if (Test-Path $installDir) {
+        Write-Host "  Removing incomplete previous install..." -ForegroundColor Gray
+        Remove-Item -Path $installDir -Recurse -Force
+    }
     git clone $REPO_URL $installDir
 }
 OK "Repository ready"
@@ -147,7 +150,7 @@ $action = New-ScheduledTaskAction `
     -Argument "`"$vbsPath`"" `
     -WorkingDirectory $installDir
 
-$trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
+$trigger = New-ScheduledTaskTrigger -AtLogon -User "$env:USERDOMAIN\$env:USERNAME"
 
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit 0 `
