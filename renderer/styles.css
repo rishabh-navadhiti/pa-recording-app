@@ -200,6 +200,47 @@ button.small {
 
 button.small:hover { opacity: 0.85; }
 
+/* Upload form */
+#upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 12px;
+}
+
+#upload-patient-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #252525;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 13px;
+  outline: none;
+}
+
+#upload-patient-input:focus {
+  border-color: #1D9E75;
+}
+
+#upload-form-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+#upload-form-buttons button {
+  flex: 1;
+}
+
+button.outline {
+  background: transparent;
+  color: #1D9E75;
+  border: 1px solid #1D9E75;
+}
+
+button.outline:hover { opacity: 0.85; }
+
 /* Setup warning */
 #setup-warning {
   background: #2d1a00;

@@ -24,7 +24,11 @@ const patientInput  = document.getElementById('patient-input')
 const btnSaveName   = document.getElementById('btn-save-name')
 const btnSkipName   = document.getElementById('btn-skip-name')
 const formCountdown = document.getElementById('form-countdown')
-const setupWarning  = document.getElementById('setup-warning')
+const uploadForm         = document.getElementById('upload-form')
+const uploadPatientInput = document.getElementById('upload-patient-input')
+const btnUploadSaveName  = document.getElementById('btn-upload-save-name')
+const btnUploadSkipName  = document.getElementById('btn-upload-skip-name')
+const setupWarning       = document.getElementById('setup-warning')
 const configWarnings    = document.getElementById('config-warnings')
 const warnElevenLabs    = document.getElementById('warn-elevenlabs')
 const elevenLabsInput   = document.getElementById('elevenlabs-input')
@@ -70,6 +74,7 @@ function render(state) {
   actionButtons.innerHTML = ''
   indicator.className = ''
   patientForm.classList.add('hidden')
+  uploadForm.classList.add('hidden')
 
   switch (state) {
     case STATE.IDLE: {
@@ -92,10 +97,16 @@ function render(state) {
       const btnRec = makeButton('Start Recording', async () => {
         await api.startRecording()
       })
+      const btnUpload = makeButton('Upload Audio File', async () => {
+        const filePath = await api.browseAudioFile()
+        if (!filePath) return  // user cancelled picker
+        showUploadForm(filePath)
+      }, 'outline')
       const btnStop = makeButton('Stop Session', async () => {
         await api.stopSession()
       }, 'secondary')
       actionButtons.appendChild(btnRec)
+      actionButtons.appendChild(btnUpload)
       actionButtons.appendChild(btnStop)
       break
     }
@@ -186,6 +197,35 @@ function showPatientForm() {
   patientInput.onkeydown = (e) => {
     if (e.key === 'Enter') btnSaveName.click()
     if (e.key === 'Escape') btnSkipName.click()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Upload audio form
+// ---------------------------------------------------------------------------
+
+function showUploadForm(filePath) {
+  // Hide action buttons while naming — prevent double-submits
+  actionButtons.innerHTML = ''
+  uploadForm.classList.remove('hidden')
+  uploadPatientInput.value = ''
+  uploadPatientInput.focus()
+
+  let submitted = false
+
+  function submitUpload(name) {
+    if (submitted) return
+    submitted = true
+    uploadForm.classList.add('hidden')
+    api.processAudioFile(filePath, name)
+  }
+
+  btnUploadSaveName.onclick = () => submitUpload(uploadPatientInput.value || null)
+  btnUploadSkipName.onclick = () => submitUpload(null)
+
+  uploadPatientInput.onkeydown = (e) => {
+    if (e.key === 'Enter')  btnUploadSaveName.click()
+    if (e.key === 'Escape') btnUploadSkipName.click()
   }
 }
 
