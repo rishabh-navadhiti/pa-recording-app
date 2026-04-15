@@ -215,6 +215,22 @@ function copyDirSync(src, dest) {
 }
 
 // ---------------------------------------------------------------------------
+// Single-instance guard
+// ---------------------------------------------------------------------------
+
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (win) {
+      if (!win.isVisible()) win.show()
+      win.focus()
+    }
+  })
+
+// ---------------------------------------------------------------------------
 // App ready
 // ---------------------------------------------------------------------------
 
@@ -531,3 +547,5 @@ function registerIpcHandlers() {
     }
   })
 }
+
+} // end single-instance else block
