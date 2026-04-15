@@ -202,11 +202,36 @@ button.small:hover { opacity: 0.85; }
 
 /* Upload form */
 #upload-form {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
   border-top: 1px solid #2a2a2a;
   padding-top: 12px;
+}
+
+.upload-close-btn {
+  position: absolute;
+  top: 16px;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.upload-close-btn:hover {
+  color: #e0e0e0;
+  background: #333;
 }
 
 #upload-patient-input {

@@ -28,6 +28,7 @@ const uploadForm         = document.getElementById('upload-form')
 const uploadPatientInput = document.getElementById('upload-patient-input')
 const btnUploadSaveName  = document.getElementById('btn-upload-save-name')
 const btnUploadSkipName  = document.getElementById('btn-upload-skip-name')
+const btnUploadClose     = document.getElementById('btn-upload-close')
 const setupWarning       = document.getElementById('setup-warning')
 const configWarnings    = document.getElementById('config-warnings')
 const warnElevenLabs    = document.getElementById('warn-elevenlabs')
@@ -223,9 +224,13 @@ function showUploadForm(filePath) {
   btnUploadSaveName.onclick = () => submitUpload(uploadPatientInput.value || null)
   btnUploadSkipName.onclick = () => submitUpload(null)
 
+  btnUploadClose.onclick = () => {
+    uploadForm.classList.add('hidden')
+    render(STATE.SESSION_ACTIVE)
+  }
+
   uploadPatientInput.onkeydown = (e) => {
-    if (e.key === 'Enter')  btnUploadSaveName.click()
-    if (e.key === 'Escape') btnUploadSkipName.click()
+    if (e.key === 'Enter') btnUploadSaveName.click()
   }
 }
 
