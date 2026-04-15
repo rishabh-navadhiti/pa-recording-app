@@ -100,6 +100,15 @@ echo "CASE_STEM=${CASE_STEM}"
 echo "CASE_DIR=${CASE_DIR}"
 ```
 
+Then locate the MP3 file in the same directory as the transcript:
+
+```bash
+MP3_PATH=$(find "${CASE_DIR}" -maxdepth 1 -name "*.mp3" | head -1)
+echo "MP3_PATH=${MP3_PATH}"
+```
+
+`MP3_PATH` may be empty if no MP3 is present — that is fine, proceed without it.
+
 ---
 
 ## Step 3: Read the Transcript
@@ -125,12 +134,22 @@ PATIENTS=("<CASE_STEM>")
 
 **Multiple patients detected:**
 1. Identify each patient's name from the transcript (or use `Patient_1`, `Patient_2` if unclear).
-2. For each patient, create a case folder and save their transcript segment:
+2. For each patient, create a case folder and copy the full MP3, full transcript, and their transcript segment:
 
 ```bash
 for PATIENT_NAME in <list of names>; do
   PATIENT_CASE_DIR="${CASES_DIR}/${PATIENT_NAME}"
   mkdir -p "${PATIENT_CASE_DIR}"
+
+  # Copy full original MP3 (if found)
+  if [ -n "${MP3_PATH}" ]; then
+    cp "${MP3_PATH}" "${PATIENT_CASE_DIR}/$(basename "${MP3_PATH}")"
+  fi
+
+  # Copy full original transcript
+  cp "${TRANSCRIPT_PATH}" "${PATIENT_CASE_DIR}/$(basename "${TRANSCRIPT_PATH}")"
+
+  # Save this patient's transcript segment
   # Save segment → ${PATIENT_CASE_DIR}/${PATIENT_NAME}_transcript.md
 done
 ```
@@ -218,6 +237,48 @@ cat > "${CURRENT_CASE_DIR}/${CURRENT_STEM}_soap_note.md" << 'SOAP_NOTE_EOF'
 SOAP_NOTE_EOF
 ```
 
+### Generate DOCX
+
+After saving the .md, convert it to .docx:
+
+```bash
+DOCX_PATH="${CURRENT_CASE_DIR}/${CURRENT_STEM}_soap_note.docx"
+
+if command -v pandoc >/dev/null 2>&1; then
+  pandoc "${CURRENT_CASE_DIR}/${CURRENT_STEM}_soap_note.md" -o "${DOCX_PATH}"
+else
+  python3 -c "
+from docx import Document
+import re
+
+with open('${CURRENT_CASE_DIR}/${CURRENT_STEM}_soap_note.md', 'r') as f:
+    lines = f.readlines()
+
+doc = Document()
+for line in lines:
+    line = line.rstrip()
+    if line.startswith('# '):
+        doc.add_heading(line[2:], level=1)
+    elif line.startswith('## '):
+        doc.add_heading(line[3:], level=2)
+    elif line.startswith('### '):
+        doc.add_heading(line[4:], level=3)
+    elif line.startswith('**') and line.endswith('**'):
+        p = doc.add_paragraph()
+        p.add_run(line.strip('*')).bold = True
+    elif line == '' or line == '---':
+        continue
+    else:
+        doc.add_paragraph(line)
+
+doc.save('${DOCX_PATH}')
+print('DOCX saved')
+"
+fi
+```
+
+If both pandoc and python-docx fail, log the error but do not stop — the .md file is already saved.
+
 ---
 
 ## Step 7: Confirm Completion
@@ -225,13 +286,15 @@ SOAP_NOTE_EOF
 Report to the user. If multiple patients were detected, list each separately.
 
 For each patient:
-1. SOAP note saved to: `<CURRENT_CASE_DIR>/<CURRENT_STEM>_soap_note.md`
-2. One-sentence summary of chief complaint and primary assessment
+1. SOAP note (.md): `<CURRENT_CASE_DIR>/<CURRENT_STEM>_soap_note.md`
+2. SOAP note (.docx): `<CURRENT_CASE_DIR>/<CURRENT_STEM>_soap_note.docx`
+3. One-sentence summary of chief complaint and primary assessment
 
 **Example (single patient):**
 
 > **Done.** SOAP note generated for Dr. Sabbag.
 >
 > - SOAP Note: `Cases/Alan Chu/Alan Chu_soap_note.md`
+> - SOAP Note (Word): `Cases/Alan Chu/Alan Chu_soap_note.docx`
 >
 > Chief complaint: Right hand pain post carpal tunnel release. Primary assessment: Right thumb and index finger trigger finger, treated with corticosteroid injections today.
