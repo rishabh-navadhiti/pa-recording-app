@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('api', {
   saveDoctorName:    (name) => ipcRenderer.invoke('save-doctor-name', name),
   saveElevenLabsKey: (key)  => ipcRenderer.invoke('save-elevenlabs-key', key),
 
+  browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
+  processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
+
   onStateChange:     (cb) => ipcRenderer.on('state-change',    (_, s)   => cb(s)),
   onShowPatientForm: (cb) => ipcRenderer.on('show-patient-form', ()      => cb()),
   onSetupWarning:    (cb) => ipcRenderer.on('setup-warning',   (_, msg) => cb(msg))

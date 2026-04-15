@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen } = require('electron')
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -142,6 +142,48 @@ function togglePopup() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shared helpers — used by both recording flow and upload flow
+// ---------------------------------------------------------------------------
+
+function sanitizeName(name) {
+  if (!name) return null
+  const result = name.trim().toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_|_$/g, '')
+  return result || null
+}
+
+function buildCaseFolder(sanitizedName) {
+  const datestamp = new Date().toISOString().slice(0, 10)
+  const folderName = sanitizedName
+    ? `${sanitizedName}_${datestamp}`
+    : `recording_${datestamp}_${new Date().toISOString().slice(11, 19).replace(/:/g, '-')}`
+  const caseDir = path.join(CASES_DIR, folderName)
+  fs.mkdirSync(caseDir, { recursive: true })
+  return { caseDir, folderName }
+}
+
+function spawnTranscription(mp3Path, transcriptDest, soapNotePath) {
+  const transcribeProc = spawn(PYTHON, [
+    path.join(__dirname, 'python', 'transcribe.py'),
+    '--input', mp3Path,
+    '--output', transcriptDest
+  ], { cwd: __dirname, stdio: 'pipe' })
+
+  transcribeProc.stdout.on('data', d => log(`[transcribe.py] ${d.toString().trim()}`))
+  transcribeProc.stderr.on('data', d => log(`[transcribe.py ERR] ${d.toString().trim()}`))
+  transcribeProc.on('close', code => {
+    log(`transcribe.py exited ${code}`)
+    if (code === 0) {
+      spawnSoapGeneration(transcriptDest, soapNotePath)
+    }
+  })
+  log(`Transcription started for: ${mp3Path}`)
+}
 
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, isRetry = false) {
   // Build path relative to NOTES_DIR — that's the cwd claude runs from
@@ -431,15 +473,7 @@ function registerIpcHandlers() {
 
     log(`Patient name: ${name || '(none)'}`)
 
-    // Build case folder
-    const datestamp = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
-    const folderName = name
-      ? `${name}_${datestamp}`
-      : `recording_${datestamp}_${new Date().toISOString().slice(11, 19).replace(/:/g, '-')}`
-
-    const caseDir = path.join(CASES_DIR, folderName)
-    fs.mkdirSync(caseDir, { recursive: true })
-
+    const { caseDir, folderName } = buildCaseFolder(name)
     const mp3Filename = name ? `${name}.mp3` : 'recording.mp3'
     const mp3Dest = path.join(caseDir, mp3Filename)
     const transcriptDest = path.join(caseDir, 'transcript.md')
@@ -453,23 +487,7 @@ function registerIpcHandlers() {
     }
     tempMp3Path = null
 
-    // Spawn transcription (non-blocking — scribe can start next recording immediately)
-    const transcribeProc = spawn(PYTHON, [
-      path.join(__dirname, 'python', 'transcribe.py'),
-      '--input', mp3Dest,
-      '--output', transcriptDest
-    ], { cwd: __dirname, stdio: 'pipe' })
-
-    transcribeProc.stdout.on('data', d => log(`[transcribe.py] ${d.toString().trim()}`))
-    transcribeProc.stderr.on('data', d => log(`[transcribe.py ERR] ${d.toString().trim()}`))
-    transcribeProc.on('close', code => {
-      log(`transcribe.py exited ${code}`)
-      if (code === 0) {
-        spawnSoapGeneration(transcriptDest, soapNotePath)
-      }
-    })
-
-    log(`Transcription started for: ${mp3Dest}`)
+    spawnTranscription(mp3Dest, transcriptDest, soapNotePath)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
     setState(STATE.SESSION_ACTIVE)
@@ -479,15 +497,7 @@ function registerIpcHandlers() {
   // ---- submit-patient-name (registered once at startup) ----
   ipcMain.handle('submit-patient-name', (_, name) => {
     if (patientNameResolver) {
-      const sanitized = name
-        ? name.trim().toLowerCase()
-              .replace(/\s+/g, '_')           // spaces → underscore
-              .replace(/[^a-z0-9_-]/g, '')    // strip all non-alphanumeric except _ and -
-              .replace(/_{2,}/g, '_')          // collapse consecutive underscores
-              .replace(/^_|_$/g, '')           // trim leading/trailing underscores
-              || null                          // if result is empty string, treat as no name
-        : null
-      patientNameResolver(sanitized)
+      patientNameResolver(sanitizeName(name))
       patientNameResolver = null
     }
     return true
@@ -529,5 +539,48 @@ function registerIpcHandlers() {
       log(`ERROR saving ElevenLabs key: ${e.message}`)
       return { ok: false, error: e.message }
     }
+  })
+
+  // ---- browse-audio-file ----
+  ipcMain.handle('browse-audio-file', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select Audio File',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Audio Files', extensions: ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'mp4'] }
+      ]
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // ---- process-audio-file ----
+  ipcMain.handle('process-audio-file', (_, filePath, patientName) => {
+    log(`process-audio-file: ${filePath}`)
+    const name = sanitizeName(patientName)
+    log(`Patient name: ${name || '(none)'}`)
+
+    const { caseDir, folderName } = buildCaseFolder(name)
+    const ext = path.extname(filePath)
+    const audioFilename = name ? `${name}${ext}` : `recording${ext}`
+    const audioDest = path.join(caseDir, audioFilename)
+    const transcriptDest = path.join(caseDir, 'transcript.md')
+    const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
+
+    try {
+      fs.copyFileSync(filePath, audioDest)
+      log(`Audio copied to: ${audioDest}`)
+    } catch (e) {
+      log(`ERROR copying audio file: ${e.message}`)
+      setState(STATE.SESSION_ACTIVE)
+      return false
+    }
+
+    setState(STATE.PROCESSING)
+    spawnTranscription(audioDest, transcriptDest, soapNotePath)
+
+    // Return to SESSION_ACTIVE immediately — pipeline runs in background
+    setState(STATE.SESSION_ACTIVE)
+    return true
   })
 }
