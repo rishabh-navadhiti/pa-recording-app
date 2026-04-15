@@ -42,9 +42,7 @@ function SKIP($msg) { Write-Host "  --  $msg (not found / already removed)" -For
 function WARN($msg) { Write-Host "  !!  $msg" -ForegroundColor Red }
 
 # ── Elevation check ───────────────────────────────────────────────────────────
-if (-not ([Security.Principal.WindowsPrincipal]
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host ""
     WARN "This script must be run as Administrator."
     Write-Host "     Right-click PowerShell and choose 'Run as administrator'." -ForegroundColor Yellow
