@@ -58,7 +58,20 @@ Step 2 "Installing Python 3.12..."
 winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements `
     --override "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1"
 Refresh-Path
-OK "Python $(python --version 2>&1)"
+# Windows App Execution Aliases intercept the bare 'python' command even after
+# a real Python is installed. Locate the real interpreter directly to avoid the
+# Microsoft Store redirect stub.
+$pythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $pythonExe -or $pythonExe -like "*WindowsApps*") {
+    $pythonExe = "C:\Program Files\Python312\python.exe"
+}
+if (-not (Test-Path $pythonExe)) {
+    Write-Host "  WARNING: Python not found at expected path — PATH may need a restart" -ForegroundColor Yellow
+} else {
+    OK "Python $( & $pythonExe --version 2>&1 )"
+    # Override $env:Path so subsequent script steps use the real python
+    $env:Path = (Split-Path $pythonExe) + ";" + $env:Path
+}
 
 # ---- 3. Node.js LTS ---------------------------------------------------------
 Step 3 "Installing Node.js LTS..."
