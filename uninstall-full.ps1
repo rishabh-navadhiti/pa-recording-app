@@ -1,6 +1,6 @@
 # AI Medical Scribe - Full Uninstaller
-# Standalone script — run from anywhere in an elevated PowerShell terminal:
-#   powershell.exe -ExecutionPolicy Bypass -File "C:\path\to\uninstall-full.ps1"
+# Run in an elevated (Administrator) PowerShell terminal:
+#   irm https://raw.githubusercontent.com/rishabh-navadhiti/pa-recording-app/main/uninstall-full.ps1 | iex
 
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 Set-StrictMode -Version Latest
