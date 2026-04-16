@@ -243,6 +243,47 @@ function spawnDocxConversion(mdPath) {
   proc.on('error', err => log(`[docx ERR] failed to spawn md_to_docx: ${err.message}`))
 }
 
+function checkForUpdates() {
+  // Run git pull --ff-only in background — no blocking, no crash on failure
+  const gitPull = spawn('git', ['pull', '--ff-only'], {
+    cwd: __dirname,
+    stdio: 'pipe',
+    shell: process.platform === 'win32'
+  })
+
+  let stdout = ''
+  let stderr = ''
+  gitPull.stdout.on('data', d => { stdout += d.toString() })
+  gitPull.stderr.on('data', d => { stderr += d.toString() })
+
+  gitPull.on('close', code => {
+    if (code !== 0) {
+      log(`[update] git pull failed (exit ${code}): ${stderr.trim()}`)
+      return
+    }
+    const output = stdout.trim()
+    log(`[update] ${output}`)
+
+    // 'Already up to date.' means no changes — do nothing
+    if (output === 'Already up to date.') return
+
+    // New commits were pulled — notify the user via tray tooltip and OS notification
+    log('[update] New version pulled — notifying user')
+    if (tray) tray.setToolTip('AI Medical Scribe — updated, restart to apply')
+
+    const { Notification } = require('electron')
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'AI Medical Scribe updated',
+        body: 'A new version was downloaded. Restart the app to apply it.',
+        silent: true
+      }).show()
+    }
+  })
+
+  gitPull.on('error', err => log(`[update] git not found or failed: ${err.message}`))
+}
+
 function copyDirSync(src, dest) {
   fs.mkdirSync(dest, { recursive: true })
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -295,6 +336,9 @@ app.whenReady().then(() => {
   }
 
   log('App started')
+
+  // Auto-update: pull latest code from GitHub silently on startup
+  checkForUpdates()
 
   // Startup checks (log warnings, don't crash)
   try {
