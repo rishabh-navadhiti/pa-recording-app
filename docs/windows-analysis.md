@@ -1,6 +1,7 @@
 # Windows Compatibility & Production Readiness Analysis
 
 **Date:** 2026-04-13
+**Last updated:** 2026-04-16
 **Scope:** Full codebase review of AI Medical Scribe for Windows deployment
 **Method:** Code review + web research against industry best practices + real-world failure analysis from two user deployments
 
@@ -20,6 +21,7 @@
 ## 1. Windows Compatibility
 
 ### 1.1 Dependencies Audit
+> **Issue:** No issue flagged — all dependencies verified compatible.
 
 | Dependency | Version | Windows Status | Notes |
 |---|---|---|---|
@@ -39,6 +41,7 @@
 ### 1.2 Windows-Specific Code Paths
 
 #### 1.2.1 Audio Recording (`record.py`)
+> **Issue:** No issue flagged — correctly implemented.
 
 - **WASAPI loopback via PyAudioWPatch**: Correct approach for capturing system audio on Windows.
 - **stdin stop signal** (`main.js:400`): Correctly chosen — `TerminateProcess()` on Windows gives Python no chance to flush WAV/convert to MP3. Writing `"stop\n"` to stdin allows clean shutdown.
@@ -46,12 +49,14 @@
 - **Python executable** (`main.js:13`): Uses `python` on Windows, `python3` on macOS — correct.
 
 #### 1.2.2 Path Handling
+> **Issue:** No issue flagged — correctly implemented.
 
 - **`os.tmpdir()`** (`main.js:353`): Returns Windows temp dir correctly.
 - **Forward-slash conversion** (`main.js:148`): `path.relative().replace(/\\/g, '/')` for Claude prompts — correct.
 - **Backslash in spawn args**: All `path.join()` usages produce Windows backslashes, which Node's `spawn()` handles correctly.
 
 #### 1.2.3 Potential Compatibility Issues
+> **Issues:** m1 (patient name sanitization — ✅ FIXED), m6 (shell injection — Open)
 
 | Issue | File:Line | Severity | Description |
 |---|---|---|---|
@@ -66,6 +71,7 @@
 ### 2.1 Audio Capture Reliability
 
 #### 2.1.1 Loopback Device Selection — CRITICAL BUG
+> **Issue:** C1 — ✅ FIXED
 
 **Current code** (`record.py:116-128`):
 ```python
@@ -106,6 +112,7 @@ User 1 succeeded only because their machine happened to enumerate the correct lo
 **How Audacity and OBS handle this:** Both require the user to manually select the loopback device from a dropdown. They do not auto-match. For an unattended app like this, substring matching (per PyAudioWPatch's example) is the correct automated approach.
 
 #### 2.1.2 Zero-Frame Recording — No Guard
+> **Issue:** C2 — ✅ FIXED
 
 **Current code** (`record.py:94-96`):
 ```python
@@ -124,6 +131,7 @@ When 0 frames are captured:
 **Best practice:** Audacity and OBS both validate that audio data was actually captured before finalizing the file. The recording should fail explicitly if 0 frames were written.
 
 #### 2.1.3 WASAPI Loopback Silence Behavior
+> **Issue:** No issue flagged — documented platform limitation, minor for this use case.
 
 WASAPI loopback produces **no data** when the output device is completely silent (no audio playing). This is a documented Windows Core Audio API limitation.
 
@@ -134,6 +142,7 @@ WASAPI loopback produces **no data** when the output device is completely silent
 **Severity:** Minor for this use case — the scribe records during active calls where continuous audio is expected.
 
 ### 2.2 Permissions and Device Handling
+> **Issue:** No issue flagged — implementation is correct. Device change detection referenced in Section 3.2.
 
 | Practice | Current Implementation | Best Practice | Gap |
 |---|---|---|---|
@@ -143,6 +152,7 @@ WASAPI loopback produces **no data** when the output device is completely silent
 | Virtual audio device compatibility | No special handling | Should detect and warn | FxSound caused incorrect device selection for User 2 |
 
 ### 2.3 Error Handling and Recovery
+> **Issues:** C2 (0 frames — ✅ FIXED), C3 (SOAP file check — ✅ FIXED), M6 (no user feedback — ✅ FIXED), M7 (MP3 size — Open)
 
 | Scenario | Current Behavior | Expected Behavior | Severity |
 |---|---|---|---|
@@ -154,6 +164,7 @@ WASAPI loopback produces **no data** when the output device is completely silent
 | ffmpeg missing | Startup warning only, recording still attempted | Should prevent recording | **Minor** |
 
 ### 2.4 Performance Optimization
+> **Issue:** No issue flagged — all areas meet or exceed best practices.
 
 | Area | Current | Best Practice | Notes |
 |---|---|---|---|
@@ -167,6 +178,7 @@ WASAPI loopback produces **no data** when the output device is completely silent
 ## 3. Feature & Robustness Gaps
 
 ### 3.1 Multiple Audio Output Devices
+> **Issues:** C1 (loopback matching — ✅ FIXED), M5 (fallback preference — ✅ FIXED). Manual device selector added to Settings page.
 
 **Current state:** The app captures audio from one loopback device selected at recording start. If the user has multiple output devices (headphones, speakers, USB audio, S/PDIF, virtual devices like FxSound), the wrong one may be selected.
 
@@ -185,6 +197,7 @@ The app selected the S/PDIF loopback (first enumerated) instead of the Speakers 
 **Recommendation:** After fixing the substring matching bug, add an early validation step: start recording, wait 2-3 seconds, check if any frames were captured. If 0 frames, try the next loopback device. If all fail, error with actionable message.
 
 ### 3.2 Device Switching During Recording
+> **Issue:** No issue flagged — documented limitation, low priority for this use case.
 
 **Current state:** If the user switches their default audio output mid-recording (e.g., plugging in headphones), the recording continues capturing from the original device. The new audio goes to the new device and is not captured.
 
@@ -195,6 +208,7 @@ The app selected the S/PDIF loopback (first enumerated) instead of the Speakers 
 **Recommendation (low priority):** Document this limitation. If needed later, detect the change via `comtypes` or `pywin32` and warn the user.
 
 ### 3.3 System Audio from Other Applications
+> **Issue:** No issue flagged — inherent WASAPI limitation, no software fix possible.
 
 **Current state:** WASAPI loopback captures ALL system audio from the selected output device, not just the target application (e.g., Microsoft Teams). If other apps play sounds (notifications, music), those are mixed into the recording.
 
@@ -203,6 +217,7 @@ The app selected the S/PDIF loopback (first enumerated) instead of the Speakers 
 **Recommendation:** Document this as a known limitation. Advise users to mute notifications during recording.
 
 ### 3.4 Recording Interrupted by Other Applications
+> **Issue:** m2 (callback status ignored — ✅ FIXED)
 
 **Current state:** WASAPI shared mode allows multiple applications to use the same device simultaneously. Recording should not be interrupted by other apps.
 
@@ -213,6 +228,7 @@ The app selected the S/PDIF loopback (first enumerated) instead of the Speakers 
 **Recommendation:** Log the status parameter in the callback and handle `paInputOverflow` or `paInputUnderflow`.
 
 ### 3.5 Patient Name Sanitization
+> **Issue:** m1 — ✅ FIXED
 
 **Current code** (`main.js:471`):
 ```javascript
@@ -233,6 +249,7 @@ name.trim().toLowerCase().replace(/\s+/g, '_')
 ## 4. Installer & Setup Review
 
 ### 4.1 Current Installer Analysis (`install.ps1`)
+> **Issue:** No issue flagged — overview table; specific issues listed in subsections below.
 
 | Step | What It Does | Status | Notes |
 |---|---|---|---|
@@ -249,6 +266,7 @@ name.trim().toLowerCase().replace(/\s+/g, '_')
 | 11 | Task Scheduler autostart | **Issues** | See below |
 
 ### 4.2 Missing: Start Menu Shortcut — MAJOR
+> **Issue:** M1 — ✅ FIXED
 
 The installer registers the app in **Settings > Apps** (via Uninstall registry key) and sets up **Task Scheduler autostart**, but does **NOT create a Start Menu shortcut**.
 
@@ -271,6 +289,7 @@ $shortcut.Save()
 ```
 
 ### 4.3 Autostart Mechanism: VBS Wrapper Risks
+> **Issue:** M4 — ✅ FIXED (replaced VBS with direct `electron.exe` launch)
 
 **Current approach:** Task Scheduler → `wscript.exe launch.vbs` → `cmd /c npm start`
 
@@ -287,6 +306,7 @@ $shortcut.Save()
 **Better alternative:** Electron's `app.setLoginItemSettings({ openAtLogin: true })` creates a Registry Run key and is the idiomatic approach. If the Task Scheduler's crash-restart feature (`RestartCount: 3`) is needed, point the Task Scheduler action directly at `node.exe %installDir%\node_modules\electron\dist\electron.exe .` instead of going through VBS.
 
 ### 4.4 PATH Updates Not Broadcast
+> **Issue:** m4 — Open
 
 **Current code** (`install.ps1:21-26`):
 ```powershell
@@ -304,12 +324,14 @@ This updates the registry and the current process, but does **not broadcast `WM_
 **Impact:** If the user opens a new terminal after installation, the `claude` CLI may not be found until they log out and back in.
 
 ### 4.5 Missing Registry Metadata
+> **Issue:** m5 — Open
 
 The Uninstall registry key is missing:
 - `DisplayIcon` — no app icon shown in Settings > Apps
 - `EstimatedSize` — no install size shown
 
 ### 4.6 Uninstaller Issues (`uninstall.ps1`)
+> **Issue:** M8 — ✅ FIXED (now filters by install path, only kills this app's processes)
 
 1. **Kills all Electron processes** (`uninstall.ps1:20`): `Get-Process -Name "electron"` kills ALL Electron apps, not just this one. If the user runs VS Code (which is Electron-based), it will be killed.
 
@@ -320,6 +342,7 @@ The Uninstall registry key is missing:
 ## 5. Logging & Diagnostics
 
 ### 5.1 Current Logging Architecture
+> **Issue:** m7 (record.py stderr for INFO logs — ✅ FIXED, now routes to stdout)
 
 | Component | Log Target | Format |
 |---|---|---|
@@ -330,6 +353,7 @@ The Uninstall registry key is missing:
 | Claude SOAP | stdout/stderr (captured by main.js) | `[soap] ...` prefix added by main.js |
 
 ### 5.2 Case Folder Name Missing from Logs — MAJOR
+> **Issue:** M2 — ✅ FIXED (all pipeline log lines now prefixed with `[folderName]`)
 
 **Problem:** Log entries do not include the case folder name, making it difficult to correlate log entries with specific patient cases when debugging.
 
@@ -366,6 +390,7 @@ The Uninstall registry key is missing:
 ```
 
 ### 5.3 Claude Skill Invocation Detection — MAJOR
+> **Issues:** C3 (SOAP file check + retry — ✅ FIXED), M3 (skill detection — ✅ FIXED)
 
 **Problem:** There is no way to detect from logs whether the Claude skill was properly invoked vs. Claude running without the skill (which produces different output).
 
@@ -406,6 +431,7 @@ The Uninstall registry key is missing:
 3. Log the final file count in the case folder after the pipeline completes.
 
 ### 5.4 Missing Diagnostic Information
+> **Issues:** m3 (startup diagnostics — ✅ FIXED), m8 (MP3 file size — Open)
 
 | Missing Info | Where | Impact |
 |---|---|---|
@@ -436,6 +462,7 @@ The Uninstall registry key is missing:
 ```
 
 ### 5.5 Recommended Log Format
+> **Issue:** M2 (case context in logs — ✅ FIXED). Severity-level prefixes not yet implemented.
 
 **Current format:**
 ```
@@ -471,11 +498,11 @@ Benefits:
 | # | Status | Issue | File | Description |
 |---|---|---|---|---|
 | M1 | ✅ **FIXED** | No Start Menu shortcut | `install.ps1` | Added Start Menu shortcut creation using `WScript.Shell` COM object. Shortcut also removed by `uninstall.ps1`. |
-| M2 | Open | Case folder name missing from logs | `main.js` | When multiple cases are processed in a session, log entries cannot be correlated with specific cases without reading the full path from `[transcribe.py]` or `[soap]` lines. |
+| M2 | ✅ **FIXED** | Case folder name missing from logs | `main.js` | All pipeline log lines (`[transcribe]`, `[soap]`, `[docx]`) now prefixed with `[folderName]` tag for per-case filtering. |
 | M3 | ✅ **FIXED** | No Claude skill invocation detection | `main.js:170-175` | Addressed as part of C3 fix — file existence check + retry covers this entirely. Log messages clearly distinguish "SOAP note confirmed", "skill may not have been invoked — retrying", and "still missing after retry". |
-| M4 | Open | VBS wrapper antivirus risk | `install.ps1:137-143`, `launch.vbs` | `wscript.exe` running VBS is a common malware vector. Multiple antivirus products (Bitdefender, ESET, PC Matic) are known to flag it. Silent failure if blocked. |
+| M4 | ✅ **FIXED** | VBS wrapper antivirus risk | `install.ps1` | Replaced `wscript.exe launch.vbs` with direct `electron.exe .` in Task Scheduler and Start Menu shortcut. Eliminates antivirus false positive risk entirely. |
 | M5 | ✅ **FIXED** | Fallback loopback selection picks first device without preference | `record.py:122-126` | Addressed as part of C1 fix — new 5-pass matching algorithm prefers speaker/headphone devices over digital/S/PDIF before falling back to first available. |
-| M6 | Open | Transcription failure produces no user-visible feedback | `main.js:453-458` | `transcribe.py` exits 1 on API error, `main.js` logs it, but the UI shows nothing. The scribe doesn't know their case failed. |
+| M6 | ✅ **FIXED** | Transcription failure produces no user-visible feedback | `main.js` | OS notifications via Electron `Notification` API: "Transcription failed" on error, "SOAP generation failed" on skill failure, "SOAP note ready" on success. |
 | M7 | Open | MP3 file size not validated before transcription | `main.js:436-441` | The code checks if the temp MP3 file exists, but doesn't check its size. A 1 KB empty MP3 passes the existence check. |
 | M8 | ✅ **FIXED** | Uninstaller kills all Electron processes | `uninstall.ps1:20` | Now filters by `MainModule.FileName` containing the install directory path. Only kills the AI Medical Scribe electron/node process, not VS Code or other Electron apps. |
 
@@ -485,14 +512,14 @@ Benefits:
 |---|---|---|---|---|
 | m1 | ✅ **FIXED** | Patient name sanitization incomplete | `main.js:471` | Now strips all characters except `a-z`, `0-9`, `_`, and `-` after lowercasing. Collapses consecutive underscores and trims leading/trailing underscores. Empty result treated as no name. Evidence addressed: `test,_patient` → `test_patient`. |
 | m2 | ✅ **FIXED** | Audio callback status parameter ignored | `record.py:68` | Status parameter is now checked and logged as a WARNING on every callback invocation where it is set. |
-| m3 | Open | No startup diagnostics (OS version, package versions, audio device list) | `record.py`, `main.js` | Makes remote debugging of user issues much harder. |
+| m3 | ✅ **FIXED** | No startup diagnostics (OS version, package versions, audio device list) | `main.js` | Startup now logs OS, Electron, Node, Python, ffmpeg versions and full audio device list (Windows). |
 | m4 | Open | PATH updates not broadcast via `WM_SETTINGCHANGE` | `install.ps1:22-26` | Other running processes don't see PATH updates until they restart. |
 | m5 | Open | Missing `DisplayIcon` and `EstimatedSize` in Uninstall registry | `install.ps1:174-181` | No app icon or size shown in Settings > Apps. |
 | m6 | Open | `shell: true` with user-supplied prompt string | `main.js:157-165` | Doctor names or transcript paths with shell metacharacters (`$`, `` ` ``, `&`) could cause command injection. |
-| m7 | Open | `record.py` stderr used for INFO logs | `record.py` | All logging goes to stderr (via `logging.StreamHandler()`), which `main.js:362` labels as `[record.py ERR]`. This is confusing in the log — normal operation looks like errors. |
+| m7 | ✅ **FIXED** | `record.py` stderr used for INFO logs | `record.py` | Logging now routes to stdout via explicit `StreamHandler(sys.stdout)`. stderr reserved for actual errors. `main.js` labels stderr as `[record.py ERR]` which is now accurate. |
 | m8 | Open | No MP3 file size logged | `main.js` | After moving the MP3, the file size should be logged to help detect empty recordings from logs alone. |
 | m9 | Open | No timeout on Claude SOAP generation | `main.js:158-176` | If Claude hangs, the SOAP generation blocks indefinitely. No timeout or watchdog. |
-| m10 | Open | `transcribe.py` writes failure note as transcript | `transcribe.py:137-139` | On API error, writes `*(Transcription failed: ...)*` to the transcript file. If someone later re-runs the pipeline, this "transcript" would be fed to Claude for SOAP generation. |
+| m10 | ✅ **FIXED** | `transcribe.py` writes failure note as transcript | `transcribe.py` | On failure, now only logs the error and exits 1 — no longer writes a fake transcript file. File absence is the signal. |
 
 ---
 
