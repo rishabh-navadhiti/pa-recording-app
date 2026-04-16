@@ -17,7 +17,12 @@ contextBridge.exposeInMainWorld('api', {
   browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
   processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
 
-  onStateChange:     (cb) => ipcRenderer.on('state-change',    (_, s)   => cb(s)),
-  onShowPatientForm: (cb) => ipcRenderer.on('show-patient-form', ()      => cb()),
-  onSetupWarning:    (cb) => ipcRenderer.on('setup-warning',   (_, msg) => cb(msg))
+  getSettings:        ()          => ipcRenderer.invoke('get-settings'),
+  saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
+  listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
+
+  onStateChange:          (cb) => ipcRenderer.on('state-change',          (_, s)   => cb(s)),
+  onShowPatientForm:      (cb) => ipcRenderer.on('show-patient-form',     ()       => cb()),
+  onSetupWarning:         (cb) => ipcRenderer.on('setup-warning',         (_, msg) => cb(msg)),
+  onAutoStartRecording:   (cb) => ipcRenderer.on('auto-start-recording',  ()       => cb())
 })

@@ -133,12 +133,6 @@ def main():
         transcribe(args.input, args.output)
     except Exception as e:
         log.error(f'Transcription failed: {e}')
-        try:
-            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-            with open(args.output, 'w', encoding='utf-8') as f:
-                f.write(f'## Transcript\n\n*(Transcription failed: {e})*\n')
-        except Exception as write_err:
-            log.error(f'Could not write failure note: {write_err}')
         sys.exit(1)
 
 

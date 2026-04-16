@@ -21,11 +21,39 @@ body {
   min-height: 100vh;
 }
 
+/* Header row */
+#header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 /* Status row */
 #status-row {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #666;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  color: #e0e0e0;
+  background: #333;
 }
 
 #indicator {
@@ -275,6 +303,74 @@ button.outline:hover { opacity: 0.85; }
   font-size: 12px;
   color: #ffaa44;
   line-height: 1.5;
+}
+
+/* Settings view */
+#settings-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #222;
+  border-radius: 6px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #e0e0e0;
+  cursor: pointer;
+}
+
+.setting-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #1D9E75;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.setting-hint {
+  font-size: 11px;
+  color: #666;
+  padding-left: 22px;
+}
+
+#device-select {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+}
+
+#device-select:focus {
+  border-color: #1D9E75;
+}
+
+#device-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Utility */

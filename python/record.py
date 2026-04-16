@@ -17,14 +17,19 @@ import tempfile
 import threading
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 log = logging.getLogger(__name__)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output', required=True, help='Path for output .mp3 file')
+    parser.add_argument('--output', required=False, help='Path for output .mp3 file')
     parser.add_argument('--device', type=int, default=None, help='Device index override')
+    parser.add_argument('--list-devices', action='store_true', help='List loopback devices as JSON and exit')
     return parser.parse_args()
 
 
@@ -256,8 +261,57 @@ def wav_to_mp3(wav_path, mp3_path, original_sample_rate):
 # Entry point
 # ---------------------------------------------------------------------------
 
+def list_devices_json():
+    """Print loopback devices as JSON to stdout and exit."""
+    import json
+    if sys.platform == 'win32':
+        import pyaudiowpatch as pyaudio
+        p = pyaudio.PyAudio()
+        try:
+            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_idx = wasapi_info.get('defaultOutputDevice', -1)
+            default_name = ''
+            if default_idx >= 0:
+                default_name = p.get_device_info_by_index(default_idx).get('name', '')
+
+            devices = []
+            for i in range(p.get_device_count()):
+                dev = p.get_device_info_by_index(i)
+                if dev.get('isLoopbackDevice') and dev.get('maxInputChannels', 0) > 0:
+                    devices.append({
+                        'index': i,
+                        'name': dev['name'],
+                        'isDefault': default_name != '' and dev['name'].startswith(default_name)
+                    })
+            print(json.dumps({'devices': devices, 'defaultOutput': default_name}))
+        finally:
+            p.terminate()
+    elif sys.platform == 'darwin':
+        import sounddevice as sd
+        devices = []
+        for i, dev in enumerate(sd.query_devices()):
+            if 'BlackHole' in dev['name'] and dev['max_input_channels'] > 0:
+                devices.append({
+                    'index': i,
+                    'name': dev['name'],
+                    'isDefault': True
+                })
+        print(json.dumps({'devices': devices, 'defaultOutput': 'BlackHole'}))
+    else:
+        print(json.dumps({'devices': [], 'defaultOutput': ''}))
+
+
 def main():
     args = parse_args()
+
+    if args.list_devices:
+        list_devices_json()
+        return
+
+    if not args.output:
+        print('ERROR: --output is required when not using --list-devices', file=sys.stderr)
+        sys.exit(1)
+
     stop_event = threading.Event()
 
     def handle_stop(signum, frame):

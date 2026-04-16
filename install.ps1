@@ -148,19 +148,14 @@ OK "Config file ready - add your ElevenLabs key in the app after launch"
 # ---- 11. Autostart via Task Scheduler ---------------------------------------
 Step 11 "Registering autostart (Task Scheduler)..."
 
-# Write launch.vbs — launches electron with no console window
-$vbsPath = Join-Path $installDir "launch.vbs"
-@"
-Dim shell
-Set shell = CreateObject("WScript.Shell")
-shell.CurrentDirectory = "$installDir"
-shell.Run "cmd /c npm start", 0, False
-Set shell = Nothing
-"@ | Set-Content $vbsPath -Encoding ASCII
+# Launch Electron directly — it's a GUI app so no console window appears.
+# This avoids wscript.exe + VBS which triggers antivirus false positives
+# (Bitdefender, ESET, PC Matic flag VBS as a malware vector).
+$electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
 
 $action = New-ScheduledTaskAction `
-    -Execute  "wscript.exe" `
-    -Argument "`"$vbsPath`"" `
+    -Execute  $electronExe `
+    -Argument "." `
     -WorkingDirectory $installDir
 
 $trigger = New-ScheduledTaskTrigger -AtLogon -User "$env:USERDOMAIN\$env:USERNAME"
@@ -188,8 +183,8 @@ Write-Host "[extra] Creating Start Menu shortcut..." -ForegroundColor Yellow
 $startMenuPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
 $WshShell  = New-Object -ComObject WScript.Shell
 $shortcut  = $WshShell.CreateShortcut("$startMenuPath\AI Medical Scribe.lnk")
-$shortcut.TargetPath       = "wscript.exe"
-$shortcut.Arguments        = "`"$vbsPath`""
+$shortcut.TargetPath       = $electronExe
+$shortcut.Arguments        = "."
 $shortcut.WorkingDirectory = $installDir
 $shortcut.Description      = "AI Medical Scribe — audio capture and SOAP note generator"
 $shortcut.Save()
@@ -219,4 +214,4 @@ Write-Host ""
 Write-Host "IMPORTANT: Run 'claude login' once in a terminal to authenticate Claude CLI." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Launching AI Medical Scribe..." -ForegroundColor Cyan
-Start-Process "wscript.exe" -ArgumentList "`"$vbsPath`"" -WorkingDirectory $installDir
+Start-Process $electronExe -ArgumentList "." -WorkingDirectory $installDir

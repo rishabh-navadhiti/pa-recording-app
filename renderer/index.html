@@ -9,10 +9,40 @@
 <body>
   <div id="app">
 
-    <!-- Status row -->
-    <div id="status-row">
-      <div id="indicator"></div>
-      <span id="status-label">Loading...</span>
+    <!-- Header row (status + gear icon) -->
+    <div id="header-row">
+      <div id="status-row">
+        <div id="indicator"></div>
+        <span id="status-label">Loading...</span>
+      </div>
+      <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
+    </div>
+
+    <!-- Settings view (hidden by default) -->
+    <div id="settings-view" class="hidden">
+      <div class="settings-header">
+        <span>Settings</span>
+        <button id="btn-settings-close" class="icon-btn" title="Back">&#10005;</button>
+      </div>
+
+      <div class="settings-group">
+        <label class="setting-row">
+          <input type="checkbox" id="chk-auto-record" />
+          <span>Auto-start recording after save</span>
+        </label>
+        <div class="setting-hint">Next recording begins immediately when you save a case</div>
+      </div>
+
+      <div class="settings-group">
+        <label class="setting-row">
+          <input type="checkbox" id="chk-manual-device" />
+          <span>Manually select audio device</span>
+        </label>
+        <div class="setting-hint">Override automatic loopback device detection</div>
+        <select id="device-select" class="hidden" disabled>
+          <option value="">Loading devices...</option>
+        </select>
+      </div>
     </div>
 
     <!-- Timer (visible only while RECORDING) -->

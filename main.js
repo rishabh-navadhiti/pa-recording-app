@@ -58,6 +58,29 @@ function log(msg) {
 }
 
 // ---------------------------------------------------------------------------
+// Settings helpers (settings.json in NOTES_DIR)
+// ---------------------------------------------------------------------------
+
+const SETTINGS_PATH = path.join(NOTES_DIR, 'settings.json')
+
+const DEFAULT_SETTINGS = {
+  autoRecord: false,
+  manualDeviceSelection: false,
+  selectedDeviceIndex: null
+}
+
+function readSettings() {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')) }
+  } catch { return { ...DEFAULT_SETTINGS } }
+}
+
+function writeSettings(settings) {
+  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true })
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8')
+}
+
+// ---------------------------------------------------------------------------
 // .env helpers
 // ---------------------------------------------------------------------------
 
@@ -167,36 +190,44 @@ function buildCaseFolder(sanitizedName) {
   return { caseDir, folderName }
 }
 
-function spawnTranscription(mp3Path, transcriptDest, soapNotePath) {
+function notifyUser(title, body) {
+  const { Notification } = require('electron')
+  if (Notification.isSupported()) {
+    new Notification({ title, body, silent: false }).show()
+  }
+}
+
+function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
   const transcribeProc = spawn(PYTHON, [
     path.join(__dirname, 'python', 'transcribe.py'),
     '--input', mp3Path,
     '--output', transcriptDest
   ], { cwd: __dirname, stdio: 'pipe' })
 
-  transcribeProc.stdout.on('data', d => log(`[transcribe.py] ${d.toString().trim()}`))
-  transcribeProc.stderr.on('data', d => log(`[transcribe.py ERR] ${d.toString().trim()}`))
+  transcribeProc.stdout.on('data', d => log(`${tag}[transcribe] ${d.toString().trim()}`))
+  transcribeProc.stderr.on('data', d => log(`${tag}[transcribe ERR] ${d.toString().trim()}`))
   transcribeProc.on('close', code => {
-    log(`transcribe.py exited ${code}`)
+    log(`${tag}[transcribe] exited ${code}`)
     if (code === 0) {
-      spawnSoapGeneration(transcriptDest, soapNotePath)
+      spawnSoapGeneration(transcriptDest, soapNotePath, caseTag)
+    } else {
+      notifyUser('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
     }
   })
-  log(`Transcription started for: ${mp3Path}`)
+  log(`${tag}Transcription started for: ${mp3Path}`)
 }
 
-function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, isRetry = false) {
+function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
   // Build path relative to NOTES_DIR — that's the cwd claude runs from
   const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
   const doctor = readEnv()['DOCTOR_NAME'] || 'unknown'
   const prompt = `generate a note for doctor ${doctor} using transcript ${relTranscript}`
 
   const attempt = isRetry ? ' (retry)' : ''
-  log(`[soap] Spawning${attempt}: claude -p "${prompt}"`)
+  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"`)
 
-  // On Windows, spawn() with shell:true joins the args array without quoting, so a
-  // prompt containing spaces is split and Claude only receives the first word via -p.
-  // Fix: build the full command string so the prompt is explicitly quoted.
   const safePrompt = prompt.replace(/"/g, '\\"')
   const claudeProc = spawn(
     `claude -p "${safePrompt}" --dangerously-skip-permissions`,
@@ -204,43 +235,47 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, isRetry = false)
     {
       cwd: NOTES_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true  // needed on all platforms to resolve 'claude' from PATH
+      shell: true
     }
   )
 
-  claudeProc.stdout.on('data', d => log(`[soap] ${d.toString().trim()}`))
-  claudeProc.stderr.on('data', d => log(`[soap ERR] ${d.toString().trim()}`))
+  claudeProc.stdout.on('data', d => log(`${tag}[soap] ${d.toString().trim()}`))
+  claudeProc.stderr.on('data', d => log(`${tag}[soap ERR] ${d.toString().trim()}`))
   claudeProc.on('close', code => {
-    log(`[soap] claude exited ${code}`)
+    log(`${tag}[soap] claude exited ${code}`)
     if (code === 0 && soapNoteMdPath) {
-      // Verify the skill actually wrote the SOAP note file.
-      // When the skill is not invoked, Claude dumps the note to stdout only
-      // (no file saved, case folder has 2 files instead of 4).
       if (fs.existsSync(soapNoteMdPath)) {
-        log(`[soap] SOAP note confirmed: ${soapNoteMdPath}`)
-        spawnDocxConversion(soapNoteMdPath)
+        log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
+        spawnDocxConversion(soapNoteMdPath, caseTag)
       } else if (!isRetry) {
-        log(`[soap] WARNING: claude exited 0 but SOAP note file not found — skill may not have been invoked. Retrying...`)
-        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, true)
+        log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found — skill may not have been invoked. Retrying...`)
+        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, true)
       } else {
-        log(`[soap] ERROR: SOAP note file still missing after retry — manual intervention required: ${soapNoteMdPath}`)
+        log(`${tag}[soap] ERROR: SOAP note file still missing after retry — manual intervention required: ${soapNoteMdPath}`)
+        notifyUser('SOAP generation failed', `Case: ${caseTag || 'unknown'} — skill may not have been invoked`)
       }
     }
   })
-  claudeProc.on('error', err => log(`[soap ERR] failed to spawn claude: ${err.message}`))
+  claudeProc.on('error', err => log(`${tag}[soap ERR] failed to spawn claude: ${err.message}`))
 }
 
-function spawnDocxConversion(mdPath) {
-  log(`[docx] Converting: ${mdPath}`)
+function spawnDocxConversion(mdPath, caseTag) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
+  log(`${tag}[docx] Converting: ${mdPath}`)
   const proc = spawn(PYTHON, [
     path.join(__dirname, 'python', 'md_to_docx.py'),
     mdPath
   ], { cwd: __dirname, stdio: 'pipe' })
 
-  proc.stdout.on('data', d => log(`[docx] Saved: ${d.toString().trim()}`))
-  proc.stderr.on('data', d => log(`[docx ERR] ${d.toString().trim()}`))
-  proc.on('close', code => log(`[docx] exited ${code}`))
-  proc.on('error', err => log(`[docx ERR] failed to spawn md_to_docx: ${err.message}`))
+  proc.stdout.on('data', d => log(`${tag}[docx] Saved: ${d.toString().trim()}`))
+  proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
+  proc.on('close', code => {
+    log(`${tag}[docx] exited ${code}`)
+    if (code === 0) {
+      notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
+    }
+  })
+  proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
 }
 
 function checkForUpdates() {
@@ -340,20 +375,45 @@ app.whenReady().then(() => {
   // Auto-update: pull latest code from GitHub silently on startup
   checkForUpdates()
 
-  // Startup checks (log warnings, don't crash)
+  // Startup diagnostics
+  log('=== Diagnostics ===')
+  log(`OS: ${process.platform} ${os.release()} (${os.arch()})`)
+  log(`Electron: ${process.versions.electron}`)
+  log(`Node: ${process.version}`)
+
   try {
-    execSync(`${PYTHON} --version`, { stdio: 'pipe' })
-    log(`Python OK: ${execSync(`${PYTHON} --version`, { stdio: 'pipe' }).toString().trim()}`)
+    const pyVer = execSync(`${PYTHON} --version`, { stdio: 'pipe' }).toString().trim()
+    log(`Python: ${pyVer}`)
   } catch {
     log('WARNING: Python not found')
   }
 
   try {
-    execSync('ffmpeg -version', { stdio: 'pipe' })
-    log('ffmpeg OK')
+    const ffVer = execSync('ffmpeg -version', { stdio: 'pipe' }).toString().split('\n')[0].trim()
+    log(`ffmpeg: ${ffVer}`)
   } catch {
     log('WARNING: ffmpeg not found — MP3 conversion via pydub may fail')
   }
+
+  // Log audio device list in background (Windows only — macOS uses BlackHole)
+  if (process.platform === 'win32') {
+    const devProc = spawn(PYTHON, [
+      path.join(__dirname, 'python', 'record.py'), '--list-devices'
+    ], { cwd: __dirname, stdio: 'pipe' })
+    let devOut = ''
+    devProc.stdout.on('data', d => { devOut += d.toString() })
+    devProc.on('close', code => {
+      if (code === 0) {
+        try {
+          const info = JSON.parse(devOut.trim())
+          log(`Default output: ${info.defaultOutput}`)
+          info.devices.forEach(d => log(`  Loopback [${d.index}]: ${d.name}${d.isDefault ? ' (default)' : ''}`))
+        } catch { /* ignore parse errors */ }
+      }
+    })
+  }
+
+  log('=== End Diagnostics ===')
 
   // Create tray
   tray = new Tray(path.join(__dirname, 'assets', 'tray-icon.png'))
@@ -467,18 +527,26 @@ function registerIpcHandlers() {
     tempMp3Path = path.join(os.tmpdir(), `rec_${Date.now()}.mp3`)
     log(`Temp MP3: ${tempMp3Path}`)
 
-    recordingProcess = spawn(PYTHON, [
+    const settings = readSettings()
+    const recordArgs = [
       path.join(__dirname, 'python', 'record.py'),
       '--output', tempMp3Path
-    ], { cwd: __dirname })
+    ]
+    if (settings.manualDeviceSelection && settings.selectedDeviceIndex != null) {
+      recordArgs.push('--device', String(settings.selectedDeviceIndex))
+      log(`Using manual device index: ${settings.selectedDeviceIndex}`)
+    }
+
+    recordingProcess = spawn(PYTHON, recordArgs, { cwd: __dirname })
 
     recordingProcess.stdout.on('data', d => log(`[record.py] ${d.toString().trim()}`))
     recordingProcess.stderr.on('data', d => {
       const msg = d.toString().trim()
+      if (!msg) return
       log(`[record.py ERR] ${msg}`)
       // Surface BlackHole / setup errors to renderer
-      if (msg.startsWith('ERROR:')) {
-        win.webContents.send('setup-warning', msg.replace('ERROR: ', ''))
+      if (msg.includes('ERROR')) {
+        win.webContents.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
       }
     })
     recordingProcess.on('exit', code => {
@@ -547,10 +615,16 @@ function registerIpcHandlers() {
     }
     tempMp3Path = null
 
-    spawnTranscription(mp3Dest, transcriptDest, soapNotePath)
+    spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
     setState(STATE.SESSION_ACTIVE)
+
+    // If auto-record is enabled, tell the renderer to trigger a new recording
+    if (readSettings().autoRecord && win && !win.isDestroyed()) {
+      win.webContents.send('auto-start-recording')
+    }
+
     return true
   })
 
@@ -601,6 +675,49 @@ function registerIpcHandlers() {
     }
   })
 
+  // ---- get-settings ----
+  ipcMain.handle('get-settings', () => readSettings())
+
+  // ---- save-settings ----
+  ipcMain.handle('save-settings', (_, settings) => {
+    try {
+      const current = readSettings()
+      const merged = { ...current, ...settings }
+      writeSettings(merged)
+      log(`Settings saved: ${JSON.stringify(merged)}`)
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving settings: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // ---- list-audio-devices ----
+  ipcMain.handle('list-audio-devices', () => {
+    return new Promise(resolve => {
+      const proc = spawn(PYTHON, [
+        path.join(__dirname, 'python', 'record.py'),
+        '--list-devices'
+      ], { cwd: __dirname, stdio: 'pipe' })
+
+      let stdout = ''
+      proc.stdout.on('data', d => { stdout += d.toString() })
+      proc.stderr.on('data', d => log(`[list-devices] ${d.toString().trim()}`))
+      proc.on('close', code => {
+        if (code !== 0) {
+          resolve({ devices: [], defaultOutput: '' })
+          return
+        }
+        try {
+          resolve(JSON.parse(stdout.trim()))
+        } catch {
+          resolve({ devices: [], defaultOutput: '' })
+        }
+      })
+      proc.on('error', () => resolve({ devices: [], defaultOutput: '' }))
+    })
+  })
+
   // ---- browse-audio-file ----
   ipcMain.handle('browse-audio-file', async () => {
     const result = await dialog.showOpenDialog(win, {
@@ -637,7 +754,7 @@ function registerIpcHandlers() {
     }
 
     setState(STATE.PROCESSING)
-    spawnTranscription(audioDest, transcriptDest, soapNotePath)
+    spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName)
 
     // Return to SESSION_ACTIVE immediately — pipeline runs in background
     setState(STATE.SESSION_ACTIVE)

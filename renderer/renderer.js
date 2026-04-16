@@ -24,6 +24,12 @@ const patientInput  = document.getElementById('patient-input')
 const btnSaveName   = document.getElementById('btn-save-name')
 const btnSkipName   = document.getElementById('btn-skip-name')
 const formCountdown = document.getElementById('form-countdown')
+const btnSettings        = document.getElementById('btn-settings')
+const settingsView       = document.getElementById('settings-view')
+const btnSettingsClose   = document.getElementById('btn-settings-close')
+const chkAutoRecord      = document.getElementById('chk-auto-record')
+const chkManualDevice    = document.getElementById('chk-manual-device')
+const deviceSelect       = document.getElementById('device-select')
 const uploadForm         = document.getElementById('upload-form')
 const uploadPatientInput = document.getElementById('upload-patient-input')
 const btnUploadSaveName  = document.getElementById('btn-upload-save-name')
@@ -70,7 +76,13 @@ function stopTimer() {
 // Render UI for a given state
 // ---------------------------------------------------------------------------
 
+let currentRenderedState = STATE.IDLE
+let settingsOpen = false
+
 function render(state) {
+  currentRenderedState = state
+  if (settingsOpen) return
+
   // Reset shared elements
   actionButtons.innerHTML = ''
   indicator.className = ''
@@ -302,6 +314,87 @@ doctorInput.addEventListener('keydown', e => {
 })
 
 // ---------------------------------------------------------------------------
+// Settings view
+// ---------------------------------------------------------------------------
+
+function showSettings() {
+  settingsOpen = true
+  // Hide main content elements
+  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning]
+    .forEach(el => { if (el) el.style.display = 'none' })
+  settingsView.classList.remove('hidden')
+  loadSettings()
+}
+
+function hideSettings() {
+  settingsOpen = false
+  settingsView.classList.add('hidden')
+  // Restore display on elements we hid
+  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning]
+    .forEach(el => { if (el) el.style.display = '' })
+  render(currentRenderedState)
+}
+
+async function loadSettings() {
+  const s = await api.getSettings()
+  chkAutoRecord.checked = s.autoRecord || false
+  chkManualDevice.checked = s.manualDeviceSelection || false
+  if (s.manualDeviceSelection) {
+    await loadDeviceList(s.selectedDeviceIndex)
+    deviceSelect.disabled = false
+    deviceSelect.classList.remove('hidden')
+  } else {
+    deviceSelect.disabled = true
+    deviceSelect.classList.add('hidden')
+  }
+}
+
+async function loadDeviceList(selectedIndex) {
+  deviceSelect.innerHTML = '<option value="">Loading...</option>'
+  const result = await api.listAudioDevices()
+  deviceSelect.innerHTML = ''
+
+  if (result.devices.length === 0) {
+    deviceSelect.innerHTML = '<option value="">No loopback devices found</option>'
+    return
+  }
+
+  result.devices.forEach(dev => {
+    const opt = document.createElement('option')
+    opt.value = dev.index
+    opt.textContent = dev.name + (dev.isDefault ? ' (default)' : '')
+    if (selectedIndex != null && dev.index === selectedIndex) opt.selected = true
+    deviceSelect.appendChild(opt)
+  })
+}
+
+btnSettings.addEventListener('click', showSettings)
+btnSettingsClose.addEventListener('click', hideSettings)
+
+chkAutoRecord.addEventListener('change', () => {
+  api.saveSettings({ autoRecord: chkAutoRecord.checked })
+})
+
+chkManualDevice.addEventListener('change', async () => {
+  const enabled = chkManualDevice.checked
+  if (enabled) {
+    deviceSelect.classList.remove('hidden')
+    deviceSelect.disabled = false
+    await loadDeviceList(null)
+    api.saveSettings({ manualDeviceSelection: true, selectedDeviceIndex: null })
+  } else {
+    deviceSelect.classList.add('hidden')
+    deviceSelect.disabled = true
+    api.saveSettings({ manualDeviceSelection: false, selectedDeviceIndex: null })
+  }
+})
+
+deviceSelect.addEventListener('change', () => {
+  const val = deviceSelect.value
+  api.saveSettings({ selectedDeviceIndex: val !== '' ? parseInt(val, 10) : null })
+})
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
@@ -313,6 +406,10 @@ async function init() {
   api.onStateChange(render)
   api.onShowPatientForm(showPatientForm)
   api.onSetupWarning(showSetupWarning)
+  api.onAutoStartRecording(async () => {
+    // Small delay so the UI finishes transitioning to SESSION_ACTIVE
+    setTimeout(() => api.startRecording(), 500)
+  })
 }
 
 init().catch(console.error)
