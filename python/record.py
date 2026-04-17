@@ -37,7 +37,7 @@ def parse_args():
 # Windows — WASAPI loopback via PyAudioWPatch
 # ---------------------------------------------------------------------------
 
-def record_windows(output_mp3, device_index_override, stop_event):
+def record_windows(output_mp3, device_index_override, stop_event, pause_event):
     import pyaudiowpatch as pyaudio
     import wave
     import io
@@ -74,8 +74,9 @@ def record_windows(output_mp3, device_index_override, stop_event):
                 log.warning(f'Audio callback status: {status}')
             if stop_event.is_set():
                 return (None, pyaudio.paComplete)
-            wf.writeframes(in_data)
-            frames_written[0] += frame_count
+            if not pause_event.is_set():
+                wf.writeframes(in_data)
+                frames_written[0] += frame_count
             return (None, pyaudio.paContinue)
 
         stream = p.open(
@@ -180,7 +181,7 @@ def get_loopback_device(p):
 # macOS — BlackHole via sounddevice
 # ---------------------------------------------------------------------------
 
-def record_macos(output_mp3, device_index_override, stop_event):
+def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     import sounddevice as sd
     import soundfile as sf
     import numpy as np
@@ -211,7 +212,8 @@ def record_macos(output_mp3, device_index_override, stop_event):
     def callback(indata, frames, time_info, status):
         if status:
             log.warning(f'sounddevice status: {status}')
-        wav_file.write(indata)
+        if not pause_event.is_set():
+            wav_file.write(indata)
 
     log.info(f'Recording started at {sample_rate}Hz, {channels}ch')
 
@@ -313,6 +315,7 @@ def main():
         sys.exit(1)
 
     stop_event = threading.Event()
+    pause_event = threading.Event()
 
     def handle_stop(signum, frame):
         log.info(f'Signal {signum} received — stopping...')
@@ -327,12 +330,22 @@ def main():
     except AttributeError:
         pass  # Not available on macOS/Linux
 
-    # Primary stop mechanism on Windows: watch stdin for any input from Node.
-    # Node writes 'stop\n' to stdin instead of killing the process, so Python
-    # gets a chance to flush the WAV and convert to MP3.
+    # Primary stop mechanism on Windows: watch stdin for commands from Node.
+    # Node writes 'stop\n', 'pause\n', or 'resume\n' to stdin.
     def watch_stdin():
         try:
-            sys.stdin.readline()
+            for line in sys.stdin:
+                cmd = line.strip()
+                if cmd == 'stop':
+                    log.info('stdin: stop')
+                    stop_event.set()
+                    break
+                elif cmd == 'pause':
+                    log.info('stdin: pause')
+                    pause_event.set()
+                elif cmd == 'resume':
+                    log.info('stdin: resume')
+                    pause_event.clear()
         except Exception:
             pass
         finally:
@@ -346,9 +359,9 @@ def main():
     log.info(f'Platform: {sys.platform}')
 
     if sys.platform == 'win32':
-        record_windows(args.output, args.device, stop_event)
+        record_windows(args.output, args.device, stop_event, pause_event)
     elif sys.platform == 'darwin':
-        record_macos(args.output, args.device, stop_event)
+        record_macos(args.output, args.device, stop_event, pause_event)
     else:
         print(f'ERROR: Unsupported platform: {sys.platform}', file=sys.stderr)
         sys.exit(1)

@@ -8,6 +8,7 @@ const STATE = {
   IDLE:           'IDLE',
   SESSION_ACTIVE: 'SESSION_ACTIVE',
   RECORDING:      'RECORDING',
+  PAUSED:         'PAUSED',
   PROCESSING:     'PROCESSING'
 }
 
@@ -74,6 +75,24 @@ function stopTimer() {
   timerEl.classList.add('hidden')
 }
 
+function pauseTimer() {
+  if (timerInterval) {
+    clearInterval(timerInterval)
+    timerInterval = null
+  }
+  // keep timer visible and timerSeconds intact
+}
+
+function resumeTimer() {
+  if (timerInterval) clearInterval(timerInterval)
+  timerInterval = setInterval(() => {
+    timerSeconds++
+    const m = String(Math.floor(timerSeconds / 60)).padStart(2, '0')
+    const s = String(timerSeconds % 60).padStart(2, '0')
+    timerEl.textContent = `${m}:${s}`
+  }, 1000)
+}
+
 // ---------------------------------------------------------------------------
 // Render UI for a given state
 // ---------------------------------------------------------------------------
@@ -82,6 +101,7 @@ let currentRenderedState = STATE.IDLE
 let settingsOpen = false
 
 function render(state) {
+  const prevState = currentRenderedState
   currentRenderedState = state
   if (settingsOpen) return
 
@@ -129,11 +149,35 @@ function render(state) {
     case STATE.RECORDING: {
       indicator.className = 'pulsing'
       statusLabel.textContent = 'Recording...'
-      startTimer()
+      if (prevState === STATE.PAUSED) {
+        resumeTimer()
+      } else {
+        startTimer()
+      }
 
+      const btnPause = makeButton('Pause', async () => {
+        await api.pauseRecording()
+      }, 'warning')
       const btnSave = makeButton('Save Case', async () => {
         await api.stopRecording()
       }, 'danger')
+      actionButtons.appendChild(btnPause)
+      actionButtons.appendChild(btnSave)
+      break
+    }
+
+    case STATE.PAUSED: {
+      indicator.className = 'paused'
+      statusLabel.textContent = 'Paused'
+      pauseTimer()
+
+      const btnResume = makeButton('Resume', async () => {
+        await api.resumeRecording()
+      })
+      const btnSave = makeButton('Save Case', async () => {
+        await api.stopRecording()
+      }, 'danger')
+      actionButtons.appendChild(btnResume)
       actionButtons.appendChild(btnSave)
       break
     }

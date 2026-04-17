@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('api', {
   stopSession:       ()     => ipcRenderer.invoke('stop-session'),
   startRecording:    ()     => ipcRenderer.invoke('start-recording'),
   stopRecording:     ()     => ipcRenderer.invoke('stop-recording'),
+  pauseRecording:    ()     => ipcRenderer.invoke('pause-recording'),
+  resumeRecording:   ()     => ipcRenderer.invoke('resume-recording'),
   submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
 
   getConfigStatus:    ()    => ipcRenderer.invoke('get-config-status'),

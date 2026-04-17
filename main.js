@@ -16,6 +16,7 @@ const STATE = {
   IDLE: 'IDLE',
   SESSION_ACTIVE: 'SESSION_ACTIVE',
   RECORDING: 'RECORDING',
+  PAUSED: 'PAUSED',
   PROCESSING: 'PROCESSING'
 }
 
@@ -558,7 +559,7 @@ function registerIpcHandlers() {
       log(`record.py exited ${code}`)
       // recordingProcess is nulled by stop-recording before it awaits exit,
       // so a non-null value here means Python died on its own — recover to SESSION_ACTIVE.
-      if (currentState === STATE.RECORDING && recordingProcess !== null) {
+      if ((currentState === STATE.RECORDING || currentState === STATE.PAUSED) && recordingProcess !== null) {
         log('record.py exited unexpectedly — returning to SESSION_ACTIVE')
         recordingProcess = null
         setState(STATE.SESSION_ACTIVE)
@@ -630,6 +631,34 @@ function registerIpcHandlers() {
       win.webContents.send('auto-start-recording')
     }
 
+    return true
+  })
+
+  // ---- pause-recording ----
+  ipcMain.handle('pause-recording', () => {
+    log('pause-recording')
+    if (recordingProcess) {
+      try {
+        recordingProcess.stdin.write('pause\n')
+      } catch (e) {
+        log(`stdin write failed: ${e.message}`)
+      }
+    }
+    setState(STATE.PAUSED)
+    return true
+  })
+
+  // ---- resume-recording ----
+  ipcMain.handle('resume-recording', () => {
+    log('resume-recording')
+    if (recordingProcess) {
+      try {
+        recordingProcess.stdin.write('resume\n')
+      } catch (e) {
+        log(`stdin write failed: ${e.message}`)
+      }
+    }
+    setState(STATE.RECORDING)
     return true
   })
 

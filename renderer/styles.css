@@ -94,6 +94,10 @@ body {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
+#indicator.paused {
+  background: #c07a00;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
@@ -144,6 +148,11 @@ button.secondary {
 
 button.danger {
   background: #c0392b;
+  color: #fff;
+}
+
+button.warning {
+  background: #c07a00;
   color: #fff;
 }
 
