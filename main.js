@@ -211,6 +211,7 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag) {
     log(`${tag}[transcribe] exited ${code}`)
     if (code === 0) {
       spawnSoapGeneration(transcriptDest, soapNotePath, caseTag)
+      spawnDocxConversion(transcriptDest, caseTag)
     } else {
       notifyUser('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
     }
@@ -272,7 +273,11 @@ function spawnDocxConversion(mdPath, caseTag) {
   proc.on('close', code => {
     log(`${tag}[docx] exited ${code}`)
     if (code === 0) {
-      notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
+      if (path.basename(mdPath) === 'transcript.md') {
+        try { fs.unlinkSync(mdPath) } catch {}
+      } else {
+        notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
+      }
     }
   })
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
@@ -444,7 +449,7 @@ app.whenReady().then(() => {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 
-  win.on('blur', () => win.hide())
+  ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.hide() })
 
   // macOS BlackHole check
   if (process.platform === 'darwin') {
