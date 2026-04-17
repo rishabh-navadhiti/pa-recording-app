@@ -26,6 +26,26 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
+}
+
+#header-icons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+#btn-window-close {
+  color: #aaa;
+  font-size: 13px;
+  width: 22px;
+  height: 22px;
+}
+
+#btn-window-close:hover {
+  color: #fff;
+  background: #c0392b;
 }
 
 /* Status row */
