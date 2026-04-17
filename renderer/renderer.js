@@ -24,6 +24,7 @@ const patientInput  = document.getElementById('patient-input')
 const btnSaveName   = document.getElementById('btn-save-name')
 const btnSkipName   = document.getElementById('btn-skip-name')
 const formCountdown = document.getElementById('form-countdown')
+const btnWindowClose     = document.getElementById('btn-window-close')
 const btnSettings        = document.getElementById('btn-settings')
 const settingsView       = document.getElementById('settings-view')
 const btnSettingsClose   = document.getElementById('btn-settings-close')
@@ -368,6 +369,7 @@ async function loadDeviceList(selectedIndex) {
   })
 }
 
+btnWindowClose.addEventListener('click', () => api.hideWindow())
 btnSettings.addEventListener('click', showSettings)
 btnSettingsClose.addEventListener('click', hideSettings)
 

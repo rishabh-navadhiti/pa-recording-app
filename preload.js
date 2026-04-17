@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('api', {
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
 
+  hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
+
   onStateChange:          (cb) => ipcRenderer.on('state-change',          (_, s)   => cb(s)),
   onShowPatientForm:      (cb) => ipcRenderer.on('show-patient-form',     ()       => cb()),
   onSetupWarning:         (cb) => ipcRenderer.on('setup-warning',         (_, msg) => cb(msg)),
