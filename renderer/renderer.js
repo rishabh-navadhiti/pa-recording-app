@@ -46,6 +46,12 @@ const btnSaveElevenLabs = document.getElementById('btn-save-elevenlabs')
 const warnDoctor        = document.getElementById('warn-doctor')
 const doctorInput       = document.getElementById('doctor-input')
 const btnSaveDoctor     = document.getElementById('btn-save-doctor')
+const doctorPicker      = document.getElementById('doctor-picker')
+const doctorPickerList  = document.getElementById('doctor-picker-list')
+const btnDoctorPickerCancel = document.getElementById('btn-doctor-picker-cancel')
+const doctorListEl      = document.getElementById('doctor-list')
+const newDoctorInput    = document.getElementById('new-doctor-input')
+const btnAddDoctor      = document.getElementById('btn-add-doctor')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -110,6 +116,7 @@ function render(state) {
   indicator.className = ''
   patientForm.classList.add('hidden')
   uploadForm.classList.add('hidden')
+  doctorPicker.classList.add('hidden')
 
   switch (state) {
     case STATE.IDLE: {
@@ -118,7 +125,10 @@ function render(state) {
       stopTimer()
 
       const btnStart = makeButton('Start Session', async () => {
-        await api.startSession()
+        const result = await api.startSession()
+        if (result && !result.ok && result.error === 'no-doctors') {
+          showSettings()
+        }
       })
       actionButtons.appendChild(btnStart)
       break
@@ -318,10 +328,8 @@ async function initConfigWarnings() {
     warnElevenLabs.classList.remove('hidden')
   }
 
-  if (!cfg.doctorName) {
+  if (cfg.noDoctors) {
     warnDoctor.classList.remove('hidden')
-  } else {
-    doctorInput.value = cfg.doctorName
   }
 
   updateConfigWarningsVisibility()
@@ -347,12 +355,14 @@ btnSaveDoctor.addEventListener('click', async () => {
   const name = doctorInput.value.trim()
   if (!name) return
   btnSaveDoctor.disabled = true
-  const res = await api.saveDoctorName(name)
+  const res = await api.addDoctor(name)
+  btnSaveDoctor.disabled = false
   if (res.ok) {
+    doctorInput.value = ''
     warnDoctor.classList.add('hidden')
     updateConfigWarningsVisibility()
+    if (settingsOpen) await renderDoctorList()
   }
-  btnSaveDoctor.disabled = false
 })
 
 doctorInput.addEventListener('keydown', e => {
@@ -365,8 +375,7 @@ doctorInput.addEventListener('keydown', e => {
 
 function showSettings() {
   settingsOpen = true
-  // Hide main content elements
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning]
+  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker]
     .forEach(el => { if (el) el.style.display = 'none' })
   settingsView.classList.remove('hidden')
   loadSettings()
@@ -375,8 +384,7 @@ function showSettings() {
 function hideSettings() {
   settingsOpen = false
   settingsView.classList.add('hidden')
-  // Restore display on elements we hid
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning]
+  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker]
     .forEach(el => { if (el) el.style.display = '' })
   render(currentRenderedState)
 }
@@ -384,6 +392,123 @@ function hideSettings() {
 async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
+  await renderDoctorList()
+}
+
+async function renderDoctorList() {
+  const doctors = await api.getDoctors()
+  doctorListEl.innerHTML = ''
+  if (doctors.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'doctor-empty'
+    empty.textContent = 'No doctors added yet'
+    doctorListEl.appendChild(empty)
+    return
+  }
+  doctors.forEach(doc => {
+    const row = document.createElement('div')
+    row.className = 'doctor-row'
+
+    function renderViewMode() {
+      row.innerHTML = ''
+      row.classList.remove('doctor-row--editing')
+
+      const nameSpan = document.createElement('span')
+      nameSpan.className = 'doctor-name'
+      nameSpan.textContent = doc.name
+
+      let templateEl
+      if (doc.templatePath) {
+        templateEl = document.createElement('span')
+        templateEl.className = 'doctor-template'
+        templateEl.textContent = doc.templatePath.split(/[\\/]/).pop()
+      } else {
+        templateEl = document.createElement('button')
+        templateEl.className = 'doctor-select-template'
+        templateEl.textContent = 'Select Template'
+        templateEl.addEventListener('click', async () => {
+          const res = await api.updateDoctorTemplate(doc.id)
+          if (res.ok) { doc.templatePath = res.doctor.templatePath; renderViewMode() }
+        })
+      }
+
+      const editBtn = document.createElement('button')
+      editBtn.className = 'doctor-edit'
+      editBtn.textContent = '✎'
+      editBtn.title = 'Edit doctor'
+      editBtn.addEventListener('click', () => renderEditMode())
+
+      const removeBtn = document.createElement('button')
+      removeBtn.className = 'doctor-remove'
+      removeBtn.textContent = '✕'
+      removeBtn.title = 'Remove doctor'
+      removeBtn.addEventListener('click', async () => {
+        await api.removeDoctor(doc.id)
+        await renderDoctorList()
+        const cfg = await api.getConfigStatus()
+        if (!cfg.noDoctors) {
+          warnDoctor.classList.add('hidden')
+          updateConfigWarningsVisibility()
+        }
+      })
+
+      row.appendChild(nameSpan)
+      row.appendChild(templateEl)
+      row.appendChild(editBtn)
+      row.appendChild(removeBtn)
+    }
+
+    function renderEditMode() {
+      row.innerHTML = ''
+      row.classList.add('doctor-row--editing')
+
+      const nameInput = document.createElement('input')
+      nameInput.className = 'doctor-edit-name-input'
+      nameInput.value = doc.name
+      nameInput.placeholder = 'Doctor name'
+
+      const templateLabel = document.createElement('span')
+      templateLabel.className = 'doctor-edit-template-label'
+      templateLabel.textContent = doc.templatePath ? doc.templatePath.split(/[\\/]/).pop() : 'No template'
+
+      const changeTemplateBtn = document.createElement('button')
+      changeTemplateBtn.className = 'doctor-edit-change-template'
+      changeTemplateBtn.textContent = 'Change Template'
+      changeTemplateBtn.addEventListener('click', async () => {
+        const res = await api.updateDoctorTemplate(doc.id)
+        if (res.ok) {
+          doc.templatePath = res.doctor.templatePath
+          templateLabel.textContent = doc.templatePath.split(/[\\/]/).pop()
+        }
+      })
+
+      const saveBtn = document.createElement('button')
+      saveBtn.className = 'doctor-edit-save small'
+      saveBtn.textContent = 'Save'
+      saveBtn.addEventListener('click', async () => {
+        const newName = nameInput.value.trim()
+        if (!newName) return
+        const res = await api.updateDoctor(doc.id, newName)
+        if (res.ok) { doc.name = newName; renderViewMode() }
+      })
+
+      nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click() })
+
+      const cancelBtn = document.createElement('button')
+      cancelBtn.className = 'doctor-edit-cancel small secondary'
+      cancelBtn.textContent = 'Cancel'
+      cancelBtn.addEventListener('click', () => renderViewMode())
+
+      row.appendChild(nameInput)
+      row.appendChild(templateLabel)
+      row.appendChild(changeTemplateBtn)
+      row.appendChild(saveBtn)
+      row.appendChild(cancelBtn)
+    }
+
+    renderViewMode()
+    doctorListEl.appendChild(row)
+  })
 }
 
 async function loadDeviceList(selectedIndex) {
@@ -434,6 +559,50 @@ deviceSelect.addEventListener('change', () => {
   })
 })
 
+btnAddDoctor.addEventListener('click', async () => {
+  const name = newDoctorInput.value.trim()
+  if (!name) return
+  btnAddDoctor.disabled = true
+  const res = await api.addDoctor(name)
+  btnAddDoctor.disabled = false
+  if (res.ok) {
+    newDoctorInput.value = ''
+    await renderDoctorList()
+    warnDoctor.classList.add('hidden')
+    updateConfigWarningsVisibility()
+  }
+})
+
+newDoctorInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') btnAddDoctor.click()
+})
+
+// ---------------------------------------------------------------------------
+// Doctor picker (shown at session start when multiple doctors exist)
+// ---------------------------------------------------------------------------
+
+function showDoctorPicker(doctors) {
+  doctorPicker.classList.remove('hidden')
+  actionButtons.style.display = 'none'
+  doctorPickerList.innerHTML = ''
+  doctors.forEach(doc => {
+    const btn = document.createElement('button')
+    btn.textContent = doc.name
+    btn.addEventListener('click', () => {
+      doctorPicker.classList.add('hidden')
+      actionButtons.style.display = ''
+      api.selectDoctor(doc.id)
+    })
+    doctorPickerList.appendChild(btn)
+  })
+}
+
+btnDoctorPickerCancel.addEventListener('click', () => {
+  doctorPicker.classList.add('hidden')
+  actionButtons.style.display = ''
+  api.selectDoctor(null)
+})
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
@@ -446,8 +615,8 @@ async function init() {
   api.onStateChange(render)
   api.onShowPatientForm(showPatientForm)
   api.onSetupWarning(showSetupWarning)
+  api.onPickDoctor(showDoctorPicker)
   api.onAutoStartRecording(async () => {
-    // Small delay so the UI finishes transitioning to SESSION_ACTIVE
     setTimeout(() => api.startRecording(), 500)
   })
 }

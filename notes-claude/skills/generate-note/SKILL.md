@@ -59,10 +59,11 @@ Do not mention this step to the user unless an error occurs.
 
 From the user's message, extract:
 
-- **Doctor name**: Look for patterns like "doctor X", "dr. X", "for doctor X". Normalize to lowercase lastname only (e.g. "sabbag", "harris").
-- **Transcript path**: Look for a file path ending in `.md` or `_transcript.md`. This is the pre-existing transcript to use.
+- **Template path** (optional): Look for the pattern `using template "X"` or `template "X"`. If present, record this as `PROVIDED_TEMPLATE_PATH` — it will be used directly in Step 5a instead of looking up by doctor name.
+- **Doctor name** (optional): Look for patterns like "doctor X", "dr. X", "for doctor X". Normalize to lowercase lastname only (e.g. "sabbag", "harris"). Used only if no template path was provided.
+- **Transcript path**: Look for a file path ending in `.md` or `_transcript.md`, or the pattern `transcript "X"`. This is the pre-existing transcript to use.
 
-If the doctor name cannot be determined, stop and ask the user to provide it.
+If neither a template path nor a doctor name can be determined, stop and ask the user to provide one.
 If the transcript path cannot be determined, stop and ask the user to provide the path to the transcript file.
 
 ---
@@ -167,7 +168,18 @@ done
 
 ### 5a: Load the Doctor's Template
 
-Templates are stored in `${WORKSPACE}/templates/`. Each file is named after the doctor's lowercase last name: e.g. `sabbag.md`, `harris.md`.
+**If a template path was provided directly in the user's request (`PROVIDED_TEMPLATE_PATH`):**
+
+```bash
+# Resolve the provided path (may be relative to WORKSPACE or absolute)
+if [[ "${PROVIDED_TEMPLATE_PATH}" = /* ]]; then
+  TEMPLATE_PATH="${PROVIDED_TEMPLATE_PATH}"
+else
+  TEMPLATE_PATH="${WORKSPACE}/${PROVIDED_TEMPLATE_PATH}"
+fi
+```
+
+**Otherwise**, look up by doctor's lowercase last name:
 
 ```
 TEMPLATE_PATH="${WORKSPACE}/templates/<lastname>.md"
@@ -176,7 +188,7 @@ TEMPLATE_PATH="${WORKSPACE}/templates/<lastname>.md"
 Read the template file using the Read tool.
 
 If the file does not exist, stop and inform the user:
-> No template found for Dr. [Name]. Please add a template at `${WORKSPACE}/templates/<lastname>.md`.
+> No template found. Please check the template path or add a template at `${WORKSPACE}/templates/<lastname>.md`.
 
 ### 5b: Select the Note Type
 

@@ -30,6 +30,8 @@ let currentState = STATE.IDLE
 let recordingProcess = null
 let tempMp3Path = null
 let patientNameResolver = null
+let activeDoctorId = null
+let doctorPickerResolver = null
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -67,7 +69,8 @@ const SETTINGS_PATH = path.join(NOTES_DIR, 'settings.json')
 const DEFAULT_SETTINGS = {
   autoRecord: false,
   manualDeviceSelection: true,
-  selectedDeviceIndex: null
+  selectedDeviceIndex: null,
+  doctors: []
 }
 
 function readSettings() {
@@ -198,7 +201,7 @@ function notifyUser(title, body) {
   }
 }
 
-function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag) {
+function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   const transcribeProc = spawn(PYTHON, [
     path.join(__dirname, 'python', 'transcribe.py'),
@@ -211,7 +214,7 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag) {
   transcribeProc.on('close', code => {
     log(`${tag}[transcribe] exited ${code}`)
     if (code === 0) {
-      spawnSoapGeneration(transcriptDest, soapNotePath, caseTag)
+      spawnSoapGeneration(transcriptDest, soapNotePath, caseTag, false, templatePath)
       spawnDocxConversion(transcriptDest, caseTag)
     } else {
       notifyUser('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
@@ -220,12 +223,16 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag) {
   log(`${tag}Transcription started for: ${mp3Path}`)
 }
 
-function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false) {
+function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
-  // Build path relative to NOTES_DIR — that's the cwd claude runs from
   const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
-  const doctor = readEnv()['DOCTOR_NAME'] || 'unknown'
-  const prompt = `generate a note for doctor ${doctor} using transcript ${relTranscript}`
+  let prompt
+  if (templatePath) {
+    const relTemplate = path.relative(NOTES_DIR, templatePath).replace(/\\/g, '/')
+    prompt = `generate a note using template "${relTemplate}" and transcript "${relTranscript}"`
+  } else {
+    prompt = `generate a note using transcript "${relTranscript}"`
+  }
 
   const attempt = isRetry ? ' (retry)' : ''
   log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"`)
@@ -251,7 +258,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         spawnDocxConversion(soapNoteMdPath, caseTag)
       } else if (!isRetry) {
         log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found — skill may not have been invoked. Retrying...`)
-        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, true)
+        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, true, templatePath)
       } else {
         log(`${tag}[soap] ERROR: SOAP note file still missing after retry — manual intervention required: ${soapNoteMdPath}`)
         notifyUser('SOAP generation failed', `Case: ${caseTag || 'unknown'} — skill may not have been invoked`)
@@ -273,12 +280,8 @@ function spawnDocxConversion(mdPath, caseTag) {
   proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
   proc.on('close', code => {
     log(`${tag}[docx] exited ${code}`)
-    if (code === 0) {
-      if (path.basename(mdPath) === 'transcript.md') {
-        try { fs.unlinkSync(mdPath) } catch {}
-      } else {
-        notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
-      }
+    if (code === 0 && path.basename(mdPath) !== 'transcript.md') {
+      notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
     }
   })
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
@@ -366,15 +369,10 @@ app.whenReady().then(() => {
   fs.mkdirSync(CASES_DIR, { recursive: true })
   fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
 
-  // Copy bundled .claude config — check for skill file specifically so a partial
-  // or stale .claude dir gets updated correctly
-  const skillFileDest = path.join(NOTES_DIR, '.claude', 'skills', 'generate-note', 'SKILL.md')
-  if (!fs.existsSync(skillFileDest)) {
-    copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-    log('.claude config copied to AI Medical Notes')
-  } else {
-    log('.claude config already present')
-  }
+  // Always sync bundled .claude config so SKILL.md stays current
+  copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+  log('.claude config synced to AI Medical Notes')
+
 
   log('App started')
 
@@ -503,15 +501,48 @@ function registerIpcHandlers() {
   ipcMain.handle('get-state', () => currentState)
 
   // ---- start-session ----
-  ipcMain.handle('start-session', () => {
+  ipcMain.handle('start-session', async () => {
     log('start-session')
+    const settings = readSettings()
+    const doctors = settings.doctors || []
+
+    if (doctors.length === 0) {
+      log('start-session blocked: no doctors configured')
+      return { ok: false, error: 'no-doctors' }
+    }
+
+    if (doctors.length === 1) {
+      activeDoctorId = doctors[0].id
+      log(`Auto-selected doctor: ${doctors[0].name}`)
+      setState(STATE.SESSION_ACTIVE)
+      return { ok: true }
+    }
+
+    // Multiple doctors — ask renderer to pick
+    const selectedId = await new Promise(resolve => {
+      doctorPickerResolver = resolve
+      win.webContents.send('pick-doctor', doctors)
+    })
+
+    if (!selectedId) {
+      log('start-session cancelled: no doctor selected')
+      return { ok: false, error: 'cancelled' }
+    }
+
+    activeDoctorId = selectedId
+    log(`Selected doctor ID: ${selectedId}`)
     setState(STATE.SESSION_ACTIVE)
-    return true
+    return { ok: true }
   })
 
   // ---- stop-session ----
   ipcMain.handle('stop-session', async () => {
     log('stop-session')
+    if (doctorPickerResolver) {
+      doctorPickerResolver(null)
+      doctorPickerResolver = null
+    }
+    activeDoctorId = null
     // If somehow recording when session is stopped, kill the process
     if (recordingProcess) {
       recordingProcess.kill()
@@ -613,6 +644,10 @@ function registerIpcHandlers() {
     const transcriptDest = path.join(caseDir, 'transcript.md')
     const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
 
+    const _stopSettings = readSettings()
+    const _stopDoctor = (_stopSettings.doctors || []).find(d => d.id === activeDoctorId)
+    const _stopTemplatePath = _stopDoctor?.templatePath || null
+
     if (fs.existsSync(tempMp3Path)) {
       fs.renameSync(tempMp3Path, mp3Dest)
       log(`MP3 moved to: ${mp3Dest}`)
@@ -621,7 +656,7 @@ function registerIpcHandlers() {
     }
     tempMp3Path = null
 
-    spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName)
+    spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
     setState(STATE.SESSION_ACTIVE)
@@ -675,24 +710,100 @@ function registerIpcHandlers() {
   ipcMain.handle('get-config-status', () => {
     const env = readEnv()
     const apiKey = env['ELEVENLABS_API_KEY'] || ''
+    const settings = readSettings()
     return {
       elevenLabsKeyMissing: !apiKey || apiKey === 'your_key_here',
-      doctorName: env['DOCTOR_NAME'] || ''
+      noDoctors: (settings.doctors || []).length === 0
     }
   })
 
-  // ---- save-doctor-name ----
-  ipcMain.handle('save-doctor-name', (_, name) => {
+  // ---- get-doctors ----
+  ipcMain.handle('get-doctors', () => {
+    const settings = readSettings()
+    return settings.doctors || []
+  })
+
+  // ---- add-doctor ----
+  ipcMain.handle('add-doctor', async (_, name) => {
+    const trimmed = (name || '').trim()
+    if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
+
+    const result = await dialog.showOpenDialog(win, {
+      title: `Select Template for ${trimmed}`,
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown Files', extensions: ['md'] }]
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: false, error: 'cancelled' }
+    }
+
+    const templatePath = result.filePaths[0]
+    const doctor = { id: String(Date.now()), name: trimmed, templatePath }
+    const settings = readSettings()
+    const doctors = settings.doctors || []
+    doctors.push(doctor)
+    writeSettings({ ...settings, doctors })
+    log(`Doctor added: ${trimmed} (template: ${templatePath})`)
+    return { ok: true, doctor }
+  })
+
+  // ---- update-doctor-template ----
+  ipcMain.handle('update-doctor-template', async (_, id) => {
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.id === id)
+    if (!doctor) return { ok: false, error: 'Doctor not found' }
+
+    const result = await dialog.showOpenDialog(win, {
+      title: `Select Template for ${doctor.name}`,
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown Files', extensions: ['md'] }]
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: false, error: 'cancelled' }
+    }
+
+    doctor.templatePath = result.filePaths[0]
+    writeSettings(settings)
+    log(`Template updated for ${doctor.name}: ${doctor.templatePath}`)
+    return { ok: true, doctor }
+  })
+
+  // ---- update-doctor ----
+  ipcMain.handle('update-doctor', (_, id, name) => {
+    const trimmed = (name || '').trim()
+    if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.id === id)
+    if (!doctor) return { ok: false, error: 'Doctor not found' }
+    doctor.name = trimmed
+    writeSettings(settings)
+    log(`Doctor name updated: ${id} -> ${trimmed}`)
+    return { ok: true }
+  })
+
+  // ---- remove-doctor ----
+  ipcMain.handle('remove-doctor', (_, id) => {
     try {
-      const trimmed = (name || '').trim()
-      if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
-      writeEnvKey('DOCTOR_NAME', trimmed)
-      log(`Doctor name saved: ${trimmed}`)
+      const settings = readSettings()
+      const doctors = (settings.doctors || []).filter(d => d.id !== id)
+      writeSettings({ ...settings, doctors })
+      log(`Doctor removed: ${id}`)
       return { ok: true }
     } catch (e) {
-      log(`ERROR saving doctor name: ${e.message}`)
+      log(`ERROR removing doctor: ${e.message}`)
       return { ok: false, error: e.message }
     }
+  })
+
+  // ---- select-doctor (resolves picker shown during start-session) ----
+  ipcMain.handle('select-doctor', (_, id) => {
+    if (doctorPickerResolver) {
+      doctorPickerResolver(id)
+      doctorPickerResolver = null
+    }
+    return true
   })
 
   // ---- save-elevenlabs-key ----
@@ -787,8 +898,12 @@ function registerIpcHandlers() {
       return false
     }
 
+    const _uploadSettings = readSettings()
+    const _uploadDoctor = (_uploadSettings.doctors || []).find(d => d.id === activeDoctorId)
+    const _uploadTemplatePath = _uploadDoctor?.templatePath || null
+
     setState(STATE.PROCESSING)
-    spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName)
+    spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath)
 
     // Return to SESSION_ACTIVE immediately — pipeline runs in background
     setState(STATE.SESSION_ACTIVE)
