@@ -36,15 +36,20 @@
         <div class="setting-hint">Next recording begins immediately when you save a case</div>
       </div>
 
-      <div class="settings-group">
-        <label class="setting-row">
-          <input type="checkbox" id="chk-manual-device" />
-          <span>Manually select audio device</span>
-        </label>
-        <div class="setting-hint">Override automatic loopback device detection</div>
-        <select id="device-select" class="hidden" disabled>
-          <option value="">Loading devices...</option>
-        </select>
+      <div class="settings-group advanced-settings-group">
+        <button id="btn-advanced-toggle" class="advanced-toggle">
+          <span>Advanced Settings</span>
+          <span class="toggle-arrow">&#9654;</span>
+        </button>
+        <div id="advanced-settings-content" class="hidden">
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Audio Output Device</label>
+            <select id="device-select">
+              <option value="">Loading devices...</option>
+            </select>
+            <div class="setting-hint">Override automatic loopback device detection</div>
+          </div>
+        </div>
       </div>
     </div>
 

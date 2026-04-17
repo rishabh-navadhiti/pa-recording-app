@@ -65,7 +65,7 @@ const SETTINGS_PATH = path.join(NOTES_DIR, 'settings.json')
 
 const DEFAULT_SETTINGS = {
   autoRecord: false,
-  manualDeviceSelection: false,
+  manualDeviceSelection: true,
   selectedDeviceIndex: null
 }
 

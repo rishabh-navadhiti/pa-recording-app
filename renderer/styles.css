@@ -370,11 +370,18 @@ button.outline:hover { opacity: 0.85; }
 .setting-hint {
   font-size: 11px;
   color: #666;
-  padding-left: 22px;
+  padding-left: 0;
+}
+
+.setting-label {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 4px;
+  display: block;
 }
 
 #device-select {
-  margin-top: 6px;
+  width: 100%;
   padding: 6px 8px;
   background: #1a1a1a;
   border: 1px solid #3a3a3a;
@@ -388,9 +395,42 @@ button.outline:hover { opacity: 0.85; }
   border-color: #1D9E75;
 }
 
-#device-select:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.advanced-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+  text-align: left;
+}
+
+.advanced-toggle:hover {
+  color: #e0e0e0;
+  opacity: 1;
+}
+
+.toggle-arrow {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.advanced-toggle.open .toggle-arrow {
+  transform: rotate(90deg);
+}
+
+.advanced-settings-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2a2a;
 }
 
 /* Utility */

@@ -28,9 +28,10 @@ const btnWindowClose     = document.getElementById('btn-window-close')
 const btnSettings        = document.getElementById('btn-settings')
 const settingsView       = document.getElementById('settings-view')
 const btnSettingsClose   = document.getElementById('btn-settings-close')
-const chkAutoRecord      = document.getElementById('chk-auto-record')
-const chkManualDevice    = document.getElementById('chk-manual-device')
-const deviceSelect       = document.getElementById('device-select')
+const chkAutoRecord          = document.getElementById('chk-auto-record')
+const deviceSelect           = document.getElementById('device-select')
+const btnAdvancedToggle      = document.getElementById('btn-advanced-toggle')
+const advancedSettingsContent = document.getElementById('advanced-settings-content')
 const uploadForm         = document.getElementById('upload-form')
 const uploadPatientInput = document.getElementById('upload-patient-input')
 const btnUploadSaveName  = document.getElementById('btn-upload-save-name')
@@ -339,15 +340,6 @@ function hideSettings() {
 async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
-  chkManualDevice.checked = s.manualDeviceSelection || false
-  if (s.manualDeviceSelection) {
-    await loadDeviceList(s.selectedDeviceIndex)
-    deviceSelect.disabled = false
-    deviceSelect.classList.remove('hidden')
-  } else {
-    deviceSelect.disabled = true
-    deviceSelect.classList.add('hidden')
-  }
 }
 
 async function loadDeviceList(selectedIndex) {
@@ -377,23 +369,25 @@ chkAutoRecord.addEventListener('change', () => {
   api.saveSettings({ autoRecord: chkAutoRecord.checked })
 })
 
-chkManualDevice.addEventListener('change', async () => {
-  const enabled = chkManualDevice.checked
-  if (enabled) {
-    deviceSelect.classList.remove('hidden')
-    deviceSelect.disabled = false
-    await loadDeviceList(null)
-    api.saveSettings({ manualDeviceSelection: true, selectedDeviceIndex: null })
+btnAdvancedToggle.addEventListener('click', async () => {
+  const isOpen = !advancedSettingsContent.classList.contains('hidden')
+  if (isOpen) {
+    advancedSettingsContent.classList.add('hidden')
+    btnAdvancedToggle.classList.remove('open')
   } else {
-    deviceSelect.classList.add('hidden')
-    deviceSelect.disabled = true
-    api.saveSettings({ manualDeviceSelection: false, selectedDeviceIndex: null })
+    advancedSettingsContent.classList.remove('hidden')
+    btnAdvancedToggle.classList.add('open')
+    const s = await api.getSettings()
+    await loadDeviceList(s.selectedDeviceIndex)
   }
 })
 
 deviceSelect.addEventListener('change', () => {
   const val = deviceSelect.value
-  api.saveSettings({ selectedDeviceIndex: val !== '' ? parseInt(val, 10) : null })
+  api.saveSettings({
+    manualDeviceSelection: val !== '',
+    selectedDeviceIndex: val !== '' ? parseInt(val, 10) : null
+  })
 })
 
 // ---------------------------------------------------------------------------
