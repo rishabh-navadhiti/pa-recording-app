@@ -59,8 +59,24 @@
             </select>
             <div class="setting-hint">Override automatic loopback device detection</div>
           </div>
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Notes Folder</label>
+            <div class="notes-dir-row">
+              <span id="notes-dir-path" class="notes-dir-path"></span>
+              <button id="btn-change-notes-dir" class="small">Change</button>
+            </div>
+            <div class="setting-hint">Where AI Medical Notes folder is stored</div>
+          </div>
         </div>
       </div>
+    </div>
+
+    <!-- Folder setup (shown on first launch when no notes dir is set) -->
+    <div id="folder-setup" class="hidden">
+      <div class="folder-setup-icon">&#128193;</div>
+      <div class="folder-setup-title">Choose Notes Location</div>
+      <div class="folder-setup-desc">Select a folder where your AI Medical Notes will be stored. A subfolder named <strong>AI Medical Notes</strong> will be created inside it.</div>
+      <button id="btn-browse-notes-dir">Browse&hellip;</button>
     </div>
 
     <!-- Doctor picker (shown when multiple doctors at session start) -->

@@ -56,6 +56,10 @@ const btnDoctorPickerCancel = document.getElementById('btn-doctor-picker-cancel'
 const doctorListEl      = document.getElementById('doctor-list')
 const newDoctorInput    = document.getElementById('new-doctor-input')
 const btnAddDoctor      = document.getElementById('btn-add-doctor')
+const notesDirPath      = document.getElementById('notes-dir-path')
+const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
+const folderSetup       = document.getElementById('folder-setup')
+const btnBrowseNotesDir = document.getElementById('btn-browse-notes-dir')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -175,8 +179,14 @@ function render(state) {
       const btnSave = makeButton('Save Case', async () => {
         await api.stopRecording()
       }, 'danger')
+      const btnDiscard = makeButton('Discard', async () => {
+        if (!confirm('Discard this recording? This cannot be undone.')) return
+        await api.discardRecording()
+        stopTimer()
+      }, 'secondary')
       actionButtons.appendChild(btnPause)
       actionButtons.appendChild(btnSave)
+      actionButtons.appendChild(btnDiscard)
       break
     }
 
@@ -191,8 +201,14 @@ function render(state) {
       const btnSave = makeButton('Save Case', async () => {
         await api.stopRecording()
       }, 'danger')
+      const btnDiscard = makeButton('Discard', async () => {
+        if (!confirm('Discard this recording? This cannot be undone.')) return
+        await api.discardRecording()
+        stopTimer()
+      }, 'secondary')
       actionButtons.appendChild(btnResume)
       actionButtons.appendChild(btnSave)
+      actionButtons.appendChild(btnDiscard)
       break
     }
 
@@ -414,7 +430,18 @@ async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
   await renderDoctorList()
+  const dir = await api.getNotesDir()
+  notesDirPath.textContent = dir
+  notesDirPath.title = dir
 }
+
+btnChangeNotesDir.addEventListener('click', async () => {
+  const res = await api.changeNotesDir()
+  if (res.ok) {
+    notesDirPath.textContent = res.path
+    notesDirPath.title = res.path
+  }
+})
 
 async function renderDoctorList() {
   const doctors = await api.getDoctors()
@@ -625,14 +652,41 @@ btnDoctorPickerCancel.addEventListener('click', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Bootstrap
+// Folder setup (first launch — no notes dir configured)
 // ---------------------------------------------------------------------------
 
-async function init() {
-  const state = await api.getState()
-  render(state)
-  await initConfigWarnings()
+const MAIN_CONTENT_ELS = [
+  () => document.getElementById('header-row'),
+  () => configWarnings,
+  () => actionButtons,
+  () => setupWarning,
+  () => serviceWarning
+]
 
+function showFolderSetup() {
+  folderSetup.classList.remove('hidden')
+  MAIN_CONTENT_ELS.forEach(get => { const el = get(); if (el) el.style.display = 'none' })
+}
+
+function hideFolderSetup() {
+  folderSetup.classList.add('hidden')
+  MAIN_CONTENT_ELS.forEach(get => { const el = get(); if (el) el.style.display = '' })
+}
+
+btnBrowseNotesDir.addEventListener('click', async () => {
+  const res = await api.changeNotesDir()
+  if (res.ok) {
+    hideFolderSetup()
+    notesDirPath.textContent = res.path
+    notesDirPath.title = res.path
+    await initConfigWarnings()
+    const state = await api.getState()
+    render(state)
+    registerAppListeners()
+  }
+})
+
+function registerAppListeners() {
   api.onStateChange(render)
   api.onShowPatientForm(showPatientForm)
   api.onSetupWarning(showSetupWarning)
@@ -641,6 +695,24 @@ async function init() {
   api.onAutoStartRecording(async () => {
     setTimeout(() => api.startRecording(), 500)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+async function init() {
+  const state = await api.getState()
+  render(state)
+  const cfg = await api.getConfigStatus()
+
+  if (cfg.notesDirMissing) {
+    showFolderSetup()
+    return
+  }
+
+  await initConfigWarnings()
+  registerAppListeners()
 }
 
 init().catch(console.error)

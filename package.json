@@ -1,5 +1,6 @@
 {
   "name": "ai-medical-scribe",
+  "productName": "Ai medical scribe",
   "version": "0.1.0",
   "description": "System tray app for medical scribes to capture and transcribe Teams call audio",
   "main": "main.js",
