@@ -94,6 +94,10 @@ body {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
+#indicator.paused {
+  background: #c07a00;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
@@ -144,6 +148,11 @@ button.secondary {
 
 button.danger {
   background: #c0392b;
+  color: #fff;
+}
+
+button.warning {
+  background: #c07a00;
   color: #fff;
 }
 
@@ -325,6 +334,63 @@ button.outline:hover { opacity: 0.85; }
   line-height: 1.5;
 }
 
+/* Runtime service warning (ElevenLabs / Claude limit) */
+#service-warning {
+  background: #1e1a00;
+  border: 1px solid #6b5c00;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #f0d060;
+  line-height: 1.5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#service-warning-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+#service-warning-content .warn-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+#service-warning-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+#service-warning-title {
+  color: #f5e070;
+  font-weight: 600;
+}
+
+#service-warning-message {
+  color: #c8b840;
+}
+
+#btn-service-warning-dismiss {
+  flex-shrink: 0;
+  color: #888;
+  font-size: 11px;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+#btn-service-warning-dismiss:hover {
+  color: #f0d060;
+  background: #3a3000;
+}
+
 /* Settings view */
 #settings-view {
   display: flex;
@@ -370,11 +436,18 @@ button.outline:hover { opacity: 0.85; }
 .setting-hint {
   font-size: 11px;
   color: #666;
-  padding-left: 22px;
+  padding-left: 0;
+}
+
+.setting-label {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 4px;
+  display: block;
 }
 
 #device-select {
-  margin-top: 6px;
+  width: 100%;
   padding: 6px 8px;
   background: #1a1a1a;
   border: 1px solid #3a3a3a;
@@ -388,9 +461,242 @@ button.outline:hover { opacity: 0.85; }
   border-color: #1D9E75;
 }
 
-#device-select:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.advanced-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+  text-align: left;
+}
+
+.advanced-toggle:hover {
+  color: #e0e0e0;
+  opacity: 1;
+}
+
+.toggle-arrow {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.advanced-toggle.open .toggle-arrow {
+  transform: rotate(90deg);
+}
+
+.advanced-settings-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2a2a;
+}
+
+/* Doctor picker */
+#doctor-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.picker-title {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 2px;
+}
+
+#doctor-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Doctor list in settings */
+.settings-group-label {
+  font-size: 12px;
+  color: #aaa;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.doctor-empty {
+  font-size: 12px;
+  color: #555;
+  padding: 4px 0;
+}
+
+.doctor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.doctor-name {
+  font-size: 12px;
+  color: #e0e0e0;
+  flex: 0 0 auto;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doctor-template {
+  font-size: 11px;
+  color: #666;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doctor-select-template {
+  flex: 1;
+  width: auto;
+  padding: 3px 7px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid #1D9E75;
+  color: #1D9E75;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.doctor-select-template:hover {
+  background: #1D9E75;
+  color: #fff;
+  opacity: 1;
+}
+
+.doctor-remove {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #555;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doctor-remove:hover {
+  color: #e0e0e0;
+  background: #c0392b;
+  opacity: 1;
+}
+
+.doctor-edit {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #555;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doctor-edit:hover {
+  color: #e0e0e0;
+  background: #2a6496;
+}
+
+.doctor-row--editing {
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 0;
+  border-top: 1px solid #2a2a2a;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.doctor-edit-name-input {
+  flex: 1;
+  min-width: 80px;
+  padding: 4px 6px;
+  background: #1a1a1a;
+  border: 1px solid #1D9E75;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+}
+
+.doctor-edit-template-label {
+  font-size: 11px;
+  color: #666;
+  flex: 1;
+  min-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doctor-edit-change-template {
+  font-size: 11px;
+  padding: 3px 7px;
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  color: #999;
+  cursor: pointer;
+}
+
+.doctor-edit-change-template:hover {
+  border-color: #1D9E75;
+  color: #1D9E75;
+}
+
+.doctor-edit-save,
+.doctor-edit-cancel {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.add-doctor-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.add-doctor-row input {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+}
+
+.add-doctor-row input:focus {
+  border-color: #1D9E75;
+}
+
+/* Warn-doctor open settings button */
+.warn-actions {
+  margin-top: 4px;
 }
 
 /* Utility */

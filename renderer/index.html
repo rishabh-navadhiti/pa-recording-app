@@ -37,15 +37,37 @@
       </div>
 
       <div class="settings-group">
-        <label class="setting-row">
-          <input type="checkbox" id="chk-manual-device" />
-          <span>Manually select audio device</span>
-        </label>
-        <div class="setting-hint">Override automatic loopback device detection</div>
-        <select id="device-select" class="hidden" disabled>
-          <option value="">Loading devices...</option>
-        </select>
+        <div class="settings-group-label">Doctors</div>
+        <div id="doctor-list"></div>
+        <div class="add-doctor-row">
+          <input type="text" id="new-doctor-input" placeholder="Doctor name" autocomplete="off" spellcheck="false" />
+          <button id="btn-add-doctor" class="small">Add</button>
+        </div>
+        <div class="setting-hint">Click Add to select a template file for the doctor</div>
       </div>
+
+      <div class="settings-group advanced-settings-group">
+        <button id="btn-advanced-toggle" class="advanced-toggle">
+          <span>Advanced Settings</span>
+          <span class="toggle-arrow">&#9654;</span>
+        </button>
+        <div id="advanced-settings-content" class="hidden">
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Audio Output Device</label>
+            <select id="device-select">
+              <option value="">Loading devices...</option>
+            </select>
+            <div class="setting-hint">Override automatic loopback device detection</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Doctor picker (shown when multiple doctors at session start) -->
+    <div id="doctor-picker" class="hidden">
+      <div class="picker-title">Select Doctor</div>
+      <div id="doctor-picker-list"></div>
+      <button id="btn-doctor-picker-cancel" class="secondary">Cancel</button>
     </div>
 
     <!-- Timer (visible only while RECORDING) -->
@@ -61,11 +83,12 @@
         </div>
       </div>
       <div id="warn-doctor" class="config-warn hidden">
-        <div class="warn-header"><span class="warn-icon">&#9888;</span> Doctor name not set</div>
+        <div class="warn-header"><span class="warn-icon">&#9888;</span> Doctor not set up</div>
         <div class="warn-input-row">
           <input id="doctor-input" type="text" placeholder="e.g. Dr. Smith" autocomplete="off" spellcheck="false" />
-          <button id="btn-save-doctor" class="small">Save</button>
+          <button id="btn-save-doctor" class="small">Add</button>
         </div>
+        <div class="setting-hint" style="color:#9a7a30;margin-top:4px">You'll be prompted to select a template file</div>
       </div>
     </div>
 
@@ -92,8 +115,20 @@
       <div id="form-countdown"></div>
     </div>
 
-    <!-- Setup warning (BlackHole / ffmpeg) -->
+    <!-- Setup warning (BlackHole / ffmpeg / Claude not installed) -->
     <div id="setup-warning" class="hidden"></div>
+
+    <!-- Runtime service warning (ElevenLabs errors / Claude limit exceeded) -->
+    <div id="service-warning" class="hidden">
+      <div id="service-warning-content">
+        <span class="warn-icon">&#9888;</span>
+        <div id="service-warning-text">
+          <strong id="service-warning-title"></strong>
+          <div id="service-warning-message"></div>
+        </div>
+      </div>
+      <button id="btn-service-warning-dismiss" class="icon-btn" title="Dismiss">&#10005;</button>
+    </div>
 
   </div>
   <script src="renderer.js"></script>
