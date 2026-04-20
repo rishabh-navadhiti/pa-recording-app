@@ -38,7 +38,11 @@ const uploadPatientInput = document.getElementById('upload-patient-input')
 const btnUploadSaveName  = document.getElementById('btn-upload-save-name')
 const btnUploadSkipName  = document.getElementById('btn-upload-skip-name')
 const btnUploadClose     = document.getElementById('btn-upload-close')
-const setupWarning       = document.getElementById('setup-warning')
+const setupWarning            = document.getElementById('setup-warning')
+const serviceWarning          = document.getElementById('service-warning')
+const serviceWarningTitle     = document.getElementById('service-warning-title')
+const serviceWarningMessage   = document.getElementById('service-warning-message')
+const btnServiceWarningDismiss = document.getElementById('btn-service-warning-dismiss')
 const configWarnings    = document.getElementById('config-warnings')
 const warnElevenLabs    = document.getElementById('warn-elevenlabs')
 const elevenLabsInput   = document.getElementById('elevenlabs-input')
@@ -311,6 +315,16 @@ function showSetupWarning(msg) {
   setupWarning.classList.remove('hidden')
 }
 
+function showServiceWarning({ title, message }) {
+  serviceWarningTitle.textContent = title
+  serviceWarningMessage.textContent = message
+  serviceWarning.classList.remove('hidden')
+}
+
+btnServiceWarningDismiss.addEventListener('click', () => {
+  serviceWarning.classList.add('hidden')
+})
+
 // ---------------------------------------------------------------------------
 // Config warnings (ElevenLabs key / doctor name)
 // ---------------------------------------------------------------------------
@@ -326,6 +340,13 @@ async function initConfigWarnings() {
 
   if (cfg.elevenLabsKeyMissing) {
     warnElevenLabs.classList.remove('hidden')
+  }
+
+  if (cfg.elevenLabsKeyInvalid) {
+    showServiceWarning({
+      title: 'ElevenLabs API key invalid',
+      message: 'Your API key was rejected. Update it in Settings to enable transcription.'
+    })
   }
 
   if (cfg.noDoctors) {
@@ -615,6 +636,7 @@ async function init() {
   api.onStateChange(render)
   api.onShowPatientForm(showPatientForm)
   api.onSetupWarning(showSetupWarning)
+  api.onServiceWarning(showServiceWarning)
   api.onPickDoctor(showDoctorPicker)
   api.onAutoStartRecording(async () => {
     setTimeout(() => api.startRecording(), 500)

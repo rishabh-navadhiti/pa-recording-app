@@ -35,5 +35,6 @@ contextBridge.exposeInMainWorld('api', {
   onShowPatientForm:      (cb) => ipcRenderer.on('show-patient-form',     ()       => cb()),
   onSetupWarning:         (cb) => ipcRenderer.on('setup-warning',         (_, msg) => cb(msg)),
   onAutoStartRecording:   (cb) => ipcRenderer.on('auto-start-recording',  ()          => cb()),
-  onPickDoctor:           (cb) => ipcRenderer.on('pick-doctor',           (_, doctors) => cb(doctors))
+  onPickDoctor:           (cb) => ipcRenderer.on('pick-doctor',           (_, doctors) => cb(doctors)),
+  onServiceWarning:       (cb) => ipcRenderer.on('service-warning',       (_, data)    => cb(data))
 })

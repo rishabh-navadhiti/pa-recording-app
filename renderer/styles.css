@@ -334,6 +334,63 @@ button.outline:hover { opacity: 0.85; }
   line-height: 1.5;
 }
 
+/* Runtime service warning (ElevenLabs / Claude limit) */
+#service-warning {
+  background: #1e1a00;
+  border: 1px solid #6b5c00;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #f0d060;
+  line-height: 1.5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#service-warning-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+#service-warning-content .warn-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+#service-warning-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+#service-warning-title {
+  color: #f5e070;
+  font-weight: 600;
+}
+
+#service-warning-message {
+  color: #c8b840;
+}
+
+#btn-service-warning-dismiss {
+  flex-shrink: 0;
+  color: #888;
+  font-size: 11px;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+#btn-service-warning-dismiss:hover {
+  color: #f0d060;
+  background: #3a3000;
+}
+
 /* Settings view */
 #settings-view {
   display: flex;

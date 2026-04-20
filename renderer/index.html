@@ -115,8 +115,20 @@
       <div id="form-countdown"></div>
     </div>
 
-    <!-- Setup warning (BlackHole / ffmpeg) -->
+    <!-- Setup warning (BlackHole / ffmpeg / Claude not installed) -->
     <div id="setup-warning" class="hidden"></div>
+
+    <!-- Runtime service warning (ElevenLabs errors / Claude limit exceeded) -->
+    <div id="service-warning" class="hidden">
+      <div id="service-warning-content">
+        <span class="warn-icon">&#9888;</span>
+        <div id="service-warning-text">
+          <strong id="service-warning-title"></strong>
+          <div id="service-warning-message"></div>
+        </div>
+      </div>
+      <button id="btn-service-warning-dismiss" class="icon-btn" title="Dismiss">&#10005;</button>
+    </div>
 
   </div>
   <script src="renderer.js"></script>

@@ -4,6 +4,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, screen, dialog } = require('ele
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const https = require('https')
 const { spawn, execSync } = require('child_process')
 
 // ---------------------------------------------------------------------------
@@ -201,8 +202,20 @@ function notifyUser(title, body) {
   }
 }
 
+function validateElevenLabsKey(apiKey) {
+  return new Promise(resolve => {
+    const req = https.request(
+      { hostname: 'api.elevenlabs.io', path: '/v1/user', method: 'GET', headers: { 'xi-api-key': apiKey } },
+      res => resolve(res.statusCode === 200 ? 'valid' : res.statusCode === 401 ? 'invalid' : 'unknown')
+    )
+    req.on('error', () => resolve('unknown'))
+    req.end()
+  })
+}
+
 function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath) {
   const tag = caseTag ? `[${caseTag}] ` : ''
+  const stderrChunks = []
   const transcribeProc = spawn(PYTHON, [
     path.join(__dirname, 'python', 'transcribe.py'),
     '--input', mp3Path,
@@ -210,14 +223,31 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
   ], { cwd: __dirname, stdio: 'pipe' })
 
   transcribeProc.stdout.on('data', d => log(`${tag}[transcribe] ${d.toString().trim()}`))
-  transcribeProc.stderr.on('data', d => log(`${tag}[transcribe ERR] ${d.toString().trim()}`))
+  transcribeProc.stderr.on('data', d => {
+    const msg = d.toString()
+    stderrChunks.push(msg)
+    log(`${tag}[transcribe ERR] ${msg.trim()}`)
+  })
   transcribeProc.on('close', code => {
     log(`${tag}[transcribe] exited ${code}`)
     if (code === 0) {
       spawnSoapGeneration(transcriptDest, soapNotePath, caseTag, false, templatePath)
       spawnDocxConversion(transcriptDest, caseTag)
     } else {
-      notifyUser('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
+      const stderr = stderrChunks.join('')
+      if (/401|invalid.api.key|unauthorized/i.test(stderr)) {
+        win.webContents.send('service-warning', {
+          title: 'ElevenLabs API key invalid',
+          message: 'Your API key was rejected. Update it in Settings to resume transcription.'
+        })
+      } else if (/429|quota.exceeded|rate.limit|insufficient.credit/i.test(stderr)) {
+        win.webContents.send('service-warning', {
+          title: 'ElevenLabs quota exceeded',
+          message: 'Your ElevenLabs usage limit has been reached. Transcription could not complete.'
+        })
+      } else {
+        notifyUser('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
+      }
     }
   })
   log(`${tag}Transcription started for: ${mp3Path}`)
@@ -248,10 +278,27 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     }
   )
 
-  claudeProc.stdout.on('data', d => log(`${tag}[soap] ${d.toString().trim()}`))
-  claudeProc.stderr.on('data', d => log(`${tag}[soap ERR] ${d.toString().trim()}`))
+  const soapOutputChunks = []
+  claudeProc.stdout.on('data', d => {
+    const msg = d.toString()
+    soapOutputChunks.push(msg)
+    log(`${tag}[soap] ${msg.trim()}`)
+  })
+  claudeProc.stderr.on('data', d => {
+    const msg = d.toString()
+    soapOutputChunks.push(msg)
+    log(`${tag}[soap ERR] ${msg.trim()}`)
+  })
   claudeProc.on('close', code => {
     log(`${tag}[soap] claude exited ${code}`)
+    const soapOutput = soapOutputChunks.join('')
+    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(soapOutput)) {
+      win.webContents.send('service-warning', {
+        title: 'Claude usage limit reached',
+        message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
+      })
+      return
+    }
     if (code === 0 && soapNoteMdPath) {
       if (fs.existsSync(soapNoteMdPath)) {
         log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
@@ -265,7 +312,12 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       }
     }
   })
-  claudeProc.on('error', err => log(`${tag}[soap ERR] failed to spawn claude: ${err.message}`))
+  claudeProc.on('error', err => {
+    log(`${tag}[soap ERR] failed to spawn claude: ${err.message}`)
+    if (err.code === 'ENOENT') {
+      win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+    }
+  })
 }
 
 function spawnDocxConversion(mdPath, caseTag) {
@@ -514,23 +566,22 @@ function registerIpcHandlers() {
     if (doctors.length === 1) {
       activeDoctorId = doctors[0].id
       log(`Auto-selected doctor: ${doctors[0].name}`)
-      setState(STATE.SESSION_ACTIVE)
-      return { ok: true }
+    } else {
+      // Multiple doctors — ask renderer to pick
+      const selectedId = await new Promise(resolve => {
+        doctorPickerResolver = resolve
+        win.webContents.send('pick-doctor', doctors)
+      })
+
+      if (!selectedId) {
+        log('start-session cancelled: no doctor selected')
+        return { ok: false, error: 'cancelled' }
+      }
+
+      activeDoctorId = selectedId
+      log(`Selected doctor ID: ${selectedId}`)
     }
 
-    // Multiple doctors — ask renderer to pick
-    const selectedId = await new Promise(resolve => {
-      doctorPickerResolver = resolve
-      win.webContents.send('pick-doctor', doctors)
-    })
-
-    if (!selectedId) {
-      log('start-session cancelled: no doctor selected')
-      return { ok: false, error: 'cancelled' }
-    }
-
-    activeDoctorId = selectedId
-    log(`Selected doctor ID: ${selectedId}`)
     setState(STATE.SESSION_ACTIVE)
     return { ok: true }
   })
@@ -707,12 +758,19 @@ function registerIpcHandlers() {
   })
 
   // ---- get-config-status ----
-  ipcMain.handle('get-config-status', () => {
+  ipcMain.handle('get-config-status', async () => {
     const env = readEnv()
     const apiKey = env['ELEVENLABS_API_KEY'] || ''
     const settings = readSettings()
+    const keyMissing = !apiKey || apiKey === 'your_key_here'
+    let elevenLabsKeyInvalid = false
+    if (!keyMissing) {
+      const status = await validateElevenLabsKey(apiKey)
+      elevenLabsKeyInvalid = status === 'invalid'
+    }
     return {
-      elevenLabsKeyMissing: !apiKey || apiKey === 'your_key_here',
+      elevenLabsKeyMissing: keyMissing,
+      elevenLabsKeyInvalid,
       noDoctors: (settings.doctors || []).length === 0
     }
   })
