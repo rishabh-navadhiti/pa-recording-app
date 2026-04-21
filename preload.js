@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   stopRecording:     ()     => ipcRenderer.invoke('stop-recording'),
   pauseRecording:    ()     => ipcRenderer.invoke('pause-recording'),
   resumeRecording:   ()     => ipcRenderer.invoke('resume-recording'),
+  discardRecording:  ()     => ipcRenderer.invoke('discard-recording'),
   submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
 
   getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
@@ -28,6 +29,8 @@ contextBridge.exposeInMainWorld('api', {
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
+  getNotesDir:        ()          => ipcRenderer.invoke('get-notes-dir'),
+  changeNotesDir:     ()          => ipcRenderer.invoke('change-notes-dir'),
 
   hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
 

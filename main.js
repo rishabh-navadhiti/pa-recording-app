@@ -1,6 +1,8 @@
 'use strict'
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, dialog } = require('electron')
+app.setName('Ai medical scribe')
+app.setAppUserModelId('Ai medical scribe')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -38,14 +40,19 @@ let doctorPickerResolver = null
 // Paths
 // ---------------------------------------------------------------------------
 
-const DOCS_DIR    = app.getPath('documents')
-const NOTES_DIR   = path.join(DOCS_DIR, 'AI Medical Notes')
-const CASES_DIR   = path.join(NOTES_DIR, 'Cases')
-const TEMPLATES_DIR = path.join(NOTES_DIR, 'templates')
-const LOG_FILE    = path.join(NOTES_DIR, 'app.log')
-
-// Bundled Claude config — copied to NOTES_DIR/.claude on first run
 const CLAUDE_CONFIG_SRC = path.join(__dirname, 'notes-claude')
+
+let NOTES_DIR   = ''
+let CASES_DIR   = ''
+let TEMPLATES_DIR = ''
+let LOG_FILE    = ''
+
+function loadPaths(notesDir) {
+  NOTES_DIR     = notesDir
+  CASES_DIR     = path.join(notesDir, 'Cases')
+  TEMPLATES_DIR = path.join(notesDir, 'templates')
+  LOG_FILE      = path.join(notesDir, 'app.log')
+}
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -65,7 +72,7 @@ function log(msg) {
 // Settings helpers (settings.json in NOTES_DIR)
 // ---------------------------------------------------------------------------
 
-const SETTINGS_PATH = path.join(NOTES_DIR, 'settings.json')
+function getSettingsPath() { return path.join(NOTES_DIR, 'settings.json') }
 
 const DEFAULT_SETTINGS = {
   autoRecord: false,
@@ -76,13 +83,13 @@ const DEFAULT_SETTINGS = {
 
 function readSettings() {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')) }
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8')) }
   } catch { return { ...DEFAULT_SETTINGS } }
 }
 
 function writeSettings(settings) {
-  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true })
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8')
+  fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true })
+  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8')
 }
 
 // ---------------------------------------------------------------------------
@@ -303,12 +310,8 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       if (fs.existsSync(soapNoteMdPath)) {
         log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
         spawnDocxConversion(soapNoteMdPath, caseTag)
-      } else if (!isRetry) {
-        log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found — skill may not have been invoked. Retrying...`)
-        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, true, templatePath)
       } else {
-        log(`${tag}[soap] ERROR: SOAP note file still missing after retry — manual intervention required: ${soapNoteMdPath}`)
-        notifyUser('SOAP generation failed', `Case: ${caseTag || 'unknown'} — skill may not have been invoked`)
+        log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found at expected path: ${soapNoteMdPath}`)
       }
     }
   })
@@ -363,7 +366,13 @@ function checkForUpdates() {
     // 'Already up to date.' means no changes — do nothing
     if (output === 'Already up to date.') return
 
-    // New commits were pulled — notify the user via tray tooltip and OS notification
+    // New commits were pulled — re-sync skills immediately from updated code
+    if (NOTES_DIR) {
+      copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+      log('[update] Skills re-synced from updated code')
+    }
+
+    // Notify the user via tray tooltip and OS notification
     log('[update] New version pulled — notifying user')
     if (tray) tray.setToolTip('AI Medical Scribe — updated, restart to apply')
 
@@ -413,17 +422,21 @@ if (!gotTheLock) {
 // App ready
 // ---------------------------------------------------------------------------
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // No dock icon on macOS
   app.dock?.hide()
 
-  // Ensure runtime directories exist
-  fs.mkdirSync(CASES_DIR, { recursive: true })
-  fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
-
-  // Always sync bundled .claude config so SKILL.md stays current
-  copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-  log('.claude config synced to AI Medical Notes')
+  // Load notes directory from .env if already configured
+  const env = readEnv()
+  const savedPath = env.NOTES_DIR_PATH && env.NOTES_DIR_PATH.trim()
+  if (savedPath) {
+    loadPaths(savedPath)
+    fs.mkdirSync(CASES_DIR, { recursive: true })
+    fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
+    copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    log('.claude config synced to AI Medical Notes')
+  }
+  // If no path set, the renderer will show the folder setup view
 
 
   log('App started')
@@ -748,6 +761,36 @@ function registerIpcHandlers() {
     return true
   })
 
+  // ---- discard-recording ----
+  ipcMain.handle('discard-recording', async () => {
+    log('discard-recording')
+
+    if (recordingProcess) {
+      const procToStop = recordingProcess
+      recordingProcess = null
+      try {
+        procToStop.stdin.write('stop\n')
+        procToStop.stdin.end()
+      } catch (e) {
+        log(`stdin write failed (process may have already exited): ${e.message}`)
+      }
+      await waitForExit(procToStop)
+    }
+
+    if (tempMp3Path && fs.existsSync(tempMp3Path)) {
+      try {
+        fs.unlinkSync(tempMp3Path)
+        log(`Discarded temp MP3: ${tempMp3Path}`)
+      } catch (e) {
+        log(`Failed to delete temp MP3: ${e.message}`)
+      }
+    }
+    tempMp3Path = null
+
+    setState(STATE.SESSION_ACTIVE)
+    return true
+  })
+
   // ---- submit-patient-name (registered once at startup) ----
   ipcMain.handle('submit-patient-name', (_, name) => {
     if (patientNameResolver) {
@@ -768,10 +811,12 @@ function registerIpcHandlers() {
       const status = await validateElevenLabsKey(apiKey)
       elevenLabsKeyInvalid = status === 'invalid'
     }
+    const notesDirEnv = readEnv().NOTES_DIR_PATH
     return {
       elevenLabsKeyMissing: keyMissing,
       elevenLabsKeyInvalid,
-      noDoctors: (settings.doctors || []).length === 0
+      noDoctors: (settings.doctors || []).length === 0,
+      notesDirMissing: !notesDirEnv || !notesDirEnv.trim()
     }
   })
 
@@ -796,13 +841,15 @@ function registerIpcHandlers() {
       return { ok: false, error: 'cancelled' }
     }
 
-    const templatePath = result.filePaths[0]
-    const doctor = { id: String(Date.now()), name: trimmed, templatePath }
+    const srcPath = result.filePaths[0]
+    const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
+    fs.copyFileSync(srcPath, destPath)
+    const doctor = { id: String(Date.now()), name: trimmed, templatePath: destPath }
     const settings = readSettings()
     const doctors = settings.doctors || []
     doctors.push(doctor)
     writeSettings({ ...settings, doctors })
-    log(`Doctor added: ${trimmed} (template: ${templatePath})`)
+    log(`Doctor added: ${trimmed} (template: ${destPath})`)
     return { ok: true, doctor }
   })
 
@@ -822,9 +869,12 @@ function registerIpcHandlers() {
       return { ok: false, error: 'cancelled' }
     }
 
-    doctor.templatePath = result.filePaths[0]
+    const srcPath = result.filePaths[0]
+    const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
+    fs.copyFileSync(srcPath, destPath)
+    doctor.templatePath = destPath
     writeSettings(settings)
-    log(`Template updated for ${doctor.name}: ${doctor.templatePath}`)
+    log(`Template updated for ${doctor.name}: ${destPath}`)
     return { ok: true, doctor }
   })
 
@@ -966,6 +1016,29 @@ function registerIpcHandlers() {
     // Return to SESSION_ACTIVE immediately — pipeline runs in background
     setState(STATE.SESSION_ACTIVE)
     return true
+  })
+
+  // ---- get-notes-dir ----
+  ipcMain.handle('get-notes-dir', () => NOTES_DIR)
+
+  // ---- change-notes-dir ----
+  ipcMain.handle('change-notes-dir', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Choose where to store your AI Medical Notes',
+      buttonLabel: 'Select Folder',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || !result.filePaths.length) return { ok: false }
+    const newNotesDir = path.join(result.filePaths[0], 'AI Medical Notes')
+    const oldSettings = readSettings()
+    writeEnvKey('NOTES_DIR_PATH', newNotesDir)
+    loadPaths(newNotesDir)
+    fs.mkdirSync(CASES_DIR, { recursive: true })
+    fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
+    writeSettings(oldSettings)
+    copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    log(`Notes directory set to: ${NOTES_DIR}`)
+    return { ok: true, path: NOTES_DIR }
   })
 }
 
