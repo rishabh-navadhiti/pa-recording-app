@@ -1023,10 +1023,12 @@ function registerIpcHandlers() {
     })
     if (result.canceled || !result.filePaths.length) return { ok: false }
     const newNotesDir = path.join(result.filePaths[0], 'AI Medical Notes')
+    const oldSettings = readSettings()
     writeEnvKey('NOTES_DIR_PATH', newNotesDir)
     loadPaths(newNotesDir)
     fs.mkdirSync(CASES_DIR, { recursive: true })
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
+    writeSettings(oldSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log(`Notes directory set to: ${NOTES_DIR}`)
     return { ok: true, path: NOTES_DIR }
