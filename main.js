@@ -310,12 +310,8 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       if (fs.existsSync(soapNoteMdPath)) {
         log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
         spawnDocxConversion(soapNoteMdPath, caseTag)
-      } else if (!isRetry) {
-        log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found — skill may not have been invoked. Retrying...`)
-        spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, true, templatePath)
       } else {
-        log(`${tag}[soap] ERROR: SOAP note file still missing after retry — manual intervention required: ${soapNoteMdPath}`)
-        notifyUser('SOAP generation failed', `Case: ${caseTag || 'unknown'} — skill may not have been invoked`)
+        log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found at expected path: ${soapNoteMdPath}`)
       }
     }
   })
@@ -370,7 +366,13 @@ function checkForUpdates() {
     // 'Already up to date.' means no changes — do nothing
     if (output === 'Already up to date.') return
 
-    // New commits were pulled — notify the user via tray tooltip and OS notification
+    // New commits were pulled — re-sync skills immediately from updated code
+    if (NOTES_DIR) {
+      copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+      log('[update] Skills re-synced from updated code')
+    }
+
+    // Notify the user via tray tooltip and OS notification
     log('[update] New version pulled — notifying user')
     if (tray) tray.setToolTip('AI Medical Scribe — updated, restart to apply')
 
@@ -839,13 +841,15 @@ function registerIpcHandlers() {
       return { ok: false, error: 'cancelled' }
     }
 
-    const templatePath = result.filePaths[0]
-    const doctor = { id: String(Date.now()), name: trimmed, templatePath }
+    const srcPath = result.filePaths[0]
+    const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
+    fs.copyFileSync(srcPath, destPath)
+    const doctor = { id: String(Date.now()), name: trimmed, templatePath: destPath }
     const settings = readSettings()
     const doctors = settings.doctors || []
     doctors.push(doctor)
     writeSettings({ ...settings, doctors })
-    log(`Doctor added: ${trimmed} (template: ${templatePath})`)
+    log(`Doctor added: ${trimmed} (template: ${destPath})`)
     return { ok: true, doctor }
   })
 
@@ -865,9 +869,12 @@ function registerIpcHandlers() {
       return { ok: false, error: 'cancelled' }
     }
 
-    doctor.templatePath = result.filePaths[0]
+    const srcPath = result.filePaths[0]
+    const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
+    fs.copyFileSync(srcPath, destPath)
+    doctor.templatePath = destPath
     writeSettings(settings)
-    log(`Template updated for ${doctor.name}: ${doctor.templatePath}`)
+    log(`Template updated for ${doctor.name}: ${destPath}`)
     return { ok: true, doctor }
   })
 
