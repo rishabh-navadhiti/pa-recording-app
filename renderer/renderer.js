@@ -737,7 +737,10 @@ function showTab(name) {
   const showingRecord = name === 'record'
 
   if (tabRecord)    tabRecord.style.display    = showingRecord ? '' : 'none'
-  if (tabTemplates) tabTemplates.style.display = showingRecord ? 'none' : ''
+  if (tabTemplates) {
+    tabTemplates.classList.toggle('hidden', showingRecord)
+    tabTemplates.style.display = showingRecord ? 'none' : ''
+  }
 
   if (statusRow) statusRow.style.display = showingRecord ? '' : 'none'
   if (tabTitle)  tabTitle.classList.toggle('hidden', showingRecord)
