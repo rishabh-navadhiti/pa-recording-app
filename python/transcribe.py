@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/speech-to-text'
-ELEVENLABS_MODEL   = 'scribe_v1'
+ELEVENLABS_MODEL   = 'scribe_v2'
 
 # ---------------------------------------------------------------------------
 # Transcription
