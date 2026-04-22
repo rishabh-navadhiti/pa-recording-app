@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('api', {
   browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
   processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
 
+  browseNotesFiles:         ()                           => ipcRenderer.invoke('browse-notes-files'),
+  startTemplateCreation:    (doctorName, filePaths)      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
+  getTemplateJobStatus:     ()                           => ipcRenderer.invoke('get-template-job-status'),
+  cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),
+
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
@@ -39,5 +44,6 @@ contextBridge.exposeInMainWorld('api', {
   onSetupWarning:         (cb) => ipcRenderer.on('setup-warning',         (_, msg) => cb(msg)),
   onAutoStartRecording:   (cb) => ipcRenderer.on('auto-start-recording',  ()          => cb()),
   onPickDoctor:           (cb) => ipcRenderer.on('pick-doctor',           (_, doctors) => cb(doctors)),
-  onServiceWarning:       (cb) => ipcRenderer.on('service-warning',       (_, data)    => cb(data))
+  onServiceWarning:       (cb) => ipcRenderer.on('service-warning',       (_, data)    => cb(data)),
+  onTemplateJobStatus:    (cb) => ipcRenderer.on('template-job-status',   (_, job)     => cb(job))
 })

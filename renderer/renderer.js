@@ -61,6 +61,30 @@ const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
 const folderSetup       = document.getElementById('folder-setup')
 const btnBrowseNotesDir = document.getElementById('btn-browse-notes-dir')
 
+// --- Tabs + Templates tab refs ---
+const tabRecord                 = document.getElementById('tab-record')
+const tabTemplates              = document.getElementById('tab-templates')
+const tabBar                    = document.getElementById('tab-bar')
+const tabTitle                  = document.getElementById('tab-title')
+const statusRow                 = document.getElementById('status-row')
+const btnTabRecord              = document.getElementById('btn-tab-record')
+const btnTabTemplates           = document.getElementById('btn-tab-templates')
+const templateListEl            = document.getElementById('template-list')
+const templateJobBanner         = document.getElementById('template-job-banner')
+const templateJobBannerText     = document.getElementById('template-job-banner-text')
+const btnTemplateJobCancel      = document.getElementById('btn-template-job-cancel')
+const templateListView          = document.getElementById('template-list-view')
+const btnTemplateCreateAi       = document.getElementById('btn-template-create-ai')
+const templateUploadNameInput   = document.getElementById('template-upload-name-input')
+const btnTemplateAddUpload      = document.getElementById('btn-template-add-upload')
+const createTemplateView        = document.getElementById('create-template-view')
+const btnCreateTemplateBack     = document.getElementById('btn-create-template-back')
+const createTemplateDoctorInput = document.getElementById('create-template-doctor-input')
+const createTemplateFilesEl     = document.getElementById('create-template-files')
+const btnCreateTemplateAddFiles = document.getElementById('btn-create-template-add-files')
+const btnCreateTemplateStart    = document.getElementById('btn-create-template-start')
+const createTemplateError       = document.getElementById('create-template-error')
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -412,8 +436,10 @@ doctorInput.addEventListener('keydown', e => {
 
 function showSettings() {
   settingsOpen = true
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker]
-    .forEach(el => { if (el) el.style.display = 'none' })
+  // Hide both tabs + tab bar; settings is a full overlay
+  if (tabRecord)    tabRecord.style.display    = 'none'
+  if (tabTemplates) tabTemplates.style.display = 'none'
+  if (tabBar)       tabBar.style.display       = 'none'
   settingsView.classList.remove('hidden')
   loadSettings()
 }
@@ -421,8 +447,9 @@ function showSettings() {
 function hideSettings() {
   settingsOpen = false
   settingsView.classList.add('hidden')
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker]
-    .forEach(el => { if (el) el.style.display = '' })
+  if (tabBar) tabBar.style.display = ''
+  // Restore the currently-active tab
+  showTab(activeTab)
   render(currentRenderedState)
 }
 
@@ -657,10 +684,9 @@ btnDoctorPickerCancel.addEventListener('click', () => {
 
 const MAIN_CONTENT_ELS = [
   () => document.getElementById('header-row'),
-  () => configWarnings,
-  () => actionButtons,
-  () => setupWarning,
-  () => serviceWarning
+  () => tabRecord,
+  () => tabTemplates,
+  () => tabBar
 ]
 
 function showFolderSetup() {
@@ -671,6 +697,8 @@ function showFolderSetup() {
 function hideFolderSetup() {
   folderSetup.classList.add('hidden')
   MAIN_CONTENT_ELS.forEach(get => { const el = get(); if (el) el.style.display = '' })
+  // Reapply tab visibility after restoring main content
+  showTab(activeTab)
 }
 
 btnBrowseNotesDir.addEventListener('click', async () => {
@@ -694,6 +722,331 @@ function registerAppListeners() {
   api.onPickDoctor(showDoctorPicker)
   api.onAutoStartRecording(async () => {
     setTimeout(() => api.startRecording(), 500)
+  })
+  api.onTemplateJobStatus(handleTemplateJobStatus)
+}
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+
+let activeTab = 'record'
+
+function showTab(name) {
+  activeTab = name
+  const showingRecord = name === 'record'
+
+  if (tabRecord)    tabRecord.style.display    = showingRecord ? '' : 'none'
+  if (tabTemplates) tabTemplates.style.display = showingRecord ? 'none' : ''
+
+  if (statusRow) statusRow.style.display = showingRecord ? '' : 'none'
+  if (tabTitle)  tabTitle.classList.toggle('hidden', showingRecord)
+
+  if (btnTabRecord)    btnTabRecord.classList.toggle('tab-active', showingRecord)
+  if (btnTabTemplates) btnTabTemplates.classList.toggle('tab-active', !showingRecord)
+
+  if (!showingRecord) {
+    // Reset any open sub-view when re-entering the templates tab
+    hideCreateTemplateSubview()
+    renderTemplateList()
+    refreshTemplateJobBanner()
+  }
+}
+
+if (btnTabRecord)    btnTabRecord.addEventListener('click', () => showTab('record'))
+if (btnTabTemplates) btnTabTemplates.addEventListener('click', () => showTab('templates'))
+
+// ---------------------------------------------------------------------------
+// Templates tab — list + actions
+// ---------------------------------------------------------------------------
+
+async function renderTemplateList() {
+  if (!templateListEl) return
+  const doctors = await api.getDoctors()
+  templateListEl.innerHTML = ''
+
+  if (doctors.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'template-empty'
+    empty.textContent = 'No templates yet. Add one using the buttons below.'
+    templateListEl.appendChild(empty)
+    return
+  }
+
+  doctors.forEach(doc => {
+    const row = document.createElement('div')
+    row.className = 'template-row'
+
+    const nameSpan = document.createElement('span')
+    nameSpan.className = 'template-row-name'
+    nameSpan.textContent = doc.name
+
+    const fileSpan = document.createElement('span')
+    fileSpan.className = 'template-row-file'
+    fileSpan.textContent = doc.templatePath ? doc.templatePath.split(/[\\/]/).pop() : '(no template file)'
+    fileSpan.title = doc.templatePath || ''
+
+    const replaceBtn = document.createElement('button')
+    replaceBtn.className = 'template-row-action'
+    replaceBtn.textContent = '↻'
+    replaceBtn.title = 'Replace template file'
+    replaceBtn.addEventListener('click', async () => {
+      const res = await api.updateDoctorTemplate(doc.id)
+      if (res.ok) await renderTemplateList()
+    })
+
+    const removeBtn = document.createElement('button')
+    removeBtn.className = 'template-row-action template-row-remove'
+    removeBtn.textContent = '✕'
+    removeBtn.title = 'Remove'
+    removeBtn.addEventListener('click', async () => {
+      if (!confirm(`Remove template for ${doc.name}?`)) return
+      await api.removeDoctor(doc.id)
+      await renderTemplateList()
+    })
+
+    row.appendChild(nameSpan)
+    row.appendChild(fileSpan)
+    row.appendChild(replaceBtn)
+    row.appendChild(removeBtn)
+    templateListEl.appendChild(row)
+  })
+}
+
+// --- Add from file (upload .md) ---
+if (btnTemplateAddUpload) {
+  btnTemplateAddUpload.addEventListener('click', async () => {
+    const name = (templateUploadNameInput.value || '').trim()
+    if (!name) {
+      templateUploadNameInput.focus()
+      return
+    }
+    btnTemplateAddUpload.disabled = true
+    const res = await api.addDoctor(name)
+    btnTemplateAddUpload.disabled = false
+    if (res.ok) {
+      templateUploadNameInput.value = ''
+      await renderTemplateList()
+      // Clear legacy doctor-warn in case it was showing
+      warnDoctor.classList.add('hidden')
+      updateConfigWarningsVisibility()
+    }
+  })
+}
+if (templateUploadNameInput) {
+  templateUploadNameInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') btnTemplateAddUpload.click()
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Templates tab — Create with AI sub-view
+// ---------------------------------------------------------------------------
+
+let createTemplateFiles = []
+
+function showCreateTemplateSubview() {
+  createTemplateFiles = []
+  if (createTemplateDoctorInput) createTemplateDoctorInput.value = ''
+  renderCreateTemplateFiles()
+  hideCreateTemplateError()
+  if (btnCreateTemplateStart) btnCreateTemplateStart.disabled = true
+  if (templateListView)     templateListView.classList.add('hidden')
+  if (createTemplateView)   createTemplateView.classList.remove('hidden')
+  if (createTemplateDoctorInput) createTemplateDoctorInput.focus()
+}
+
+function hideCreateTemplateSubview() {
+  if (createTemplateView) createTemplateView.classList.add('hidden')
+  if (templateListView)   templateListView.classList.remove('hidden')
+}
+
+function renderCreateTemplateFiles() {
+  if (!createTemplateFilesEl) return
+  createTemplateFilesEl.innerHTML = ''
+  if (createTemplateFiles.length === 0) {
+    createTemplateFilesEl.classList.add('create-template-files-empty')
+    createTemplateFilesEl.textContent = 'No files added yet'
+    return
+  }
+  createTemplateFilesEl.classList.remove('create-template-files-empty')
+  createTemplateFiles.forEach((fp, idx) => {
+    const row = document.createElement('div')
+    row.className = 'create-template-file-row'
+    const name = document.createElement('span')
+    name.className = 'create-template-file-name'
+    name.textContent = fp.split(/[\\/]/).pop()
+    name.title = fp
+    const rm = document.createElement('button')
+    rm.className = 'create-template-file-remove'
+    rm.textContent = '✕'
+    rm.title = 'Remove'
+    rm.addEventListener('click', () => {
+      createTemplateFiles.splice(idx, 1)
+      renderCreateTemplateFiles()
+      updateCreateTemplateStartEnabled()
+    })
+    row.appendChild(name)
+    row.appendChild(rm)
+    createTemplateFilesEl.appendChild(row)
+  })
+}
+
+function updateCreateTemplateStartEnabled() {
+  if (!btnCreateTemplateStart) return
+  const name = (createTemplateDoctorInput?.value || '').trim()
+  btnCreateTemplateStart.disabled = !name || createTemplateFiles.length === 0
+}
+
+function showCreateTemplateError(msg) {
+  if (!createTemplateError) return
+  createTemplateError.textContent = msg
+  createTemplateError.classList.remove('hidden')
+}
+
+function hideCreateTemplateError() {
+  if (createTemplateError) createTemplateError.classList.add('hidden')
+}
+
+if (btnCreateTemplateBack) {
+  btnCreateTemplateBack.addEventListener('click', hideCreateTemplateSubview)
+}
+
+if (btnTemplateCreateAi) {
+  btnTemplateCreateAi.addEventListener('click', showCreateTemplateSubview)
+}
+
+if (createTemplateDoctorInput) {
+  createTemplateDoctorInput.addEventListener('input', updateCreateTemplateStartEnabled)
+}
+
+if (btnCreateTemplateAddFiles) {
+  btnCreateTemplateAddFiles.addEventListener('click', async () => {
+    btnCreateTemplateAddFiles.disabled = true
+    try {
+      const paths = await api.browseNotesFiles()
+      if (Array.isArray(paths) && paths.length > 0) {
+        // De-duplicate against already-added files
+        const set = new Set(createTemplateFiles)
+        paths.forEach(p => set.add(p))
+        createTemplateFiles = Array.from(set)
+        renderCreateTemplateFiles()
+        updateCreateTemplateStartEnabled()
+      }
+    } finally {
+      btnCreateTemplateAddFiles.disabled = false
+    }
+  })
+}
+
+if (btnCreateTemplateStart) {
+  btnCreateTemplateStart.addEventListener('click', async () => {
+    hideCreateTemplateError()
+    const name = (createTemplateDoctorInput.value || '').trim()
+    if (!name) {
+      showCreateTemplateError('Doctor name is required')
+      return
+    }
+    if (createTemplateFiles.length === 0) {
+      showCreateTemplateError('Add at least one source file')
+      return
+    }
+
+    btnCreateTemplateStart.disabled = true
+    const res = await api.startTemplateCreation(name, createTemplateFiles)
+    if (!res.ok) {
+      showCreateTemplateError(res.error || 'Failed to start')
+      btnCreateTemplateStart.disabled = false
+      return
+    }
+    // Return to the list view; the job banner will show progress
+    hideCreateTemplateSubview()
+    refreshTemplateJobBanner()
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Templates tab — Running job banner
+// ---------------------------------------------------------------------------
+
+let jobPollInterval = null
+
+function formatElapsed(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000))
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return m > 0 ? `${m} min ${s}s` : `${s}s`
+}
+
+function handleTemplateJobStatus(job) {
+  if (!templateJobBanner) return
+  if (!job || job.status === 'idle') {
+    templateJobBanner.classList.add('hidden')
+    stopJobPolling()
+    return
+  }
+  if (job.status === 'running') {
+    templateJobBanner.classList.remove('hidden')
+    templateJobBanner.classList.remove('banner-failed', 'banner-success')
+    const elapsed = formatElapsed(Date.now() - (job.startedAt || Date.now()))
+    templateJobBannerText.innerHTML = `Creating template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
+    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
+    startJobPolling()
+  } else if (job.status === 'success') {
+    templateJobBanner.classList.remove('hidden')
+    templateJobBanner.classList.add('banner-success')
+    templateJobBanner.classList.remove('banner-failed')
+    templateJobBannerText.innerHTML = `Template ready for <strong>${job.doctorName || 'doctor'}</strong>`
+    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
+    stopJobPolling()
+    renderTemplateList()
+    // A doctor was added — dismiss the "Doctor not set up" warning if present
+    warnDoctor.classList.add('hidden')
+    updateConfigWarningsVisibility()
+    // Auto-dismiss after a few seconds
+    setTimeout(() => {
+      if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
+        templateJobBanner.classList.add('hidden')
+      }
+    }, 6000)
+  } else if (job.status === 'failed') {
+    templateJobBanner.classList.remove('hidden')
+    templateJobBanner.classList.add('banner-failed')
+    templateJobBanner.classList.remove('banner-success')
+    templateJobBannerText.innerHTML = `<strong>Template creation failed</strong> — ${job.error || 'unknown error'}`
+    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
+    stopJobPolling()
+  }
+}
+
+async function refreshTemplateJobBanner() {
+  if (!api.getTemplateJobStatus) return
+  const job = await api.getTemplateJobStatus()
+  handleTemplateJobStatus(job)
+}
+
+function startJobPolling() {
+  if (jobPollInterval) return
+  jobPollInterval = setInterval(async () => {
+    const job = await api.getTemplateJobStatus()
+    // Keep the banner fresh so elapsed-time updates even if no push arrived
+    handleTemplateJobStatus(job)
+  }, 3000)
+}
+
+function stopJobPolling() {
+  if (jobPollInterval) {
+    clearInterval(jobPollInterval)
+    jobPollInterval = null
+  }
+}
+
+if (btnTemplateJobCancel) {
+  btnTemplateJobCancel.addEventListener('click', async () => {
+    if (!confirm('Cancel template creation? Progress will be lost.')) return
+    btnTemplateJobCancel.disabled = true
+    await api.cancelTemplateCreation()
+    btnTemplateJobCancel.disabled = false
   })
 }
 
