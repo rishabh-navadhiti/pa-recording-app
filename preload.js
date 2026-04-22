@@ -34,10 +34,15 @@ contextBridge.exposeInMainWorld('api', {
 
   hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
 
-  onStateChange:          (cb) => ipcRenderer.on('state-change',          (_, s)   => cb(s)),
-  onShowPatientForm:      (cb) => ipcRenderer.on('show-patient-form',     ()       => cb()),
-  onSetupWarning:         (cb) => ipcRenderer.on('setup-warning',         (_, msg) => cb(msg)),
-  onAutoStartRecording:   (cb) => ipcRenderer.on('auto-start-recording',  ()          => cb()),
-  onPickDoctor:           (cb) => ipcRenderer.on('pick-doctor',           (_, doctors) => cb(doctors)),
-  onServiceWarning:       (cb) => ipcRenderer.on('service-warning',       (_, data)    => cb(data))
+  getSessionRecordings:    ()   => ipcRenderer.invoke('get-session-recordings'),
+  openStatusWindow:        ()   => ipcRenderer.invoke('open-status-window'),
+  closeStatusWindow:       ()   => ipcRenderer.invoke('close-status-window'),
+
+  onStateChange:           (cb) => ipcRenderer.on('state-change',            (_, s)       => cb(s)),
+  onShowPatientForm:       (cb) => ipcRenderer.on('show-patient-form',       ()           => cb()),
+  onSetupWarning:          (cb) => ipcRenderer.on('setup-warning',           (_, msg)     => cb(msg)),
+  onAutoStartRecording:    (cb) => ipcRenderer.on('auto-start-recording',    ()           => cb()),
+  onPickDoctor:            (cb) => ipcRenderer.on('pick-doctor',             (_, doctors) => cb(doctors)),
+  onServiceWarning:        (cb) => ipcRenderer.on('service-warning',         (_, data)    => cb(data)),
+  onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data))
 })

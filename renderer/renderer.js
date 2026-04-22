@@ -60,6 +60,7 @@ const notesDirPath      = document.getElementById('notes-dir-path')
 const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
 const folderSetup       = document.getElementById('folder-setup')
 const btnBrowseNotesDir = document.getElementById('btn-browse-notes-dir')
+const viewStatusBar     = document.getElementById('view-status-bar')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -68,6 +69,18 @@ const btnBrowseNotesDir = document.getElementById('btn-browse-notes-dir')
 let timerInterval = null
 let timerSeconds = 0
 
+function formatTime(secs) {
+  if (secs >= 3600) {
+    const h = String(Math.floor(secs / 3600)).padStart(2, '0')
+    const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0')
+    const s = String(secs % 60).padStart(2, '0')
+    return `${h}:${m}:${s}`
+  }
+  const m = String(Math.floor(secs / 60)).padStart(2, '0')
+  const s = String(secs % 60).padStart(2, '0')
+  return `${m}:${s}`
+}
+
 function startTimer() {
   timerSeconds = 0
   timerEl.textContent = '00:00'
@@ -75,9 +88,7 @@ function startTimer() {
   if (timerInterval) clearInterval(timerInterval)
   timerInterval = setInterval(() => {
     timerSeconds++
-    const m = String(Math.floor(timerSeconds / 60)).padStart(2, '0')
-    const s = String(timerSeconds % 60).padStart(2, '0')
-    timerEl.textContent = `${m}:${s}`
+    timerEl.textContent = formatTime(timerSeconds)
   }, 1000)
 }
 
@@ -101,9 +112,7 @@ function resumeTimer() {
   if (timerInterval) clearInterval(timerInterval)
   timerInterval = setInterval(() => {
     timerSeconds++
-    const m = String(Math.floor(timerSeconds / 60)).padStart(2, '0')
-    const s = String(timerSeconds % 60).padStart(2, '0')
-    timerEl.textContent = `${m}:${s}`
+    timerEl.textContent = formatTime(timerSeconds)
   }, 1000)
 }
 
@@ -125,6 +134,7 @@ function render(state) {
   patientForm.classList.add('hidden')
   uploadForm.classList.add('hidden')
   doctorPicker.classList.add('hidden')
+  viewStatusBar.classList.add('hidden')
 
   switch (state) {
     case STATE.IDLE: {
@@ -146,6 +156,7 @@ function render(state) {
       indicator.className = 'active'
       statusLabel.textContent = 'Session active'
       stopTimer()
+      viewStatusBar.classList.remove('hidden')
 
       const btnRec = makeButton('Start Recording', async () => {
         await api.startRecording()
@@ -167,6 +178,7 @@ function render(state) {
     case STATE.RECORDING: {
       indicator.className = 'pulsing'
       statusLabel.textContent = 'Recording...'
+      viewStatusBar.classList.remove('hidden')
       if (prevState === STATE.PAUSED) {
         resumeTimer()
       } else {
@@ -193,6 +205,7 @@ function render(state) {
     case STATE.PAUSED: {
       indicator.className = 'paused'
       statusLabel.textContent = 'Paused'
+      viewStatusBar.classList.remove('hidden')
       pauseTimer()
 
       const btnResume = makeButton('Resume', async () => {
@@ -215,6 +228,7 @@ function render(state) {
     case STATE.PROCESSING: {
       indicator.className = 'active'
       statusLabel.textContent = 'Processing...'
+      viewStatusBar.classList.remove('hidden')
       stopTimer()
 
       const btnDisabled = makeButton('Please wait...', null)
@@ -412,7 +426,7 @@ doctorInput.addEventListener('keydown', e => {
 
 function showSettings() {
   settingsOpen = true
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker]
+  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker, viewStatusBar]
     .forEach(el => { if (el) el.style.display = 'none' })
   settingsView.classList.remove('hidden')
   loadSettings()
@@ -421,7 +435,7 @@ function showSettings() {
 function hideSettings() {
   settingsOpen = false
   settingsView.classList.add('hidden')
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker]
+  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker, viewStatusBar]
     .forEach(el => { if (el) el.style.display = '' })
   render(currentRenderedState)
 }
@@ -660,7 +674,8 @@ const MAIN_CONTENT_ELS = [
   () => configWarnings,
   () => actionButtons,
   () => setupWarning,
-  () => serviceWarning
+  () => serviceWarning,
+  () => viewStatusBar
 ]
 
 function showFolderSetup() {
@@ -695,6 +710,11 @@ function registerAppListeners() {
   api.onAutoStartRecording(async () => {
     setTimeout(() => api.startRecording(), 500)
   })
+  api.onRecordingStatusUpdate(recordings => {
+    const btn = document.getElementById('btn-view-status')
+    if (btn) btn.textContent = recordings.length > 0 ? `View Status (${recordings.length})` : 'View Status'
+  })
+  document.getElementById('btn-view-status').addEventListener('click', () => api.openStatusWindow())
 }
 
 // ---------------------------------------------------------------------------

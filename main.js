@@ -23,6 +23,13 @@ const STATE = {
   PROCESSING: 'PROCESSING'
 }
 
+const STATUS_LABELS = {
+  transcribing:    'Transcribing...',
+  generating_note: 'Generating note...',
+  completed:       'Completed',
+  failed:          'Failed'
+}
+
 // ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
@@ -35,6 +42,9 @@ let tempMp3Path = null
 let patientNameResolver = null
 let activeDoctorId = null
 let doctorPickerResolver = null
+let activeSessionDir = null
+let statusWin = null
+let sessionRecordings = []
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -78,7 +88,8 @@ const DEFAULT_SETTINGS = {
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  doctors: []
+  doctors: [],
+  sessionCounter: 0
 }
 
 function readSettings() {
@@ -192,12 +203,25 @@ function sanitizeName(name) {
   return result || null
 }
 
+function createSessionFolder() {
+  const settings = readSettings()
+  const counter = (settings.sessionCounter || 0) + 1
+  const datestamp = new Date().toISOString().slice(0, 10)
+  const folderName = `${datestamp}(${counter})`
+  const sessionDir = path.join(CASES_DIR, folderName)
+  fs.mkdirSync(sessionDir, { recursive: true })
+  writeSettings({ ...settings, sessionCounter: counter })
+  log(`Session folder created: ${sessionDir}`)
+  return sessionDir
+}
+
 function buildCaseFolder(sanitizedName) {
   const datestamp = new Date().toISOString().slice(0, 10)
   const folderName = sanitizedName
     ? `${sanitizedName}_${datestamp}`
     : `recording_${datestamp}_${new Date().toISOString().slice(11, 19).replace(/:/g, '-')}`
-  const caseDir = path.join(CASES_DIR, folderName)
+  const baseDir = activeSessionDir || CASES_DIR
+  const caseDir = path.join(baseDir, folderName)
   fs.mkdirSync(caseDir, { recursive: true })
   return { caseDir, folderName }
 }
@@ -241,6 +265,7 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
       spawnSoapGeneration(transcriptDest, soapNotePath, caseTag, false, templatePath)
       spawnDocxConversion(transcriptDest, caseTag)
     } else {
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
       const stderr = stderrChunks.join('')
       if (/401|invalid.api.key|unauthorized/i.test(stderr)) {
         win.webContents.send('service-warning', {
@@ -262,6 +287,7 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
 
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
+  if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
   let prompt
   if (templatePath) {
@@ -304,6 +330,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         title: 'Claude usage limit reached',
         message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
       })
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
       return
     }
     if (code === 0 && soapNoteMdPath) {
@@ -312,7 +339,10 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         spawnDocxConversion(soapNoteMdPath, caseTag)
       } else {
         log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found at expected path: ${soapNoteMdPath}`)
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
       }
+    } else if (code !== 0) {
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
     }
   })
   claudeProc.on('error', err => {
@@ -335,8 +365,13 @@ function spawnDocxConversion(mdPath, caseTag) {
   proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
   proc.on('close', code => {
     log(`${tag}[docx] exited ${code}`)
-    if (code === 0 && path.basename(mdPath) !== 'transcript.md') {
-      notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
+    if (path.basename(mdPath) !== 'transcript.md') {
+      if (code === 0) {
+        notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
+        if (caseTag) updateRecordingStatus(caseTag, 'completed')
+      } else {
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      }
     }
   })
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
@@ -399,6 +434,41 @@ function copyDirSync(src, dest) {
     } else {
       fs.copyFileSync(srcPath, destPath)
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Recording status tracking
+// ---------------------------------------------------------------------------
+
+function addRecordingEntry(caseTag, displayName) {
+  sessionRecordings.push({
+    caseTag,
+    displayName: displayName || 'Unnamed',
+    startedAt: Date.now(),
+    status: 'transcribing'
+  })
+  broadcastRecordingStatus()
+}
+
+function updateRecordingStatus(caseTag, status) {
+  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+  if (entry) {
+    entry.status = status
+    broadcastRecordingStatus()
+  }
+}
+
+function broadcastRecordingStatus() {
+  const payload = sessionRecordings.map(r => ({
+    ...r,
+    statusLabel: STATUS_LABELS[r.status] || r.status
+  }))
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('recording-status-update', payload)
+  }
+  if (statusWin && !statusWin.isDestroyed()) {
+    statusWin.webContents.send('recording-status-update', payload)
   }
 }
 
@@ -595,6 +665,8 @@ function registerIpcHandlers() {
       log(`Selected doctor ID: ${selectedId}`)
     }
 
+    activeSessionDir = createSessionFolder()
+    sessionRecordings = []
     setState(STATE.SESSION_ACTIVE)
     return { ok: true }
   })
@@ -607,6 +679,7 @@ function registerIpcHandlers() {
       doctorPickerResolver = null
     }
     activeDoctorId = null
+    activeSessionDir = null
     // If somehow recording when session is stopped, kill the process
     if (recordingProcess) {
       recordingProcess.kill()
@@ -618,6 +691,10 @@ function registerIpcHandlers() {
     }
     tempMp3Path = null
     patientNameResolver = null
+    if (statusWin && !statusWin.isDestroyed()) {
+      statusWin.close()
+    }
+    sessionRecordings = []
     setState(STATE.IDLE)
     return true
   })
@@ -669,6 +746,7 @@ function registerIpcHandlers() {
   ipcMain.handle('stop-recording', async () => {
     log('stop-recording')
 
+    let exitPromise = Promise.resolve()
     if (recordingProcess) {
       // Null recordingProcess BEFORE awaiting exit so the exit handler (registered in
       // start-recording) knows this is an intentional stop and doesn't fire the
@@ -685,20 +763,22 @@ function registerIpcHandlers() {
       } catch (e) {
         log(`stdin write failed (process may have already exited): ${e.message}`)
       }
-      await waitForExit(procToStop)
+      exitPromise = waitForExit(procToStop)
     } else {
       log('WARNING: stop-recording called but recordingProcess already gone')
     }
 
+    // Update UI immediately — don't wait for Python's WAV→MP3 conversion first.
+    // This stops the timer and shows PROCESSING state right when Save is clicked.
     setState(STATE.PROCESSING)
-
-    // Ask renderer to show the patient name form
     win.webContents.send('show-patient-form')
 
-    // Wait for the scribe to enter/skip the patient name
-    const name = await new Promise(resolve => {
-      patientNameResolver = resolve
-    })
+    // Wait for patient name entry and Python's WAV→MP3 conversion concurrently.
+    // The scribe can name the case while the conversion runs in the background.
+    const [name] = await Promise.all([
+      new Promise(resolve => { patientNameResolver = resolve }),
+      exitPromise
+    ])
 
     log(`Patient name: ${name || '(none)'}`)
 
@@ -720,6 +800,7 @@ function registerIpcHandlers() {
     }
     tempMp3Path = null
 
+    addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
     spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
@@ -768,13 +849,27 @@ function registerIpcHandlers() {
     if (recordingProcess) {
       const procToStop = recordingProcess
       recordingProcess = null
+      const mp3ToDelete = tempMp3Path
+      tempMp3Path = null
       try {
         procToStop.stdin.write('stop\n')
         procToStop.stdin.end()
       } catch (e) {
         log(`stdin write failed (process may have already exited): ${e.message}`)
       }
-      await waitForExit(procToStop)
+      // Update UI immediately — stop the timer without waiting for Python's conversion.
+      setState(STATE.SESSION_ACTIVE)
+      // Clean up temp files in background after Python exits.
+      // Also delete the WAV in case Python hadn't converted it yet.
+      waitForExit(procToStop).then(() => {
+        const wavPath = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_tmp.wav') : null
+        for (const p of [mp3ToDelete, wavPath]) {
+          if (p && fs.existsSync(p)) {
+            try { fs.unlinkSync(p) } catch (e) { log(`Failed to delete temp file: ${e.message}`) }
+          }
+        }
+      }).catch(() => {})
+      return true
     }
 
     if (tempMp3Path && fs.existsSync(tempMp3Path)) {
@@ -1010,6 +1105,7 @@ function registerIpcHandlers() {
     const _uploadDoctor = (_uploadSettings.doctors || []).find(d => d.id === activeDoctorId)
     const _uploadTemplatePath = _uploadDoctor?.templatePath || null
 
+    addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
     setState(STATE.PROCESSING)
     spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath)
 
@@ -1039,6 +1135,52 @@ function registerIpcHandlers() {
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log(`Notes directory set to: ${NOTES_DIR}`)
     return { ok: true, path: NOTES_DIR }
+  })
+
+  // ---- get-session-recordings ----
+  ipcMain.handle('get-session-recordings', () => {
+    return sessionRecordings.map(r => ({
+      ...r,
+      statusLabel: STATUS_LABELS[r.status] || r.status
+    }))
+  })
+
+  // ---- open-status-window ----
+  ipcMain.handle('open-status-window', () => {
+    if (statusWin && !statusWin.isDestroyed()) {
+      statusWin.focus()
+      return
+    }
+    const mainBounds = win.getBounds()
+    const statusWidth = 300
+    const statusHeight = 380
+    const { workArea } = screen.getPrimaryDisplay()
+    let sx = mainBounds.x - statusWidth - 8
+    let sy = mainBounds.y
+    sx = Math.max(workArea.x, Math.min(sx, workArea.x + workArea.width - statusWidth))
+    sy = Math.max(workArea.y, Math.min(sy, workArea.y + workArea.height - statusHeight))
+    statusWin = new BrowserWindow({
+      width: statusWidth,
+      height: statusHeight,
+      x: sx,
+      y: sy,
+      frame: false,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    })
+    statusWin.loadFile(path.join(__dirname, 'renderer', 'status.html'))
+    statusWin.on('closed', () => { statusWin = null })
+  })
+
+  // ---- close-status-window ----
+  ipcMain.handle('close-status-window', () => {
+    if (statusWin && !statusWin.isDestroyed()) statusWin.close()
   })
 }
 
