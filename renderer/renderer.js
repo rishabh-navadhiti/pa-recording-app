@@ -950,7 +950,10 @@ function handleTemplateJobStatus(job) {
     templateJobBanner.classList.remove('banner-failed', 'banner-success')
     const elapsed = formatElapsed(Date.now() - (job.startedAt || Date.now()))
     templateJobBannerText.innerHTML = `Creating template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
-    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
+    if (btnTemplateJobCancel) {
+      btnTemplateJobCancel.textContent = 'Cancel'
+      btnTemplateJobCancel.classList.remove('hidden')
+    }
     startJobPolling()
   } else if (job.status === 'success') {
     templateJobBanner.classList.remove('hidden')
@@ -974,7 +977,10 @@ function handleTemplateJobStatus(job) {
     templateJobBanner.classList.add('banner-failed')
     templateJobBanner.classList.remove('banner-success')
     templateJobBannerText.innerHTML = `<strong>Template creation failed</strong> — ${job.error || 'unknown error'}`
-    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
+    if (btnTemplateJobCancel) {
+      btnTemplateJobCancel.textContent = 'Dismiss'
+      btnTemplateJobCancel.classList.remove('hidden')
+    }
     stopJobPolling()
   }
 }
@@ -1003,6 +1009,11 @@ function stopJobPolling() {
 
 if (btnTemplateJobCancel) {
   btnTemplateJobCancel.addEventListener('click', async () => {
+    if (btnTemplateJobCancel.textContent === 'Dismiss') {
+      await api.dismissTemplateJob()
+      templateJobBanner.classList.add('hidden')
+      return
+    }
     if (!confirm('Cancel template creation? Progress will be lost.')) return
     btnTemplateJobCancel.disabled = true
     await api.cancelTemplateCreation()

@@ -1146,6 +1146,12 @@ function registerIpcHandlers() {
   // ---- get-template-job-status ----
   ipcMain.handle('get-template-job-status', () => readTemplateJob())
 
+  // ---- dismiss-template-job ----
+  ipcMain.handle('dismiss-template-job', () => {
+    writeTemplateJob({ status: 'idle' })
+    return { ok: true }
+  })
+
   // ---- cancel-template-creation ----
   ipcMain.handle('cancel-template-creation', () => {
     if (!templateJobProc) return { ok: false, error: 'No job running' }

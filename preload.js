@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('api', {
   startTemplateCreation:    (doctorName, filePaths)      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
   getTemplateJobStatus:     ()                           => ipcRenderer.invoke('get-template-job-status'),
   cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),
+  dismissTemplateJob:       ()                           => ipcRenderer.invoke('dismiss-template-job'),
 
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
