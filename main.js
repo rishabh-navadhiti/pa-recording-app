@@ -390,7 +390,7 @@ function broadcastTemplateJob(job) {
 }
 
 function spawnTemplateCreation(doctorName, stagingDir) {
-  const lastname = sanitizeName(doctorName) || 'doctor'
+  const lastname = sanitizeName(doctorName.trim().split(/\s+/).pop()) || 'doctor'
   const stagingRel = path.relative(NOTES_DIR, stagingDir).replace(/\\/g, '/')
   const settings = readSettings()
   const model  = settings.templateModel  || 'claude-opus-4-7'
@@ -1111,7 +1111,7 @@ function registerIpcHandlers() {
       return { ok: false, error: 'A template creation job is already running' }
     }
 
-    const lastname = sanitizeName(name)
+    const lastname = sanitizeName(name.trim().split(/\s+/).pop())
     if (!lastname) return { ok: false, error: 'Doctor name produced an empty identifier' }
 
     const stagingDir = path.join(NOTES_DIR, 'Templates', '_staging', lastname)
