@@ -67,6 +67,18 @@
             </div>
             <div class="setting-hint">Where AI Medical Notes folder is stored</div>
           </div>
+          <div class="advanced-settings-inner">
+            <label class="setting-label">ElevenLabs API Key</label>
+            <div id="api-key-display-row" class="notes-dir-row">
+              <span id="api-key-masked" class="notes-dir-path"></span>
+              <button id="btn-edit-api-key" class="small">Edit</button>
+            </div>
+            <div id="api-key-edit-row" class="notes-dir-row hidden">
+              <input id="api-key-input" type="text" placeholder="sk_..." autocomplete="off" spellcheck="false" style="flex:1;min-width:0;" />
+              <button id="btn-save-api-key" class="small">Save</button>
+            </div>
+            <div class="setting-hint">Used for speech-to-text transcription</div>
+          </div>
         </div>
       </div>
     </div>

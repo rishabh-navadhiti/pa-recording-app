@@ -58,6 +58,12 @@ const newDoctorInput    = document.getElementById('new-doctor-input')
 const btnAddDoctor      = document.getElementById('btn-add-doctor')
 const notesDirPath      = document.getElementById('notes-dir-path')
 const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
+const apiKeyMasked      = document.getElementById('api-key-masked')
+const apiKeyDisplayRow  = document.getElementById('api-key-display-row')
+const apiKeyEditRow     = document.getElementById('api-key-edit-row')
+const apiKeyInput       = document.getElementById('api-key-input')
+const btnEditApiKey     = document.getElementById('btn-edit-api-key')
+const btnSaveApiKey     = document.getElementById('btn-save-api-key')
 const folderSetup              = document.getElementById('folder-setup')
 const btnBrowseNotesDirNew      = document.getElementById('btn-browse-notes-dir-new')
 const btnBrowseNotesDirExisting = document.getElementById('btn-browse-notes-dir-existing')
@@ -441,6 +447,12 @@ function hideSettings() {
   render(currentRenderedState)
 }
 
+function maskApiKey(key) {
+  if (!key) return 'Not set'
+  if (key.length <= 8) return '••••••••'
+  return key.slice(0, 3) + '•••••' + key.slice(-4)
+}
+
 async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
@@ -448,7 +460,35 @@ async function loadSettings() {
   const dir = await api.getNotesDir()
   notesDirPath.textContent = dir
   notesDirPath.title = dir
+  const key = await api.getElevenLabsKey()
+  apiKeyMasked.textContent = maskApiKey(key)
+  apiKeyDisplayRow.classList.remove('hidden')
+  apiKeyEditRow.classList.add('hidden')
 }
+
+btnEditApiKey.addEventListener('click', () => {
+  apiKeyInput.value = ''
+  apiKeyDisplayRow.classList.add('hidden')
+  apiKeyEditRow.classList.remove('hidden')
+  apiKeyInput.focus()
+})
+
+btnSaveApiKey.addEventListener('click', async () => {
+  const key = apiKeyInput.value.trim()
+  if (!key) return
+  btnSaveApiKey.disabled = true
+  const res = await api.saveElevenLabsKey(key)
+  btnSaveApiKey.disabled = false
+  if (res.ok) {
+    apiKeyMasked.textContent = maskApiKey(key)
+    apiKeyEditRow.classList.add('hidden')
+    apiKeyDisplayRow.classList.remove('hidden')
+  }
+})
+
+apiKeyInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') btnSaveApiKey.click()
+})
 
 btnChangeNotesDir.addEventListener('click', async () => {
   const res = await api.changeNotesDir()
