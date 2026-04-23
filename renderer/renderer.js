@@ -31,6 +31,8 @@ const settingsView       = document.getElementById('settings-view')
 const btnSettingsClose   = document.getElementById('btn-settings-close')
 const chkAutoRecord          = document.getElementById('chk-auto-record')
 const deviceSelect           = document.getElementById('device-select')
+const soapModelSelect        = document.getElementById('soap-model-select')
+const templateModelSelect    = document.getElementById('template-model-select')
 const btnAdvancedToggle      = document.getElementById('btn-advanced-toggle')
 const advancedSettingsContent = document.getElementById('advanced-settings-content')
 const uploadForm         = document.getElementById('upload-form')
@@ -625,7 +627,17 @@ btnAdvancedToggle.addEventListener('click', async () => {
     btnAdvancedToggle.classList.add('open')
     const s = await api.getSettings()
     await loadDeviceList(s.selectedDeviceIndex)
+    if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'claude-sonnet-4-6'
+    if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-7'
   }
+})
+
+soapModelSelect.addEventListener('change', () => {
+  api.saveSettings({ soapModel: soapModelSelect.value })
+})
+
+templateModelSelect.addEventListener('change', () => {
+  api.saveSettings({ templateModel: templateModelSelect.value })
 })
 
 deviceSelect.addEventListener('change', () => {

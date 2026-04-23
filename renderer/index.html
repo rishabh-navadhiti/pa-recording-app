@@ -68,6 +68,24 @@
             </div>
             <div class="setting-hint">Where AI Medical Notes folder is stored</div>
           </div>
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Note Generation Model</label>
+            <select id="soap-model-select">
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — recommended</option>
+              <option value="claude-opus-4-7">Claude Opus 4.7 — most capable</option>
+            </select>
+            <div class="setting-hint">Model used to generate SOAP notes from transcripts</div>
+          </div>
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Template Creation Model</label>
+            <select id="template-model-select">
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+              <option value="claude-opus-4-7">Claude Opus 4.7 — recommended</option>
+            </select>
+            <div class="setting-hint">Model used when creating doctor templates with AI</div>
+          </div>
         </div>
       </div>
     </div>
