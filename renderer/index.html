@@ -167,19 +167,15 @@
 
       <!-- Template list view -->
       <div id="template-list-view">
-        <div id="template-list"></div>
-
-        <button id="btn-template-create-ai">Create with AI</button>
-
-        <div class="template-upload-row">
-          <input id="template-upload-name-input"
-                 type="text"
-                 placeholder="Doctor name"
-                 autocomplete="off"
-                 spellcheck="false" />
-          <button id="btn-template-add-upload" class="small">Add .md</button>
+        <div id="template-doctor-list"></div>
+        <div class="add-doctor-row">
+          <input type="text" id="new-template-doctor-input" placeholder="Doctor name" autocomplete="off" spellcheck="false" />
+          <button id="btn-add-template-doctor" class="small">Add</button>
         </div>
-        <div class="setting-hint">"Create with AI" analyses sample notes and generates a template (uses Opus 4.7, takes several minutes). "Add .md" uploads a ready-made template file.</div>
+        <div class="setting-hint">Click Add to select a template file for the doctor</div>
+
+        <button id="btn-template-create-ai" style="margin-top:4px">Create with AI</button>
+        <div class="setting-hint">"Create with AI" analyses sample notes and generates a template (uses Opus 4.7, takes several minutes).</div>
       </div>
 
       <!-- Create-with-AI sub-view -->

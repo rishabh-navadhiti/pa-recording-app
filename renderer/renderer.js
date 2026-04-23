@@ -69,14 +69,14 @@ const tabTitle                  = document.getElementById('tab-title')
 const statusRow                 = document.getElementById('status-row')
 const btnTabRecord              = document.getElementById('btn-tab-record')
 const btnTabTemplates           = document.getElementById('btn-tab-templates')
-const templateListEl            = document.getElementById('template-list')
+const templateDoctorListEl      = document.getElementById('template-doctor-list')
+const newTemplateDoctorInput    = document.getElementById('new-template-doctor-input')
+const btnAddTemplateDoctor      = document.getElementById('btn-add-template-doctor')
 const templateJobBanner         = document.getElementById('template-job-banner')
 const templateJobBannerText     = document.getElementById('template-job-banner-text')
 const btnTemplateJobCancel      = document.getElementById('btn-template-job-cancel')
 const templateListView          = document.getElementById('template-list-view')
 const btnTemplateCreateAi       = document.getElementById('btn-template-create-ai')
-const templateUploadNameInput   = document.getElementById('template-upload-name-input')
-const btnTemplateAddUpload      = document.getElementById('btn-template-add-upload')
 const createTemplateView        = document.getElementById('create-template-view')
 const btnCreateTemplateBack     = document.getElementById('btn-create-template-back')
 const createTemplateDoctorInput = document.getElementById('create-template-doctor-input')
@@ -470,14 +470,16 @@ btnChangeNotesDir.addEventListener('click', async () => {
   }
 })
 
-async function renderDoctorList() {
+async function renderDoctorList(containerEl) {
+  const el = containerEl || doctorListEl
+  if (!el) return
   const doctors = await api.getDoctors()
-  doctorListEl.innerHTML = ''
+  el.innerHTML = ''
   if (doctors.length === 0) {
     const empty = document.createElement('div')
     empty.className = 'doctor-empty'
     empty.textContent = 'No doctors added yet'
-    doctorListEl.appendChild(empty)
+    el.appendChild(empty)
     return
   }
   doctors.forEach(doc => {
@@ -519,7 +521,7 @@ async function renderDoctorList() {
       removeBtn.title = 'Remove doctor'
       removeBtn.addEventListener('click', async () => {
         await api.removeDoctor(doc.id)
-        await renderDoctorList()
+        await renderDoctorList(el)
         const cfg = await api.getConfigStatus()
         if (!cfg.noDoctors) {
           warnDoctor.classList.add('hidden')
@@ -582,7 +584,7 @@ async function renderDoctorList() {
     }
 
     renderViewMode()
-    doctorListEl.appendChild(row)
+    el.appendChild(row)
   })
 }
 
@@ -751,7 +753,7 @@ function showTab(name) {
   if (!showingRecord) {
     // Reset any open sub-view when re-entering the templates tab
     hideCreateTemplateSubview()
-    renderTemplateList()
+    renderDoctorList(templateDoctorListEl)
     refreshTemplateJobBanner()
   }
 }
@@ -763,82 +765,25 @@ if (btnTabTemplates) btnTabTemplates.addEventListener('click', () => showTab('te
 // Templates tab — list + actions
 // ---------------------------------------------------------------------------
 
-async function renderTemplateList() {
-  if (!templateListEl) return
-  const doctors = await api.getDoctors()
-  templateListEl.innerHTML = ''
-
-  if (doctors.length === 0) {
-    const empty = document.createElement('div')
-    empty.className = 'template-empty'
-    empty.textContent = 'No templates yet. Add one using the buttons below.'
-    templateListEl.appendChild(empty)
-    return
-  }
-
-  doctors.forEach(doc => {
-    const row = document.createElement('div')
-    row.className = 'template-row'
-
-    const nameSpan = document.createElement('span')
-    nameSpan.className = 'template-row-name'
-    nameSpan.textContent = doc.name
-
-    const fileSpan = document.createElement('span')
-    fileSpan.className = 'template-row-file'
-    fileSpan.textContent = doc.templatePath ? doc.templatePath.split(/[\\/]/).pop() : '(no template file)'
-    fileSpan.title = doc.templatePath || ''
-
-    const replaceBtn = document.createElement('button')
-    replaceBtn.className = 'template-row-action'
-    replaceBtn.textContent = '↻'
-    replaceBtn.title = 'Replace template file'
-    replaceBtn.addEventListener('click', async () => {
-      const res = await api.updateDoctorTemplate(doc.id)
-      if (res.ok) await renderTemplateList()
-    })
-
-    const removeBtn = document.createElement('button')
-    removeBtn.className = 'template-row-action template-row-remove'
-    removeBtn.textContent = '✕'
-    removeBtn.title = 'Remove'
-    removeBtn.addEventListener('click', async () => {
-      if (!confirm(`Remove template for ${doc.name}?`)) return
-      await api.removeDoctor(doc.id)
-      await renderTemplateList()
-    })
-
-    row.appendChild(nameSpan)
-    row.appendChild(fileSpan)
-    row.appendChild(replaceBtn)
-    row.appendChild(removeBtn)
-    templateListEl.appendChild(row)
-  })
-}
-
-// --- Add from file (upload .md) ---
-if (btnTemplateAddUpload) {
-  btnTemplateAddUpload.addEventListener('click', async () => {
-    const name = (templateUploadNameInput.value || '').trim()
-    if (!name) {
-      templateUploadNameInput.focus()
-      return
-    }
-    btnTemplateAddUpload.disabled = true
+// --- Add doctor from Templates tab ---
+if (btnAddTemplateDoctor) {
+  btnAddTemplateDoctor.addEventListener('click', async () => {
+    const name = (newTemplateDoctorInput.value || '').trim()
+    if (!name) { newTemplateDoctorInput.focus(); return }
+    btnAddTemplateDoctor.disabled = true
     const res = await api.addDoctor(name)
-    btnTemplateAddUpload.disabled = false
+    btnAddTemplateDoctor.disabled = false
     if (res.ok) {
-      templateUploadNameInput.value = ''
-      await renderTemplateList()
-      // Clear legacy doctor-warn in case it was showing
+      newTemplateDoctorInput.value = ''
+      await renderDoctorList(templateDoctorListEl)
       warnDoctor.classList.add('hidden')
       updateConfigWarningsVisibility()
     }
   })
 }
-if (templateUploadNameInput) {
-  templateUploadNameInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') btnTemplateAddUpload.click()
+if (newTemplateDoctorInput) {
+  newTemplateDoctorInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') btnAddTemplateDoctor.click()
   })
 }
 
@@ -1002,7 +947,7 @@ function handleTemplateJobStatus(job) {
     templateJobBannerText.innerHTML = `Template ready for <strong>${job.doctorName || 'doctor'}</strong>`
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
     stopJobPolling()
-    renderTemplateList()
+    renderDoctorList(templateDoctorListEl)
     // A doctor was added — dismiss the "Doctor not set up" warning if present
     warnDoctor.classList.add('hidden')
     updateConfigWarningsVisibility()
