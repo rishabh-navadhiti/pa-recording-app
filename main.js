@@ -89,8 +89,7 @@ const DEFAULT_SETTINGS = {
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  doctors: [],
-  sessionCounter: 0
+  doctors: []
 }
 
 function readSettings() {
@@ -205,13 +204,14 @@ function sanitizeName(name) {
 }
 
 function createSessionFolder() {
-  const settings = readSettings()
-  const counter = (settings.sessionCounter || 0) + 1
   const datestamp = new Date().toISOString().slice(0, 10)
-  const folderName = `${datestamp}(${counter})`
+  let todayCount = 0
+  try {
+    todayCount = fs.readdirSync(CASES_DIR).filter(name => name === datestamp || name.startsWith(`${datestamp}(`)).length
+  } catch {}
+  const folderName = todayCount === 0 ? datestamp : `${datestamp}(${todayCount + 1})`
   const sessionDir = path.join(CASES_DIR, folderName)
   fs.mkdirSync(sessionDir, { recursive: true })
-  writeSettings({ ...settings, sessionCounter: counter })
   log(`Session folder created: ${sessionDir}`)
   return sessionDir
 }
@@ -1199,14 +1199,15 @@ function registerIpcHandlers() {
   ipcMain.handle('get-notes-dir', () => NOTES_DIR)
 
   // ---- change-notes-dir ----
-  ipcMain.handle('change-notes-dir', async () => {
+  ipcMain.handle('change-notes-dir', async (_, mode = 'new') => {
+    const isExisting = mode === 'existing'
     const result = await dialog.showOpenDialog(win, {
-      title: 'Choose where to store your AI Medical Notes',
-      buttonLabel: 'Select Folder',
+      title: isExisting ? 'Select your existing AI Medical Notes folder' : 'Choose where to store your AI Medical Notes',
+      buttonLabel: isExisting ? 'Select Folder' : 'Select Folder',
       properties: ['openDirectory', 'createDirectory']
     })
     if (result.canceled || !result.filePaths.length) return { ok: false }
-    const newNotesDir = path.join(result.filePaths[0], 'AI Medical Notes')
+    const newNotesDir = isExisting ? result.filePaths[0] : path.join(result.filePaths[0], 'AI Medical Notes')
     const oldSettings = readSettings()
     writeEnvKey('NOTES_DIR_PATH', newNotesDir)
     loadPaths(newNotesDir)

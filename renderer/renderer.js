@@ -58,8 +58,9 @@ const newDoctorInput    = document.getElementById('new-doctor-input')
 const btnAddDoctor      = document.getElementById('btn-add-doctor')
 const notesDirPath      = document.getElementById('notes-dir-path')
 const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
-const folderSetup       = document.getElementById('folder-setup')
-const btnBrowseNotesDir = document.getElementById('btn-browse-notes-dir')
+const folderSetup              = document.getElementById('folder-setup')
+const btnBrowseNotesDirNew      = document.getElementById('btn-browse-notes-dir-new')
+const btnBrowseNotesDirExisting = document.getElementById('btn-browse-notes-dir-existing')
 const viewStatusBar     = document.getElementById('view-status-bar')
 
 // ---------------------------------------------------------------------------
@@ -688,8 +689,8 @@ function hideFolderSetup() {
   MAIN_CONTENT_ELS.forEach(get => { const el = get(); if (el) el.style.display = '' })
 }
 
-btnBrowseNotesDir.addEventListener('click', async () => {
-  const res = await api.changeNotesDir()
+async function handleNotesDirSelection(mode) {
+  const res = await api.changeNotesDir(mode)
   if (res.ok) {
     hideFolderSetup()
     notesDirPath.textContent = res.path
@@ -699,7 +700,10 @@ btnBrowseNotesDir.addEventListener('click', async () => {
     render(state)
     registerAppListeners()
   }
-})
+}
+
+btnBrowseNotesDirNew.addEventListener('click', () => handleNotesDirSelection('new'))
+btnBrowseNotesDirExisting.addEventListener('click', () => handleNotesDirSelection('existing'))
 
 function registerAppListeners() {
   api.onStateChange(render)

@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld('api', {
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
   getNotesDir:        ()          => ipcRenderer.invoke('get-notes-dir'),
-  changeNotesDir:     ()          => ipcRenderer.invoke('change-notes-dir'),
+  changeNotesDir:     (mode)      => ipcRenderer.invoke('change-notes-dir', mode),
 
   hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
 
