@@ -1,15 +1,18 @@
 # AI Medical Scribe - Re-Registration Script
-# Run this from the install directory to re-register the Task Scheduler task,
-# Start Menu shortcut, and Settings > Apps entry — without reinstalling
-# dependencies (Git, Python, Node.js, etc.).
-#
-# Usage (no elevation required):
-#   powershell.exe -ExecutionPolicy Bypass -File reinstall.ps1
+# Run this from the install directory, or via:
+#   irm https://raw.githubusercontent.com/rishabh-navadhiti/pa-recording-app/main/reinstall.ps1 | iex
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "SilentlyContinue"
 
-$installDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+# When run via irm | iex, $MyInvocation.MyCommand.Path is empty — fall back to
+# the default install location used by install.ps1.
+$scriptPath = $MyInvocation.MyCommand.Path
+if ($scriptPath) {
+    $installDir = Split-Path -Parent $scriptPath
+} else {
+    $installDir = "$env:LOCALAPPDATA\Programs\AI Medical Scribe"
+}
 $taskName    = "AI Medical Scribe"
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Medical Scribe"
 $electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
