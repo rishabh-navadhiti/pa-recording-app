@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
 
   getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
+  getElevenLabsKey:  ()     => ipcRenderer.invoke('get-elevenlabs-key'),
   saveElevenLabsKey: (key)   => ipcRenderer.invoke('save-elevenlabs-key', key),
 
   getDoctors:         ()     => ipcRenderer.invoke('get-doctors'),

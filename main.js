@@ -1090,6 +1090,13 @@ function registerIpcHandlers() {
     return true
   })
 
+  // ---- get-elevenlabs-key ----
+  ipcMain.handle('get-elevenlabs-key', () => {
+    const env = readEnv()
+    const key = env['ELEVENLABS_API_KEY'] || ''
+    return key === 'your_key_here' ? '' : key
+  })
+
   // ---- save-elevenlabs-key ----
   ipcMain.handle('save-elevenlabs-key', (_, key) => {
     try {
