@@ -26,6 +26,7 @@ const STATE = {
 const STATUS_LABELS = {
   transcribing:    'Transcribing...',
   generating_note: 'Generating note...',
+  converting:      'Converting...',
   completed:       'Completed',
   failed:          'Failed'
 }
@@ -338,8 +339,24 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
         spawnDocxConversion(soapNoteMdPath, caseTag)
       } else {
-        log(`${tag}[soap] WARNING: claude exited 0 but SOAP note file not found at expected path: ${soapNoteMdPath}`)
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        // Top-level soap note missing — Claude may have created per-patient subfolders
+        const caseDir = path.dirname(soapNoteMdPath)
+        const patientFolders = detectPatientFolders(caseDir)
+        if (patientFolders.length > 0) {
+          log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
+          const patients = patientFolders.map(pf => ({
+            name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
+            folderName: pf.folderName,
+            status: 'converting'
+          }))
+          if (caseTag) setRecordingPatients(caseTag, patients)
+          for (const pf of patientFolders) {
+            spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
+          }
+        } else {
+          log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
+          if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        }
       }
     } else if (code !== 0) {
       if (caseTag) updateRecordingStatus(caseTag, 'failed')
@@ -353,7 +370,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   })
 }
 
-function spawnDocxConversion(mdPath, caseTag) {
+function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   log(`${tag}[docx] Converting: ${mdPath}`)
   const proc = spawn(PYTHON, [
@@ -368,9 +385,17 @@ function spawnDocxConversion(mdPath, caseTag) {
     if (path.basename(mdPath) !== 'transcript.md') {
       if (code === 0) {
         notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
-        if (caseTag) updateRecordingStatus(caseTag, 'completed')
+        if (patientFolderName) {
+          updatePatientStatus(caseTag, patientFolderName, 'completed')
+        } else if (caseTag) {
+          updateRecordingStatus(caseTag, 'completed')
+        }
       } else {
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        if (patientFolderName) {
+          updatePatientStatus(caseTag, patientFolderName, 'failed')
+        } else if (caseTag) {
+          updateRecordingStatus(caseTag, 'failed')
+        }
       }
     }
   })
@@ -459,10 +484,50 @@ function updateRecordingStatus(caseTag, status) {
   }
 }
 
+function setRecordingPatients(caseTag, patients) {
+  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+  if (entry) {
+    entry.patients = patients
+    broadcastRecordingStatus()
+  }
+}
+
+function updatePatientStatus(caseTag, patientFolderName, status) {
+  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+  if (!entry || !entry.patients) return
+  const patient = entry.patients.find(p => p.folderName === patientFolderName)
+  if (patient) {
+    patient.status = status
+    const allDone = entry.patients.every(p => p.status === 'completed' || p.status === 'failed')
+    if (allDone) {
+      entry.status = entry.patients.some(p => p.status === 'failed') ? 'failed' : 'completed'
+    }
+    broadcastRecordingStatus()
+  }
+}
+
+function detectPatientFolders(caseDir) {
+  const results = []
+  try {
+    for (const entry of fs.readdirSync(caseDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const subDir = path.join(caseDir, entry.name)
+      const soapNote = fs.readdirSync(subDir).find(f => f.endsWith('_soap_note.md'))
+      if (soapNote) {
+        results.push({ folderName: entry.name, soapNotePath: path.join(subDir, soapNote) })
+      }
+    }
+  } catch (e) {
+    log(`ERROR scanning patient folders in ${caseDir}: ${e.message}`)
+  }
+  return results
+}
+
 function broadcastRecordingStatus() {
   const payload = sessionRecordings.map(r => ({
     ...r,
-    statusLabel: STATUS_LABELS[r.status] || r.status
+    statusLabel: STATUS_LABELS[r.status] || r.status,
+    patients: r.patients ? r.patients.map(p => ({ ...p, statusLabel: STATUS_LABELS[p.status] || p.status })) : null
   }))
   if (win && !win.isDestroyed()) {
     win.webContents.send('recording-status-update', payload)
@@ -1141,7 +1206,8 @@ function registerIpcHandlers() {
   ipcMain.handle('get-session-recordings', () => {
     return sessionRecordings.map(r => ({
       ...r,
-      statusLabel: STATUS_LABELS[r.status] || r.status
+      statusLabel: STATUS_LABELS[r.status] || r.status,
+      patients: r.patients ? r.patients.map(p => ({ ...p, statusLabel: STATUS_LABELS[p.status] || p.status })) : null
     }))
   })
 
