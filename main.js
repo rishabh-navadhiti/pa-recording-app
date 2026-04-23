@@ -1181,8 +1181,23 @@ function registerIpcHandlers() {
   ipcMain.handle('remove-doctor', (_, id) => {
     try {
       const settings = readSettings()
+      const doctor = (settings.doctors || []).find(d => d.id === id)
       const doctors = (settings.doctors || []).filter(d => d.id !== id)
       writeSettings({ ...settings, doctors })
+
+      if (doctor?.templatePath) {
+        const tp = doctor.templatePath
+        const stillUsed = doctors.some(d => d.templatePath === tp)
+        if (!stillUsed && tp.startsWith(TEMPLATES_DIR) && fs.existsSync(tp)) {
+          try {
+            fs.unlinkSync(tp)
+            log(`Template file removed: ${tp}`)
+          } catch (e) {
+            log(`WARNING: failed to delete template file ${tp}: ${e.message}`)
+          }
+        }
+      }
+
       log(`Doctor removed: ${id}`)
       return { ok: true }
     } catch (e) {
