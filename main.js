@@ -384,10 +384,14 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
     log(`${tag}[docx] exited ${code}`)
     if (path.basename(mdPath) !== 'transcript.md') {
       if (code === 0) {
-        notifyUser('SOAP note ready', `Case: ${caseTag || 'unknown'}`)
         if (patientFolderName) {
+          const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+          const patient = entry?.patients?.find(p => p.folderName === patientFolderName)
+          notifyUser('SOAP note ready', patient?.name || patientFolderName.replace(/_/g, ' '))
           updatePatientStatus(caseTag, patientFolderName, 'completed')
         } else if (caseTag) {
+          const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+          notifyUser('SOAP note ready', entry?.displayName || caseTag)
           updateRecordingStatus(caseTag, 'completed')
         }
       } else {
@@ -469,7 +473,7 @@ function copyDirSync(src, dest) {
 function addRecordingEntry(caseTag, displayName) {
   sessionRecordings.push({
     caseTag,
-    displayName: displayName || 'Unnamed',
+    displayName: displayName || (caseTag ? caseTag.replace(/_/g, ' ') : 'Unnamed'),
     startedAt: Date.now(),
     status: 'transcribing'
   })
@@ -507,18 +511,30 @@ function updatePatientStatus(caseTag, patientFolderName, status) {
 }
 
 function detectPatientFolders(caseDir) {
+  // Patient folders are siblings of caseDir inside the session folder, not children of it
+  const sessionDir = path.dirname(caseDir)
+
+  // Exclude known recording case folders and patient folders already attributed to prior recordings
+  const knownCaseTags = new Set(sessionRecordings.map(r => r.caseTag))
+  const claimedPatients = new Set()
+  sessionRecordings.forEach(r => {
+    if (r.patients) r.patients.forEach(p => claimedPatients.add(p.folderName))
+  })
+
   const results = []
   try {
-    for (const entry of fs.readdirSync(caseDir, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(sessionDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
-      const subDir = path.join(caseDir, entry.name)
+      if (knownCaseTags.has(entry.name)) continue   // skip recording case folders
+      if (claimedPatients.has(entry.name)) continue  // skip patients of earlier recordings
+      const subDir = path.join(sessionDir, entry.name)
       const soapNote = fs.readdirSync(subDir).find(f => f.endsWith('_soap_note.md'))
       if (soapNote) {
         results.push({ folderName: entry.name, soapNotePath: path.join(subDir, soapNote) })
       }
     }
   } catch (e) {
-    log(`ERROR scanning patient folders in ${caseDir}: ${e.message}`)
+    log(`ERROR scanning patient folders in ${sessionDir}: ${e.message}`)
   }
   return results
 }
