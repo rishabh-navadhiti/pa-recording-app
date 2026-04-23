@@ -13,24 +13,69 @@ function renderRecordings(recordings) {
     const item = document.createElement('div')
     item.className = 'recording-item'
 
-    const nameRow = document.createElement('div')
-    nameRow.className = 'recording-name'
-    nameRow.textContent = rec.displayName
-    nameRow.title = rec.caseTag
+    if (rec.patients && rec.patients.length > 0) {
+      // Multi-patient hierarchical view
+      const header = document.createElement('div')
+      header.className = 'recording-header'
 
-    const statusRow = document.createElement('div')
-    statusRow.className = `recording-status status-${rec.status}`
+      const nameEl = document.createElement('span')
+      nameEl.className = 'recording-name'
+      nameEl.textContent = rec.displayName
+      nameEl.title = rec.caseTag
 
-    const dot = document.createElement('span')
-    dot.className = 'status-dot'
+      const countBadge = document.createElement('span')
+      countBadge.className = 'patient-count'
+      countBadge.textContent = rec.patients.length
 
-    const label = document.createElement('span')
-    label.textContent = rec.statusLabel
+      header.appendChild(nameEl)
+      header.appendChild(countBadge)
+      item.appendChild(header)
 
-    statusRow.appendChild(dot)
-    statusRow.appendChild(label)
-    item.appendChild(nameRow)
-    item.appendChild(statusRow)
+      rec.patients.forEach(patient => {
+        const patientRow = document.createElement('div')
+        patientRow.className = 'patient-row'
+
+        const patientName = document.createElement('div')
+        patientName.className = 'patient-name'
+        patientName.textContent = patient.name
+
+        const statusRow = document.createElement('div')
+        statusRow.className = `patient-status status-${patient.status}`
+
+        const dot = document.createElement('span')
+        dot.className = 'status-dot'
+
+        const label = document.createElement('span')
+        label.textContent = patient.statusLabel || patient.status
+
+        statusRow.appendChild(dot)
+        statusRow.appendChild(label)
+        patientRow.appendChild(patientName)
+        patientRow.appendChild(statusRow)
+        item.appendChild(patientRow)
+      })
+    } else {
+      // Single patient flat view
+      const nameRow = document.createElement('div')
+      nameRow.className = 'recording-name'
+      nameRow.textContent = rec.displayName
+      nameRow.title = rec.caseTag
+
+      const statusRow = document.createElement('div')
+      statusRow.className = `recording-status status-${rec.status}`
+
+      const dot = document.createElement('span')
+      dot.className = 'status-dot'
+
+      const label = document.createElement('span')
+      label.textContent = rec.statusLabel
+
+      statusRow.appendChild(dot)
+      statusRow.appendChild(label)
+      item.appendChild(nameRow)
+      item.appendChild(statusRow)
+    }
+
     list.appendChild(item)
   })
 }
