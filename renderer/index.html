@@ -78,13 +78,13 @@
             <div class="setting-hint">Model used to generate SOAP notes from transcripts</div>
           </div>
           <div class="advanced-settings-inner">
-            <label class="setting-label">Template Creation Model</label>
+            <label class="setting-label">Template Model</label>
             <select id="template-model-select">
               <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
               <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
               <option value="claude-opus-4-7">Claude Opus 4.7 — recommended</option>
             </select>
-            <div class="setting-hint">Model used when creating doctor templates with AI</div>
+            <div class="setting-hint">Model used when creating or updating doctor templates with AI</div>
           </div>
         </div>
       </div>
@@ -193,6 +193,7 @@
         <div class="setting-hint">Click Add to select a template file for the doctor</div>
 
         <button id="btn-template-create-ai" style="margin-top:4px">Create with AI</button>
+        <button id="btn-template-update-ai" style="margin-top:4px">Update with AI</button>
         <div class="setting-hint">"Create with AI" analyses sample notes and generates a template (uses Opus 4.7, takes several minutes).</div>
       </div>
 
@@ -218,6 +219,26 @@
 
         <button id="btn-create-template-start" disabled>Start</button>
         <div id="create-template-error" class="config-warn hidden"></div>
+      </div>
+
+      <!-- Update-with-AI sub-view -->
+      <div id="update-template-view" class="hidden">
+        <div class="subview-header">
+          <button id="btn-update-template-back" class="icon-btn" title="Back">&#8592;</button>
+          <span>Update Template with AI</span>
+        </div>
+
+        <select id="update-template-doctor-select">
+          <option value="">Select doctor…</option>
+        </select>
+
+        <textarea id="update-template-corrections"
+                  placeholder="Describe what to change — e.g. change attribution verb to 'reports', add a new boilerplate block for post-injection care…"
+                  rows="7"
+                  spellcheck="true"></textarea>
+
+        <button id="btn-update-template-start" disabled>Start</button>
+        <div id="update-template-error" class="config-warn hidden"></div>
       </div>
 
     </div><!-- /#tab-templates -->

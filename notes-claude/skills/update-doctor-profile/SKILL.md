@@ -17,13 +17,19 @@ Follow these steps exactly to apply corrections to an existing template.
 
 ## Step 0: Extract Pre-Framed Inputs
 
-The prompt sent to you is always structured by the app. Extract these three fields directly — no free-text guessing:
+The prompt sent to you is always structured by the app in this exact format:
 
-- **DOCTOR_NAME** — lowercase lastname (e.g. `sabbag`)
-- **TEMPLATE_PATH** — absolute path to the template file (e.g. `/Users/you/Documents/AI Medical Notes/templates/sabbag.md`)
-- **CORRECTIONS** — the user's correction instructions (may be a numbered list, bullet list, or prose)
+```
+update doctor profile. Doctor: <lastname>. Template: <absolute/path/to/lastname.md>. Corrections: <user corrections>
+```
 
-Parse the corrections into individual edit units. Each distinct instruction (change X, add Y, remove Z) is one unit.
+Extract these three fields directly:
+
+- **DOCTOR_NAME** — the value after `Doctor:` (lowercase lastname, e.g. `sabbag`)
+- **TEMPLATE_PATH** — the value after `Template:` (absolute path to the `.md` file, e.g. `C:/Users/you/Documents/AI Medical Notes/templates/sabbag.md`)
+- **CORRECTIONS** — everything after `Corrections:` (may use ` | ` as a line separator for multiple corrections)
+
+Parse the corrections into individual edit units. Each distinct instruction (separated by ` | ` or natural sentence boundaries) is one unit.
 
 ---
 
@@ -81,6 +87,8 @@ Read the full template file at `${TEMPLATE_PATH}` using the Read tool.
 
 Confirm it is non-empty. If empty → stop and inform the user.
 
+**Read the entire template before proceeding to Step 4.** The template content is your primary source of context for interpreting the user's corrections. A correction like "change attribution verb" only makes sense after you have seen the current attribution verb in the template's Global Style section.
+
 ---
 
 ## Step 4: Analyze and Classify Each Correction
@@ -98,14 +106,17 @@ For each correction, identify:
 
 ### Ambiguity rule
 
-If any correction could match multiple sections, is missing a target, or is unclear about scope — **do not guess and do not ask mid-run**. Stop immediately and show the user:
+Use the template you loaded in Step 3 as context before declaring a correction ambiguous. Most corrections that seem vague in isolation become clear once you know the template's current content — for example, "change the attribution verb" is unambiguous once you have read the Global Style section.
 
-> ⚠️ Some corrections are too ambiguous to apply safely. Please retry with more specific instructions.
+If a correction is **still** unclear after reading the template — do not guess and do not ask mid-run. Stop and show the user:
+
+> ⚠️ Could not apply the following correction(s) — more context needed:
 >
-> Unclear correction(s):
-> - `<quote the ambiguous text>` — <one sentence explaining what is unclear>
+> - `<quote the ambiguous text>` — <one sentence explaining what is unclear even after reading the template>
+>
+> Please retry with more specific instructions.
 
-Do not apply any corrections (even the unambiguous ones) in the same run. The user should retry the entire request with clearer instructions.
+Do not apply any corrections (even the unambiguous ones) in the same run.
 
 ---
 

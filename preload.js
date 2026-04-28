@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
 
   browseNotesFiles:         ()                           => ipcRenderer.invoke('browse-notes-files'),
   startTemplateCreation:    (doctorName, filePaths)      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
+  startTemplateUpdate:      (doctorName, corrections)    => ipcRenderer.invoke('start-template-update', doctorName, corrections),
+  getDoctorsWithTemplates:  ()                           => ipcRenderer.invoke('get-doctors-with-templates'),
   getTemplateJobStatus:     ()                           => ipcRenderer.invoke('get-template-job-status'),
   cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),
   dismissTemplateJob:       ()                           => ipcRenderer.invoke('dismiss-template-job'),
