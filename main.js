@@ -535,6 +535,119 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   })
 }
 
+function spawnTemplateUpdate(doctorName, templatePath, corrections) {
+  const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
+  const settings = readSettings()
+  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const effort = settings.templateEffort || 'max'
+
+  // Flatten multi-line corrections and strip double quotes to avoid breaking shell quoting on Windows
+  const safeCorrections = corrections.replace(/\r?\n/g, ' | ').replace(/"/g, "'")
+  const safeName = doctorName.replace(/"/g, "'")
+  const safePath = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
+
+  const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}`
+
+  log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
+  templateJobStartMs = Date.now()
+
+  templateJobProc = spawn(
+    `claude -p "${prompt}" --model ${model} --dangerously-skip-permissions`,
+    [],
+    {
+      cwd: NOTES_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: effort }
+    }
+  )
+
+  const outChunks = []
+  templateJobProc.stdout.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[template-update] ${msg.trim()}`)
+  })
+  templateJobProc.stderr.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[template-update ERR] ${msg.trim()}`)
+  })
+
+  templateJobProc.on('close', code => {
+    templateJobProc = null
+    const output = outChunks.join('')
+    const durationMs = Date.now() - templateJobStartMs
+    log(`[template-update] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
+
+    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: 'Claude usage limit reached. Try again once the limit resets.',
+        finishedAt: Date.now()
+      })
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Template update could not complete — try again once the limit resets.'
+        })
+      }
+      return
+    }
+
+    if (code === 0) {
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'success',
+        doctorName,
+        lastname,
+        templatePath,
+        durationMs,
+        finishedAt: Date.now()
+      })
+      notifyUser('Template updated', `Profile for ${doctorName} updated.`)
+    } else {
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: `Claude exited with code ${code}`,
+        finishedAt: Date.now()
+      })
+      notifyUser('Template update failed', `${doctorName} — check app.log for details`)
+    }
+  })
+
+  templateJobProc.on('error', err => {
+    templateJobProc = null
+    log(`[template-update ERR] failed to spawn claude: ${err.message}`)
+    broadcastTemplateJob({
+      type: 'update',
+      status: 'failed',
+      doctorName,
+      lastname,
+      error: err.code === 'ENOENT'
+        ? 'Claude CLI not installed. Install the Claude CLI to enable template updates.'
+        : err.message,
+      finishedAt: Date.now()
+    })
+  })
+
+  broadcastTemplateJob({
+    type: 'update',
+    status: 'running',
+    doctorName,
+    lastname,
+    startedAt: templateJobStartMs,
+    model,
+    effort
+  })
+}
+
 function checkForUpdates() {
   // Run git pull --ff-only in background — no blocking, no crash on failure
   const gitPull = spawn('git', ['pull', '--ff-only'], {
@@ -1141,6 +1254,35 @@ function registerIpcHandlers() {
 
     spawnTemplateCreation(name, stagingDir)
     return { ok: true }
+  })
+
+  // ---- start-template-update ----
+  ipcMain.handle('start-template-update', async (_, doctorName, corrections) => {
+    const name = (doctorName || '').trim()
+    if (!name) return 'Doctor name is required.'
+    if (!(corrections || '').trim()) return 'Corrections are required.'
+    if (templateJobProc) return 'A template job is already running.'
+
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.name === name)
+    if (!doctor || !doctor.templatePath) {
+      return `No template registered for "${name}". Create a template first.`
+    }
+    if (!fs.existsSync(doctor.templatePath)) {
+      return `Template file missing at ${doctor.templatePath}.`
+    }
+
+    spawnTemplateUpdate(name, doctor.templatePath, corrections.trim())
+    return null  // null = no error
+  })
+
+  // ---- get-doctors-with-templates ----
+  ipcMain.handle('get-doctors-with-templates', () => {
+    const settings = readSettings()
+    return (settings.doctors || [])
+      .filter(d => d.templatePath && fs.existsSync(d.templatePath))
+      .map(d => d.name)
+      .sort()
   })
 
   // ---- get-template-job-status ----

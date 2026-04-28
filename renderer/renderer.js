@@ -86,6 +86,13 @@ const createTemplateFilesEl     = document.getElementById('create-template-files
 const btnCreateTemplateAddFiles = document.getElementById('btn-create-template-add-files')
 const btnCreateTemplateStart    = document.getElementById('btn-create-template-start')
 const createTemplateError       = document.getElementById('create-template-error')
+const btnTemplateUpdateAi       = document.getElementById('btn-template-update-ai')
+const updateTemplateView        = document.getElementById('update-template-view')
+const btnUpdateTemplateBack     = document.getElementById('btn-update-template-back')
+const updateTemplateDoctorSel   = document.getElementById('update-template-doctor-select')
+const updateTemplateCorrections = document.getElementById('update-template-corrections')
+const btnUpdateTemplateStart    = document.getElementById('btn-update-template-start')
+const updateTemplateError       = document.getElementById('update-template-error')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -926,6 +933,81 @@ if (btnCreateTemplateStart) {
 }
 
 // ---------------------------------------------------------------------------
+// Templates tab — Update with AI sub-view
+// ---------------------------------------------------------------------------
+
+function showUpdateTemplateSubview() {
+  if (updateTemplateDoctorSel) updateTemplateDoctorSel.innerHTML = '<option value="">Select doctor…</option>'
+  if (updateTemplateCorrections) updateTemplateCorrections.value = ''
+  if (updateTemplateError) updateTemplateError.classList.add('hidden')
+  if (btnUpdateTemplateStart) btnUpdateTemplateStart.disabled = true
+  if (templateListView) templateListView.classList.add('hidden')
+  if (updateTemplateView) updateTemplateView.classList.remove('hidden')
+}
+
+function hideUpdateTemplateSubview() {
+  if (updateTemplateView) updateTemplateView.classList.add('hidden')
+  if (templateListView) templateListView.classList.remove('hidden')
+}
+
+function validateUpdateForm() {
+  if (!btnUpdateTemplateStart) return
+  const hasDoctor = updateTemplateDoctorSel && updateTemplateDoctorSel.value
+  const hasCorrections = updateTemplateCorrections && updateTemplateCorrections.value.trim()
+  btnUpdateTemplateStart.disabled = !(hasDoctor && hasCorrections)
+}
+
+if (btnTemplateUpdateAi) {
+  btnTemplateUpdateAi.addEventListener('click', async () => {
+    showUpdateTemplateSubview()
+    if (!api.getDoctorsWithTemplates) return
+    const doctors = await api.getDoctorsWithTemplates()
+    if (!updateTemplateDoctorSel) return
+    updateTemplateDoctorSel.innerHTML = '<option value="">Select doctor…</option>'
+    doctors.forEach(name => {
+      const opt = document.createElement('option')
+      opt.value = name
+      opt.textContent = name
+      updateTemplateDoctorSel.appendChild(opt)
+    })
+  })
+}
+
+if (btnUpdateTemplateBack) {
+  btnUpdateTemplateBack.addEventListener('click', hideUpdateTemplateSubview)
+}
+
+if (updateTemplateDoctorSel) {
+  updateTemplateDoctorSel.addEventListener('change', validateUpdateForm)
+}
+
+if (updateTemplateCorrections) {
+  updateTemplateCorrections.addEventListener('input', validateUpdateForm)
+}
+
+if (btnUpdateTemplateStart) {
+  btnUpdateTemplateStart.addEventListener('click', async () => {
+    if (updateTemplateError) updateTemplateError.classList.add('hidden')
+    const doctorName  = updateTemplateDoctorSel ? updateTemplateDoctorSel.value : ''
+    const corrections = updateTemplateCorrections ? updateTemplateCorrections.value.trim() : ''
+    if (!doctorName || !corrections) return
+
+    btnUpdateTemplateStart.disabled = true
+    const err = await api.startTemplateUpdate(doctorName, corrections)
+    if (err) {
+      if (updateTemplateError) {
+        updateTemplateError.textContent = err
+        updateTemplateError.classList.remove('hidden')
+      }
+      btnUpdateTemplateStart.disabled = false
+      return
+    }
+    hideUpdateTemplateSubview()
+    refreshTemplateJobBanner()
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Templates tab — Running job banner
 // ---------------------------------------------------------------------------
 
@@ -945,18 +1027,21 @@ function handleTemplateJobStatus(job) {
     stopJobPolling()
     return
   }
+  const isUpdate = job.type === 'update'
   if (job.status === 'running') {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.remove('banner-failed', 'banner-success')
     const elapsed = formatElapsed(Date.now() - (job.startedAt || Date.now()))
-    templateJobBannerText.innerHTML = `Creating template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
+    const verb = isUpdate ? 'Updating' : 'Creating'
+    templateJobBannerText.innerHTML = `${verb} template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
     startJobPolling()
   } else if (job.status === 'success') {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.add('banner-success')
     templateJobBanner.classList.remove('banner-failed')
-    templateJobBannerText.innerHTML = `Template ready for <strong>${job.doctorName || 'doctor'}</strong>`
+    const doneText = isUpdate ? 'Template updated for' : 'Template ready for'
+    templateJobBannerText.innerHTML = `${doneText} <strong>${job.doctorName || 'doctor'}</strong>`
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
     stopJobPolling()
     renderDoctorList(templateDoctorListEl)
@@ -973,7 +1058,8 @@ function handleTemplateJobStatus(job) {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.add('banner-failed')
     templateJobBanner.classList.remove('banner-success')
-    templateJobBannerText.innerHTML = `<strong>Template creation failed</strong> — ${job.error || 'unknown error'}`
+    const failLabel = isUpdate ? 'Template update failed' : 'Template creation failed'
+    templateJobBannerText.innerHTML = `<strong>${failLabel}</strong> — ${job.error || 'unknown error'}`
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
     stopJobPolling()
   }
@@ -1009,7 +1095,10 @@ if (btnTemplateJobCancel) {
       templateJobBanner.classList.add('hidden')
       return
     }
-    if (!confirm('Cancel template creation? Progress will be lost.')) return
+    const cancelMsg = job.type === 'update'
+      ? 'Cancel template update? Progress will be lost.'
+      : 'Cancel template creation? Progress will be lost.'
+    if (!confirm(cancelMsg)) return
     btnTemplateJobCancel.disabled = true
     await api.cancelTemplateCreation()
     btnTemplateJobCancel.disabled = false
