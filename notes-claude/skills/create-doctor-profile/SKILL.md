@@ -72,6 +72,8 @@ Report the classification once:
 
 ## Step 3: Load Supporting Documents (if any)
 
+Supporting documents are treated as **equal sources — not secondary** — and must be fully read before analysis begins.
+
 For each supporting document, read full text:
 
 - `.md`, `.txt`, `.json` → read directly via the Read tool
@@ -85,14 +87,21 @@ print('\n'.join(p.text for p in doc.paragraphs))
 "
 ```
 
-Combine all extracted text into `SUPPORTING_TEXT`. These documents may contain:
+**Read all supporting documents in full before proceeding to Step 4.** They may contain rules, workflow guidelines, usage philosophy, template defaults, or SmartPhrase instructions that are just as authoritative as the sample notes — sometimes more so.
 
-- Rules about how templates or boilerplate should be used, retained, edited, or removed
-- Inference restrictions ("do not invent", "do not expand")
+Combine all extracted text into `SUPPORTING_TEXT`. Extract and record anything from supporting docs that describes:
+
+- How templates or boilerplate should be used, retained, edited, or removed
+- Rules about when to apply or not apply certain language (including SmartPhrase trigger conditions and "do NOT apply" rules)
 - Default/placeholder language that is meant to be edited per visit rather than used verbatim
-- SmartPhrase instructions, EMR shortcuts, cheatsheets
+- Any explicit "do" or "do not" instructions for documentation
 
-Capture any "do / do not" instructions explicitly — they will become the `Template Usage Rules` section in the generated profile (Step 9).
+These will become the `Template Usage Rules` section in the generated profile (Step 10).
+
+If supporting documents were found, print:
+> "Found [N] supporting document(s): [filenames]. Reading in full."
+
+If none found, set `SUPPORTING_TEXT` to empty and continue silently.
 
 ---
 
