@@ -176,9 +176,6 @@ Changes applied (<N> total):
 
 Inferences made (please review):
 - <Any place where the instruction was interpreted rather than literal — what was assumed and why>
-
-Skipped (needs clarification):
-- <Any correction that was ambiguous — what is unclear, what the user should specify>
 ```
 
 If no inferences were needed, omit the "Inferences made" block.
