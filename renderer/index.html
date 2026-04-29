@@ -15,6 +15,7 @@
         <div id="indicator"></div>
         <span id="status-label">Loading...</span>
       </div>
+      <div id="tab-title" class="hidden">Templates</div>
       <div id="header-icons">
         <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
         <button id="btn-window-close" class="icon-btn" title="Close popup">&#10005;</button>
@@ -79,6 +80,24 @@
             </div>
             <div class="setting-hint">Used for speech-to-text transcription</div>
           </div>
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Note Generation Model</label>
+            <select id="soap-model-select">
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — recommended</option>
+              <option value="claude-opus-4-7">Claude Opus 4.7 — most capable</option>
+            </select>
+            <div class="setting-hint">Model used to generate SOAP notes from transcripts</div>
+          </div>
+          <div class="advanced-settings-inner">
+            <label class="setting-label">Template Model</label>
+            <select id="template-model-select">
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+              <option value="claude-opus-4-7">Claude Opus 4.7 — recommended</option>
+            </select>
+            <div class="setting-hint">Model used when creating or updating doctor templates with AI</div>
+          </div>
         </div>
       </div>
     </div>
@@ -93,6 +112,11 @@
       <button id="btn-browse-notes-dir-existing" class="secondary">Select existing folder</button>
       <div class="folder-setup-existing-hint">Already have AI Medical Notes from a previous install?</div>
     </div>
+
+    <!-- ============================================================ -->
+    <!-- TAB: Record (default)                                         -->
+    <!-- ============================================================ -->
+    <div id="tab-record">
 
     <!-- Doctor picker (shown when multiple doctors at session start) -->
     <div id="doctor-picker" class="hidden">
@@ -164,6 +188,91 @@
         </div>
       </div>
       <button id="btn-service-warning-dismiss" class="icon-btn" title="Dismiss">&#10005;</button>
+    </div>
+
+    </div><!-- /#tab-record -->
+
+    <!-- ============================================================ -->
+    <!-- TAB: Templates                                                -->
+    <!-- ============================================================ -->
+    <div id="tab-templates" class="hidden">
+
+      <!-- Running job banner -->
+      <div id="template-job-banner" class="hidden">
+        <div id="template-job-banner-text"></div>
+        <button id="btn-template-job-cancel" class="icon-btn" title="Cancel">&#10005;</button>
+      </div>
+
+      <!-- Template list view -->
+      <div id="template-list-view">
+        <div id="template-doctor-list"></div>
+        <div class="add-doctor-row">
+          <input type="text" id="new-template-doctor-input" placeholder="Doctor name" autocomplete="off" spellcheck="false" />
+          <button id="btn-add-template-doctor" class="small">Add</button>
+        </div>
+        <div class="setting-hint">Click Add to select a template file for the doctor</div>
+
+        <button id="btn-template-create-ai" style="margin-top:4px">Create with AI</button>
+        <button id="btn-template-update-ai" style="margin-top:4px">Update with AI</button>
+        <div class="setting-hint">"Create with AI" analyses sample notes and generates a template (uses Opus 4.7, takes several minutes).</div>
+      </div>
+
+      <!-- Create-with-AI sub-view -->
+      <div id="create-template-view" class="hidden">
+        <div class="subview-header">
+          <button id="btn-create-template-back" class="icon-btn" title="Back">&#8592;</button>
+          <span>Create Template with AI</span>
+        </div>
+
+        <input id="create-template-doctor-input"
+               type="text"
+               placeholder="Doctor name (e.g. Chen)"
+               autocomplete="off"
+               spellcheck="false" />
+
+        <div class="create-template-files-label">Source files</div>
+        <div id="create-template-files" class="create-template-files-empty">
+          No files added yet
+        </div>
+        <button id="btn-create-template-add-files" class="small">+ Add files</button>
+        <div class="setting-hint">Select 50+ sample notes (.md/.docx/.txt/.json). Supporting docs like cheat sheets are optional but helpful.</div>
+
+        <button id="btn-create-template-start" disabled>Start</button>
+        <div id="create-template-error" class="config-warn hidden"></div>
+      </div>
+
+      <!-- Update-with-AI sub-view -->
+      <div id="update-template-view" class="hidden">
+        <div class="subview-header">
+          <button id="btn-update-template-back" class="icon-btn" title="Back">&#8592;</button>
+          <span>Update Template with AI</span>
+        </div>
+
+        <select id="update-template-doctor-select">
+          <option value="">Select doctor…</option>
+        </select>
+
+        <textarea id="update-template-corrections"
+                  placeholder="Describe what to change — e.g. change attribution verb to 'reports', add a new boilerplate block for post-injection care…"
+                  rows="7"
+                  spellcheck="true"></textarea>
+
+        <button id="btn-update-template-start" disabled>Start</button>
+        <div id="update-template-error" class="config-warn hidden"></div>
+      </div>
+
+    </div><!-- /#tab-templates -->
+
+    <!-- Bottom tab bar -->
+    <div id="tab-bar">
+      <button id="btn-tab-record" class="tab-btn tab-active" data-tab="record">
+        <span class="tab-icon">&#9673;</span>
+        <span>Record</span>
+      </button>
+      <button id="btn-tab-templates" class="tab-btn" data-tab="templates">
+        <span class="tab-icon">&#128209;</span>
+        <span>Templates</span>
+      </button>
     </div>
 
   </div>

@@ -89,7 +89,13 @@ const DEFAULT_SETTINGS = {
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  doctors: []
+  doctors: [],
+  // Model config — surfaced in settings.json so it can be edited without a code change.
+  // UI controls for these will come later; for now they are silent defaults that can be
+  // overridden by editing settings.json directly.
+  soapModel:      'claude-sonnet-4-6',
+  templateModel:  'claude-opus-4-7',
+  templateEffort: 'max'
 }
 
 function readSettings() {
@@ -192,6 +198,12 @@ function togglePopup() {
 // ---------------------------------------------------------------------------
 // Shared helpers — used by both recording flow and upload flow
 // ---------------------------------------------------------------------------
+
+function extractLastname(fullName) {
+  const stripped = fullName.trim().replace(/^(dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)\s*/i, '')
+  const parts = stripped.trim().split(/\s+/)
+  return sanitizeName(parts[parts.length - 1])
+}
 
 function sanitizeName(name) {
   if (!name) return null
@@ -299,11 +311,13 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   }
 
   const attempt = isRetry ? ' (retry)' : ''
-  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"`)
+  const soapModel = readSettings().soapModel
+  const modelFlag = soapModel ? ` --model ${soapModel}` : ''
+  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"${modelFlag}`)
 
   const safePrompt = prompt.replace(/"/g, '\\"')
   const claudeProc = spawn(
-    `claude -p "${safePrompt}" --dangerously-skip-permissions`,
+    `claude -p "${safePrompt}"${modelFlag} --dangerously-skip-permissions`,
     [],
     {
       cwd: NOTES_DIR,
@@ -404,6 +418,298 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
     }
   })
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
+}
+
+// ---------------------------------------------------------------------------
+// Template creation (Doctor Profile) — background job
+// ---------------------------------------------------------------------------
+//
+// Invoked from the Templates tab "Create with AI" flow.
+// Runs the create-doctor-profile skill via Claude (Opus 4.7 max effort by default)
+// on a folder of sample notes + supporting docs the user has uploaded.
+// Only ONE job can run at a time (lock). Job state is written to
+// <NOTES_DIR>/.template_job.json so the renderer can poll while the popup
+// is closed and pick up progress on reopen.
+
+let templateJobProc = null
+let templateJobStartMs = 0
+
+function getJobStatusPath() { return path.join(NOTES_DIR, '.template_job.json') }
+
+function readTemplateJob() {
+  try {
+    return JSON.parse(fs.readFileSync(getJobStatusPath(), 'utf8'))
+  } catch {
+    return { status: 'idle' }
+  }
+}
+
+function writeTemplateJob(job) {
+  try {
+    fs.writeFileSync(getJobStatusPath(), JSON.stringify(job, null, 2), 'utf8')
+  } catch (e) {
+    log(`[template-job] WARNING: failed to write job status: ${e.message}`)
+  }
+}
+
+function broadcastTemplateJob(job) {
+  writeTemplateJob(job)
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('template-job-status', job)
+  }
+}
+
+function spawnTemplateCreation(doctorName, stagingDir) {
+  const lastname = extractLastname(doctorName) || 'doctor'
+  const stagingRel = path.relative(NOTES_DIR, stagingDir).replace(/\\/g, '/')
+  const settings = readSettings()
+  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const effort = settings.templateEffort || 'max'
+
+  const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
+  const safePrompt = prompt.replace(/"/g, '\\"')
+
+  log(`[template] Spawning: claude -p "${prompt}" --model ${model} (effort=${effort})`)
+  templateJobStartMs = Date.now()
+
+  templateJobProc = spawn(
+    `claude -p "${safePrompt}" --model ${model} --dangerously-skip-permissions`,
+    [],
+    {
+      cwd: NOTES_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: effort }
+    }
+  )
+
+  const outChunks = []
+  templateJobProc.stdout.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[template] ${msg.trim()}`)
+  })
+  templateJobProc.stderr.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[template ERR] ${msg.trim()}`)
+  })
+
+  templateJobProc.on('close', code => {
+    const proc = templateJobProc
+    templateJobProc = null
+    const output = outChunks.join('')
+    const durationMs = Date.now() - templateJobStartMs
+    log(`[template] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
+
+    // Detect Claude usage-limit errors and surface them as a service warning
+    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
+      broadcastTemplateJob({
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: 'Claude usage limit reached. Try again once the limit resets.',
+        finishedAt: Date.now()
+      })
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Template creation could not complete — try again once the limit resets.'
+        })
+      }
+      return
+    }
+
+    const expectedPath = path.join(TEMPLATES_DIR, `${lastname}.md`)
+    if (code === 0 && fs.existsSync(expectedPath)) {
+      // Success — register the doctor in settings.json (if not already there)
+      try {
+        const s = readSettings()
+        const doctors = s.doctors || []
+        const existingIdx = doctors.findIndex(d =>
+          d.templatePath === expectedPath ||
+          sanitizeName(d.name) === lastname
+        )
+        const doctorEntry = {
+          id: existingIdx >= 0 ? doctors[existingIdx].id : String(Date.now()),
+          name: doctorName.trim(),
+          templatePath: expectedPath
+        }
+        if (existingIdx >= 0) doctors[existingIdx] = doctorEntry
+        else doctors.push(doctorEntry)
+        writeSettings({ ...s, doctors })
+        log(`[template] Doctor registered: ${doctorName} (${expectedPath})`)
+      } catch (e) {
+        log(`[template] WARNING: failed to register doctor: ${e.message}`)
+      }
+
+      // Delete staging folder after success
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+        log(`[template] Staging deleted: ${stagingDir}`)
+      } catch (e) {
+        log(`[template] WARNING: failed to delete staging: ${e.message}`)
+      }
+
+      broadcastTemplateJob({
+        status: 'success',
+        doctorName,
+        lastname,
+        templatePath: expectedPath,
+        durationMs,
+        finishedAt: Date.now()
+      })
+      notifyUser('Template ready', `Profile for ${doctorName} saved.`)
+    } else {
+      broadcastTemplateJob({
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: code === 0
+          ? `Claude exited 0 but template file not found at ${expectedPath}`
+          : `Claude exited with code ${code}`,
+        finishedAt: Date.now()
+      })
+      notifyUser('Template creation failed', `${doctorName} — check app.log for details`)
+    }
+  })
+
+  templateJobProc.on('error', err => {
+    const proc = templateJobProc
+    templateJobProc = null
+    log(`[template ERR] failed to spawn claude: ${err.message}`)
+    broadcastTemplateJob({
+      status: 'failed',
+      doctorName,
+      lastname,
+      error: err.code === 'ENOENT'
+        ? 'Claude CLI not installed. Install the Claude CLI to enable template creation.'
+        : err.message,
+      finishedAt: Date.now()
+    })
+  })
+
+  broadcastTemplateJob({
+    status: 'running',
+    doctorName,
+    lastname,
+    startedAt: templateJobStartMs,
+    model,
+    effort
+  })
+}
+
+function spawnTemplateUpdate(doctorName, templatePath, corrections) {
+  const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
+  const settings = readSettings()
+  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const effort = settings.templateEffort || 'max'
+
+  // Flatten multi-line corrections and strip double quotes to avoid breaking shell quoting on Windows
+  const safeCorrections = corrections.replace(/\r?\n/g, ' | ').replace(/"/g, "'")
+  const safeName = doctorName.replace(/"/g, "'")
+  const safePath = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
+
+  const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}`
+
+  log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
+  templateJobStartMs = Date.now()
+
+  templateJobProc = spawn(
+    `claude -p "${prompt}" --model ${model} --dangerously-skip-permissions`,
+    [],
+    {
+      cwd: NOTES_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: effort }
+    }
+  )
+
+  const outChunks = []
+  templateJobProc.stdout.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[template-update] ${msg.trim()}`)
+  })
+  templateJobProc.stderr.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[template-update ERR] ${msg.trim()}`)
+  })
+
+  templateJobProc.on('close', code => {
+    templateJobProc = null
+    const output = outChunks.join('')
+    const durationMs = Date.now() - templateJobStartMs
+    log(`[template-update] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
+
+    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: 'Claude usage limit reached. Try again once the limit resets.',
+        finishedAt: Date.now()
+      })
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Template update could not complete — try again once the limit resets.'
+        })
+      }
+      return
+    }
+
+    if (code === 0) {
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'success',
+        doctorName,
+        lastname,
+        templatePath,
+        durationMs,
+        finishedAt: Date.now()
+      })
+      notifyUser('Template updated', `Profile for ${doctorName} updated.`)
+    } else {
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: `Claude exited with code ${code}`,
+        finishedAt: Date.now()
+      })
+      notifyUser('Template update failed', `${doctorName} — check app.log for details`)
+    }
+  })
+
+  templateJobProc.on('error', err => {
+    templateJobProc = null
+    log(`[template-update ERR] failed to spawn claude: ${err.message}`)
+    broadcastTemplateJob({
+      type: 'update',
+      status: 'failed',
+      doctorName,
+      lastname,
+      error: err.code === 'ENOENT'
+        ? 'Claude CLI not installed. Install the Claude CLI to enable template updates.'
+        : err.message,
+      finishedAt: Date.now()
+    })
+  })
+
+  broadcastTemplateJob({
+    type: 'update',
+    status: 'running',
+    doctorName,
+    lastname,
+    startedAt: templateJobStartMs,
+    model,
+    effort
+  })
 }
 
 function checkForUpdates() {
@@ -586,6 +892,20 @@ app.whenReady().then(async () => {
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log('.claude config synced to AI Medical Notes')
+
+    // Clean up any stale template job from a prior crash/restart — the child
+    // process died with the app, so a 'running' status in the file is orphaned.
+    const staleJob = readTemplateJob()
+    if (staleJob && staleJob.status === 'running') {
+      writeTemplateJob({
+        status: 'failed',
+        doctorName: staleJob.doctorName,
+        lastname: staleJob.lastname,
+        error: 'Job was interrupted by an app restart. Please retry.',
+        finishedAt: Date.now()
+      })
+      log('[template] Cleared stale running job state from previous run')
+    }
   }
   // If no path set, the renderer will show the folder setup view
 
@@ -649,7 +969,7 @@ app.whenReady().then(async () => {
   // Create popup window
   win = new BrowserWindow({
     width: 280,
-    height: 360,
+    height: 420,
     show: false,
     frame: false,
     resizable: false,
@@ -1054,6 +1374,114 @@ function registerIpcHandlers() {
     return { ok: true, doctor }
   })
 
+  // -------------------------------------------------------------------------
+  // Template creation (AI profile builder) — Templates tab
+  // -------------------------------------------------------------------------
+
+  // ---- browse-notes-files ----
+  // Multi-select file picker for sample notes + supporting documents.
+  ipcMain.handle('browse-notes-files', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select sample notes and supporting documents',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Notes',     extensions: ['md', 'docx', 'txt', 'json'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled) return []
+    return result.filePaths
+  })
+
+  // ---- start-template-creation ----
+  // Stages the user-selected files into NOTES_DIR/Templates/_staging/<lastname>/
+  // then spawns the create-doctor-profile skill via Claude.
+  ipcMain.handle('start-template-creation', async (_, doctorName, filePaths) => {
+    const name = (doctorName || '').trim()
+    if (!name) return { ok: false, error: 'Doctor name is required' }
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+      return { ok: false, error: 'At least one source file is required' }
+    }
+    if (templateJobProc) {
+      return { ok: false, error: 'A template creation job is already running' }
+    }
+
+    const lastname = extractLastname(name)
+    if (!lastname) return { ok: false, error: 'Doctor name produced an empty identifier' }
+
+    const stagingDir = path.join(NOTES_DIR, 'Templates', '_staging', lastname)
+    try {
+      // Fresh staging folder — wipe any leftovers from a prior failed run
+      if (fs.existsSync(stagingDir)) {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      }
+      fs.mkdirSync(stagingDir, { recursive: true })
+
+      for (const src of filePaths) {
+        if (!fs.existsSync(src)) continue
+        const dest = path.join(stagingDir, path.basename(src))
+        fs.copyFileSync(src, dest)
+      }
+      log(`[template] Staged ${filePaths.length} file(s) → ${stagingDir}`)
+    } catch (e) {
+      log(`[template ERR] staging failed: ${e.message}`)
+      return { ok: false, error: `Staging failed: ${e.message}` }
+    }
+
+    spawnTemplateCreation(name, stagingDir)
+    return { ok: true }
+  })
+
+  // ---- start-template-update ----
+  ipcMain.handle('start-template-update', async (_, doctorName, corrections) => {
+    const name = (doctorName || '').trim()
+    if (!name) return 'Doctor name is required.'
+    if (!(corrections || '').trim()) return 'Corrections are required.'
+    if (templateJobProc) return 'A template job is already running.'
+
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.name === name)
+    if (!doctor || !doctor.templatePath) {
+      return `No template registered for "${name}". Create a template first.`
+    }
+    if (!fs.existsSync(doctor.templatePath)) {
+      return `Template file missing at ${doctor.templatePath}.`
+    }
+
+    spawnTemplateUpdate(name, doctor.templatePath, corrections.trim())
+    return null  // null = no error
+  })
+
+  // ---- get-doctors-with-templates ----
+  ipcMain.handle('get-doctors-with-templates', () => {
+    const settings = readSettings()
+    return (settings.doctors || [])
+      .filter(d => d.templatePath && fs.existsSync(d.templatePath))
+      .map(d => d.name)
+      .sort()
+  })
+
+  // ---- get-template-job-status ----
+  ipcMain.handle('get-template-job-status', () => readTemplateJob())
+
+  // ---- dismiss-template-job ----
+  ipcMain.handle('dismiss-template-job', () => {
+    writeTemplateJob({ status: 'idle' })
+    return { ok: true }
+  })
+
+  // ---- cancel-template-creation ----
+  ipcMain.handle('cancel-template-creation', () => {
+    if (!templateJobProc) return { ok: false, error: 'No job running' }
+    try {
+      templateJobProc.kill()
+      log('[template] Cancellation requested')
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  })
+
   // ---- update-doctor ----
   ipcMain.handle('update-doctor', (_, id, name) => {
     const trimmed = (name || '').trim()
@@ -1071,8 +1499,23 @@ function registerIpcHandlers() {
   ipcMain.handle('remove-doctor', (_, id) => {
     try {
       const settings = readSettings()
+      const doctor = (settings.doctors || []).find(d => d.id === id)
       const doctors = (settings.doctors || []).filter(d => d.id !== id)
       writeSettings({ ...settings, doctors })
+
+      if (doctor?.templatePath) {
+        const tp = doctor.templatePath
+        const stillUsed = doctors.some(d => d.templatePath === tp)
+        if (!stillUsed && tp.startsWith(TEMPLATES_DIR) && fs.existsSync(tp)) {
+          try {
+            fs.unlinkSync(tp)
+            log(`Template file removed: ${tp}`)
+          } catch (e) {
+            log(`WARNING: failed to delete template file ${tp}: ${e.message}`)
+          }
+        }
+      }
+
       log(`Doctor removed: ${id}`)
       return { ok: true }
     } catch (e) {

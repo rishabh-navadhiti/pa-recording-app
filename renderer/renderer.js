@@ -31,6 +31,8 @@ const settingsView       = document.getElementById('settings-view')
 const btnSettingsClose   = document.getElementById('btn-settings-close')
 const chkAutoRecord          = document.getElementById('chk-auto-record')
 const deviceSelect           = document.getElementById('device-select')
+const soapModelSelect        = document.getElementById('soap-model-select')
+const templateModelSelect    = document.getElementById('template-model-select')
 const btnAdvancedToggle      = document.getElementById('btn-advanced-toggle')
 const advancedSettingsContent = document.getElementById('advanced-settings-content')
 const uploadForm         = document.getElementById('upload-form')
@@ -68,6 +70,37 @@ const folderSetup              = document.getElementById('folder-setup')
 const btnBrowseNotesDirNew      = document.getElementById('btn-browse-notes-dir-new')
 const btnBrowseNotesDirExisting = document.getElementById('btn-browse-notes-dir-existing')
 const viewStatusBar     = document.getElementById('view-status-bar')
+
+// --- Tabs + Templates tab refs ---
+const tabRecord                 = document.getElementById('tab-record')
+const tabTemplates              = document.getElementById('tab-templates')
+const tabBar                    = document.getElementById('tab-bar')
+const tabTitle                  = document.getElementById('tab-title')
+const statusRow                 = document.getElementById('status-row')
+const btnTabRecord              = document.getElementById('btn-tab-record')
+const btnTabTemplates           = document.getElementById('btn-tab-templates')
+const templateDoctorListEl      = document.getElementById('template-doctor-list')
+const newTemplateDoctorInput    = document.getElementById('new-template-doctor-input')
+const btnAddTemplateDoctor      = document.getElementById('btn-add-template-doctor')
+const templateJobBanner         = document.getElementById('template-job-banner')
+const templateJobBannerText     = document.getElementById('template-job-banner-text')
+const btnTemplateJobCancel      = document.getElementById('btn-template-job-cancel')
+const templateListView          = document.getElementById('template-list-view')
+const btnTemplateCreateAi       = document.getElementById('btn-template-create-ai')
+const createTemplateView        = document.getElementById('create-template-view')
+const btnCreateTemplateBack     = document.getElementById('btn-create-template-back')
+const createTemplateDoctorInput = document.getElementById('create-template-doctor-input')
+const createTemplateFilesEl     = document.getElementById('create-template-files')
+const btnCreateTemplateAddFiles = document.getElementById('btn-create-template-add-files')
+const btnCreateTemplateStart    = document.getElementById('btn-create-template-start')
+const createTemplateError       = document.getElementById('create-template-error')
+const btnTemplateUpdateAi       = document.getElementById('btn-template-update-ai')
+const updateTemplateView        = document.getElementById('update-template-view')
+const btnUpdateTemplateBack     = document.getElementById('btn-update-template-back')
+const updateTemplateDoctorSel   = document.getElementById('update-template-doctor-select')
+const updateTemplateCorrections = document.getElementById('update-template-corrections')
+const btnUpdateTemplateStart    = document.getElementById('btn-update-template-start')
+const updateTemplateError       = document.getElementById('update-template-error')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -433,8 +466,10 @@ doctorInput.addEventListener('keydown', e => {
 
 function showSettings() {
   settingsOpen = true
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker, viewStatusBar]
-    .forEach(el => { if (el) el.style.display = 'none' })
+  // Hide both tabs + tab bar; settings is a full overlay
+  if (tabRecord)    tabRecord.style.display    = 'none'
+  if (tabTemplates) tabTemplates.style.display = 'none'
+  if (tabBar)       tabBar.style.display       = 'none'
   settingsView.classList.remove('hidden')
   loadSettings()
 }
@@ -442,8 +477,9 @@ function showSettings() {
 function hideSettings() {
   settingsOpen = false
   settingsView.classList.add('hidden')
-  ;[timerEl, configWarnings, actionButtons, uploadForm, patientForm, setupWarning, doctorPicker, viewStatusBar]
-    .forEach(el => { if (el) el.style.display = '' })
+  if (tabBar) tabBar.style.display = ''
+  // Restore the currently-active tab
+  showTab(activeTab)
   render(currentRenderedState)
 }
 
@@ -498,14 +534,16 @@ btnChangeNotesDir.addEventListener('click', async () => {
   }
 })
 
-async function renderDoctorList() {
+async function renderDoctorList(containerEl) {
+  const el = containerEl || doctorListEl
+  if (!el) return
   const doctors = await api.getDoctors()
-  doctorListEl.innerHTML = ''
+  el.innerHTML = ''
   if (doctors.length === 0) {
     const empty = document.createElement('div')
     empty.className = 'doctor-empty'
     empty.textContent = 'No doctors added yet'
-    doctorListEl.appendChild(empty)
+    el.appendChild(empty)
     return
   }
   doctors.forEach(doc => {
@@ -547,7 +585,7 @@ async function renderDoctorList() {
       removeBtn.title = 'Remove doctor'
       removeBtn.addEventListener('click', async () => {
         await api.removeDoctor(doc.id)
-        await renderDoctorList()
+        await renderDoctorList(el)
         const cfg = await api.getConfigStatus()
         if (!cfg.noDoctors) {
           warnDoctor.classList.add('hidden')
@@ -610,7 +648,7 @@ async function renderDoctorList() {
     }
 
     renderViewMode()
-    doctorListEl.appendChild(row)
+    el.appendChild(row)
   })
 }
 
@@ -651,7 +689,17 @@ btnAdvancedToggle.addEventListener('click', async () => {
     btnAdvancedToggle.classList.add('open')
     const s = await api.getSettings()
     await loadDeviceList(s.selectedDeviceIndex)
+    if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'claude-sonnet-4-6'
+    if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-7'
   }
+})
+
+soapModelSelect.addEventListener('change', () => {
+  api.saveSettings({ soapModel: soapModelSelect.value })
+})
+
+templateModelSelect.addEventListener('change', () => {
+  api.saveSettings({ templateModel: templateModelSelect.value })
 })
 
 deviceSelect.addEventListener('change', () => {
@@ -712,11 +760,9 @@ btnDoctorPickerCancel.addEventListener('click', () => {
 
 const MAIN_CONTENT_ELS = [
   () => document.getElementById('header-row'),
-  () => configWarnings,
-  () => actionButtons,
-  () => setupWarning,
-  () => serviceWarning,
-  () => viewStatusBar
+  () => tabRecord,
+  () => tabTemplates,
+  () => tabBar
 ]
 
 function showFolderSetup() {
@@ -727,6 +773,8 @@ function showFolderSetup() {
 function hideFolderSetup() {
   folderSetup.classList.add('hidden')
   MAIN_CONTENT_ELS.forEach(get => { const el = get(); if (el) el.style.display = '' })
+  // Reapply tab visibility after restoring main content
+  showTab(activeTab)
 }
 
 async function handleNotesDirSelection(mode) {
@@ -759,6 +807,365 @@ function registerAppListeners() {
     if (btn) btn.textContent = recordings.length > 0 ? `View Status (${recordings.length})` : 'View Status'
   })
   document.getElementById('btn-view-status').addEventListener('click', () => api.openStatusWindow())
+  api.onTemplateJobStatus(handleTemplateJobStatus)
+}
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+
+let activeTab = 'record'
+
+function showTab(name) {
+  activeTab = name
+  const showingRecord = name === 'record'
+
+  if (tabRecord)    tabRecord.style.display    = showingRecord ? '' : 'none'
+  if (tabTemplates) {
+    tabTemplates.classList.toggle('hidden', showingRecord)
+    tabTemplates.style.display = showingRecord ? 'none' : ''
+  }
+
+  if (statusRow) statusRow.style.display = showingRecord ? '' : 'none'
+  if (tabTitle)  tabTitle.classList.toggle('hidden', showingRecord)
+
+  if (btnTabRecord)    btnTabRecord.classList.toggle('tab-active', showingRecord)
+  if (btnTabTemplates) btnTabTemplates.classList.toggle('tab-active', !showingRecord)
+
+  if (!showingRecord) {
+    // Reset any open sub-view when re-entering the templates tab
+    hideCreateTemplateSubview()
+    renderDoctorList(templateDoctorListEl)
+    refreshTemplateJobBanner()
+  }
+}
+
+if (btnTabRecord)    btnTabRecord.addEventListener('click', () => showTab('record'))
+if (btnTabTemplates) btnTabTemplates.addEventListener('click', () => showTab('templates'))
+
+// ---------------------------------------------------------------------------
+// Templates tab — list + actions
+// ---------------------------------------------------------------------------
+
+// --- Add doctor from Templates tab ---
+if (btnAddTemplateDoctor) {
+  btnAddTemplateDoctor.addEventListener('click', async () => {
+    const name = (newTemplateDoctorInput.value || '').trim()
+    if (!name) { newTemplateDoctorInput.focus(); return }
+    btnAddTemplateDoctor.disabled = true
+    const res = await api.addDoctor(name)
+    btnAddTemplateDoctor.disabled = false
+    if (res.ok) {
+      newTemplateDoctorInput.value = ''
+      await renderDoctorList(templateDoctorListEl)
+      warnDoctor.classList.add('hidden')
+      updateConfigWarningsVisibility()
+    }
+  })
+}
+if (newTemplateDoctorInput) {
+  newTemplateDoctorInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') btnAddTemplateDoctor.click()
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Templates tab — Create with AI sub-view
+// ---------------------------------------------------------------------------
+
+let createTemplateFiles = []
+
+function showCreateTemplateSubview() {
+  createTemplateFiles = []
+  if (createTemplateDoctorInput) createTemplateDoctorInput.value = ''
+  renderCreateTemplateFiles()
+  hideCreateTemplateError()
+  if (btnCreateTemplateStart) btnCreateTemplateStart.disabled = true
+  if (templateListView)     templateListView.classList.add('hidden')
+  if (createTemplateView)   createTemplateView.classList.remove('hidden')
+  if (createTemplateDoctorInput) createTemplateDoctorInput.focus()
+}
+
+function hideCreateTemplateSubview() {
+  if (createTemplateView) createTemplateView.classList.add('hidden')
+  if (templateListView)   templateListView.classList.remove('hidden')
+}
+
+function renderCreateTemplateFiles() {
+  if (!createTemplateFilesEl) return
+  createTemplateFilesEl.innerHTML = ''
+  if (createTemplateFiles.length === 0) {
+    createTemplateFilesEl.classList.add('create-template-files-empty')
+    createTemplateFilesEl.textContent = 'No files added yet'
+    return
+  }
+  createTemplateFilesEl.classList.remove('create-template-files-empty')
+  createTemplateFiles.forEach((fp, idx) => {
+    const row = document.createElement('div')
+    row.className = 'create-template-file-row'
+    const name = document.createElement('span')
+    name.className = 'create-template-file-name'
+    name.textContent = fp.split(/[\\/]/).pop()
+    name.title = fp
+    const rm = document.createElement('button')
+    rm.className = 'create-template-file-remove'
+    rm.textContent = '✕'
+    rm.title = 'Remove'
+    rm.addEventListener('click', () => {
+      createTemplateFiles.splice(idx, 1)
+      renderCreateTemplateFiles()
+      updateCreateTemplateStartEnabled()
+    })
+    row.appendChild(name)
+    row.appendChild(rm)
+    createTemplateFilesEl.appendChild(row)
+  })
+}
+
+function updateCreateTemplateStartEnabled() {
+  if (!btnCreateTemplateStart) return
+  const name = (createTemplateDoctorInput?.value || '').trim()
+  btnCreateTemplateStart.disabled = !name || createTemplateFiles.length === 0
+}
+
+function showCreateTemplateError(msg) {
+  if (!createTemplateError) return
+  createTemplateError.textContent = msg
+  createTemplateError.classList.remove('hidden')
+}
+
+function hideCreateTemplateError() {
+  if (createTemplateError) createTemplateError.classList.add('hidden')
+}
+
+if (btnCreateTemplateBack) {
+  btnCreateTemplateBack.addEventListener('click', hideCreateTemplateSubview)
+}
+
+if (btnTemplateCreateAi) {
+  btnTemplateCreateAi.addEventListener('click', showCreateTemplateSubview)
+}
+
+if (createTemplateDoctorInput) {
+  createTemplateDoctorInput.addEventListener('input', updateCreateTemplateStartEnabled)
+}
+
+if (btnCreateTemplateAddFiles) {
+  btnCreateTemplateAddFiles.addEventListener('click', async () => {
+    btnCreateTemplateAddFiles.disabled = true
+    try {
+      const paths = await api.browseNotesFiles()
+      if (Array.isArray(paths) && paths.length > 0) {
+        // De-duplicate against already-added files
+        const set = new Set(createTemplateFiles)
+        paths.forEach(p => set.add(p))
+        createTemplateFiles = Array.from(set)
+        renderCreateTemplateFiles()
+        updateCreateTemplateStartEnabled()
+      }
+    } finally {
+      btnCreateTemplateAddFiles.disabled = false
+    }
+  })
+}
+
+if (btnCreateTemplateStart) {
+  btnCreateTemplateStart.addEventListener('click', async () => {
+    hideCreateTemplateError()
+    const name = (createTemplateDoctorInput.value || '').trim()
+    if (!name) {
+      showCreateTemplateError('Doctor name is required')
+      return
+    }
+    if (createTemplateFiles.length === 0) {
+      showCreateTemplateError('Add at least one source file')
+      return
+    }
+
+    btnCreateTemplateStart.disabled = true
+    const res = await api.startTemplateCreation(name, createTemplateFiles)
+    if (!res.ok) {
+      showCreateTemplateError(res.error || 'Failed to start')
+      btnCreateTemplateStart.disabled = false
+      return
+    }
+    // Return to the list view; the job banner will show progress
+    hideCreateTemplateSubview()
+    refreshTemplateJobBanner()
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Templates tab — Update with AI sub-view
+// ---------------------------------------------------------------------------
+
+function showUpdateTemplateSubview() {
+  if (updateTemplateDoctorSel) updateTemplateDoctorSel.innerHTML = '<option value="">Select doctor…</option>'
+  if (updateTemplateCorrections) updateTemplateCorrections.value = ''
+  if (updateTemplateError) updateTemplateError.classList.add('hidden')
+  if (btnUpdateTemplateStart) btnUpdateTemplateStart.disabled = true
+  if (templateListView) templateListView.classList.add('hidden')
+  if (updateTemplateView) updateTemplateView.classList.remove('hidden')
+}
+
+function hideUpdateTemplateSubview() {
+  if (updateTemplateView) updateTemplateView.classList.add('hidden')
+  if (templateListView) templateListView.classList.remove('hidden')
+}
+
+function validateUpdateForm() {
+  if (!btnUpdateTemplateStart) return
+  const hasDoctor = updateTemplateDoctorSel && updateTemplateDoctorSel.value
+  const hasCorrections = updateTemplateCorrections && updateTemplateCorrections.value.trim()
+  btnUpdateTemplateStart.disabled = !(hasDoctor && hasCorrections)
+}
+
+if (btnTemplateUpdateAi) {
+  btnTemplateUpdateAi.addEventListener('click', async () => {
+    showUpdateTemplateSubview()
+    if (!api.getDoctorsWithTemplates) return
+    const doctors = await api.getDoctorsWithTemplates()
+    if (!updateTemplateDoctorSel) return
+    updateTemplateDoctorSel.innerHTML = '<option value="">Select doctor…</option>'
+    doctors.forEach(name => {
+      const opt = document.createElement('option')
+      opt.value = name
+      opt.textContent = name
+      updateTemplateDoctorSel.appendChild(opt)
+    })
+  })
+}
+
+if (btnUpdateTemplateBack) {
+  btnUpdateTemplateBack.addEventListener('click', hideUpdateTemplateSubview)
+}
+
+if (updateTemplateDoctorSel) {
+  updateTemplateDoctorSel.addEventListener('change', validateUpdateForm)
+}
+
+if (updateTemplateCorrections) {
+  updateTemplateCorrections.addEventListener('input', validateUpdateForm)
+}
+
+if (btnUpdateTemplateStart) {
+  btnUpdateTemplateStart.addEventListener('click', async () => {
+    if (updateTemplateError) updateTemplateError.classList.add('hidden')
+    const doctorName  = updateTemplateDoctorSel ? updateTemplateDoctorSel.value : ''
+    const corrections = updateTemplateCorrections ? updateTemplateCorrections.value.trim() : ''
+    if (!doctorName || !corrections) return
+
+    btnUpdateTemplateStart.disabled = true
+    const err = await api.startTemplateUpdate(doctorName, corrections)
+    if (err) {
+      if (updateTemplateError) {
+        updateTemplateError.textContent = err
+        updateTemplateError.classList.remove('hidden')
+      }
+      btnUpdateTemplateStart.disabled = false
+      return
+    }
+    hideUpdateTemplateSubview()
+    refreshTemplateJobBanner()
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Templates tab — Running job banner
+// ---------------------------------------------------------------------------
+
+let jobPollInterval = null
+
+function formatElapsed(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000))
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return m > 0 ? `${m} min ${s}s` : `${s}s`
+}
+
+function handleTemplateJobStatus(job) {
+  if (!templateJobBanner) return
+  if (!job || job.status === 'idle') {
+    templateJobBanner.classList.add('hidden')
+    stopJobPolling()
+    return
+  }
+  const isUpdate = job.type === 'update'
+  if (job.status === 'running') {
+    templateJobBanner.classList.remove('hidden')
+    templateJobBanner.classList.remove('banner-failed', 'banner-success')
+    const elapsed = formatElapsed(Date.now() - (job.startedAt || Date.now()))
+    const verb = isUpdate ? 'Updating' : 'Creating'
+    templateJobBannerText.innerHTML = `${verb} template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
+    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
+    startJobPolling()
+  } else if (job.status === 'success') {
+    templateJobBanner.classList.remove('hidden')
+    templateJobBanner.classList.add('banner-success')
+    templateJobBanner.classList.remove('banner-failed')
+    const doneText = isUpdate ? 'Template updated for' : 'Template ready for'
+    templateJobBannerText.innerHTML = `${doneText} <strong>${job.doctorName || 'doctor'}</strong>`
+    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
+    stopJobPolling()
+    renderDoctorList(templateDoctorListEl)
+    // A doctor was added — dismiss the "Doctor not set up" warning if present
+    warnDoctor.classList.add('hidden')
+    updateConfigWarningsVisibility()
+    // Auto-dismiss after a few seconds
+    setTimeout(() => {
+      if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
+        templateJobBanner.classList.add('hidden')
+      }
+    }, 6000)
+  } else if (job.status === 'failed') {
+    templateJobBanner.classList.remove('hidden')
+    templateJobBanner.classList.add('banner-failed')
+    templateJobBanner.classList.remove('banner-success')
+    const failLabel = isUpdate ? 'Template update failed' : 'Template creation failed'
+    templateJobBannerText.innerHTML = `<strong>${failLabel}</strong> — ${job.error || 'unknown error'}`
+    if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
+    stopJobPolling()
+  }
+}
+
+async function refreshTemplateJobBanner() {
+  if (!api.getTemplateJobStatus) return
+  const job = await api.getTemplateJobStatus()
+  handleTemplateJobStatus(job)
+}
+
+function startJobPolling() {
+  if (jobPollInterval) return
+  jobPollInterval = setInterval(async () => {
+    const job = await api.getTemplateJobStatus()
+    // Keep the banner fresh so elapsed-time updates even if no push arrived
+    handleTemplateJobStatus(job)
+  }, 3000)
+}
+
+function stopJobPolling() {
+  if (jobPollInterval) {
+    clearInterval(jobPollInterval)
+    jobPollInterval = null
+  }
+}
+
+if (btnTemplateJobCancel) {
+  btnTemplateJobCancel.addEventListener('click', async () => {
+    const job = await api.getTemplateJobStatus()
+    if (!job || job.status !== 'running') {
+      await api.dismissTemplateJob()
+      templateJobBanner.classList.add('hidden')
+      return
+    }
+    const cancelMsg = job.type === 'update'
+      ? 'Cancel template update? Progress will be lost.'
+      : 'Cancel template creation? Progress will be lost.'
+    if (!confirm(cancelMsg)) return
+    btnTemplateJobCancel.disabled = true
+    await api.cancelTemplateCreation()
+    btnTemplateJobCancel.disabled = false
+  })
 }
 
 // ---------------------------------------------------------------------------
