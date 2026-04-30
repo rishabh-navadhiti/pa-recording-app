@@ -138,8 +138,9 @@ PATIENTS=("<CASE_STEM>")
 2. For each patient, create a case folder and copy the full MP3, full transcript, and their transcript segment:
 
 ```bash
+SESSION_DIR=$(dirname "${CASE_DIR}")
 for PATIENT_NAME in <list of names>; do
-  PATIENT_CASE_DIR="${CASES_DIR}/${PATIENT_NAME}"
+  PATIENT_CASE_DIR="${SESSION_DIR}/${PATIENT_NAME}"
   mkdir -p "${PATIENT_CASE_DIR}"
 
   # Copy full original MP3 (if found)

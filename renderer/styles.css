@@ -743,6 +743,28 @@ button.outline:hover { opacity: 0.85; }
   margin-top: 4px;
 }
 
+/* View status bar */
+#view-status-bar {
+  display: flex;
+  justify-content: center;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: #1D9E75;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-decoration: underline;
+  width: auto;
+  opacity: 0.75;
+}
+
+.link-btn:hover {
+  opacity: 1;
+}
+
 /* ---------------------------------------------------------------- */
 /* Tab bar (bottom)                                                  */
 /* ---------------------------------------------------------------- */

@@ -62,6 +62,7 @@ const notesDirPath      = document.getElementById('notes-dir-path')
 const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
 const folderSetup       = document.getElementById('folder-setup')
 const btnBrowseNotesDir = document.getElementById('btn-browse-notes-dir')
+const viewStatusBar     = document.getElementById('view-status-bar')
 
 // --- Tabs + Templates tab refs ---
 const tabRecord                 = document.getElementById('tab-record')
@@ -109,6 +110,18 @@ const templateChangesText                  = document.getElementById('template-c
 let timerInterval = null
 let timerSeconds = 0
 
+function formatTime(secs) {
+  if (secs >= 3600) {
+    const h = String(Math.floor(secs / 3600)).padStart(2, '0')
+    const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0')
+    const s = String(secs % 60).padStart(2, '0')
+    return `${h}:${m}:${s}`
+  }
+  const m = String(Math.floor(secs / 60)).padStart(2, '0')
+  const s = String(secs % 60).padStart(2, '0')
+  return `${m}:${s}`
+}
+
 function startTimer() {
   timerSeconds = 0
   timerEl.textContent = '00:00'
@@ -116,9 +129,7 @@ function startTimer() {
   if (timerInterval) clearInterval(timerInterval)
   timerInterval = setInterval(() => {
     timerSeconds++
-    const m = String(Math.floor(timerSeconds / 60)).padStart(2, '0')
-    const s = String(timerSeconds % 60).padStart(2, '0')
-    timerEl.textContent = `${m}:${s}`
+    timerEl.textContent = formatTime(timerSeconds)
   }, 1000)
 }
 
@@ -142,9 +153,7 @@ function resumeTimer() {
   if (timerInterval) clearInterval(timerInterval)
   timerInterval = setInterval(() => {
     timerSeconds++
-    const m = String(Math.floor(timerSeconds / 60)).padStart(2, '0')
-    const s = String(timerSeconds % 60).padStart(2, '0')
-    timerEl.textContent = `${m}:${s}`
+    timerEl.textContent = formatTime(timerSeconds)
   }, 1000)
 }
 
@@ -166,6 +175,7 @@ function render(state) {
   patientForm.classList.add('hidden')
   uploadForm.classList.add('hidden')
   doctorPicker.classList.add('hidden')
+  viewStatusBar.classList.add('hidden')
 
   switch (state) {
     case STATE.IDLE: {
@@ -187,6 +197,7 @@ function render(state) {
       indicator.className = 'active'
       statusLabel.textContent = 'Session active'
       stopTimer()
+      viewStatusBar.classList.remove('hidden')
 
       const btnRec = makeButton('Start Recording', async () => {
         await api.startRecording()
@@ -208,6 +219,7 @@ function render(state) {
     case STATE.RECORDING: {
       indicator.className = 'pulsing'
       statusLabel.textContent = 'Recording...'
+      viewStatusBar.classList.remove('hidden')
       if (prevState === STATE.PAUSED) {
         resumeTimer()
       } else {
@@ -234,6 +246,7 @@ function render(state) {
     case STATE.PAUSED: {
       indicator.className = 'paused'
       statusLabel.textContent = 'Paused'
+      viewStatusBar.classList.remove('hidden')
       pauseTimer()
 
       const btnResume = makeButton('Resume', async () => {
@@ -256,6 +269,7 @@ function render(state) {
     case STATE.PROCESSING: {
       indicator.className = 'active'
       statusLabel.textContent = 'Processing...'
+      viewStatusBar.classList.remove('hidden')
       stopTimer()
 
       const btnDisabled = makeButton('Please wait...', null)
@@ -1247,6 +1261,13 @@ if (btnTemplateJobCancel) {
     await api.cancelTemplateCreation()
     btnTemplateJobCancel.disabled = false
   })
+
+  api.onRecordingStatusUpdate(recordings => {
+    const btn = document.getElementById('btn-view-status')
+    if (btn) btn.textContent = recordings.length > 0 ? `View Status (${recordings.length})` : 'View Status'
+  })
+  const btnViewStatus = document.getElementById('btn-view-status')
+  if (btnViewStatus) btnViewStatus.addEventListener('click', () => api.openStatusWindow())
 }
 
 // ---------------------------------------------------------------------------
