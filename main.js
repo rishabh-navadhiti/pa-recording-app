@@ -535,18 +535,20 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   })
 }
 
-function spawnTemplateUpdate(doctorName, templatePath, corrections) {
+function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsFile, samplesDir) {
   const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
   const settings = readSettings()
   const model  = settings.templateModel  || 'claude-opus-4-7'
   const effort = settings.templateEffort || 'max'
 
   // Flatten multi-line corrections and strip double quotes to avoid breaking shell quoting on Windows
-  const safeCorrections = corrections.replace(/\r?\n/g, ' | ').replace(/"/g, "'")
+  const safeCorrections = (corrections || '').replace(/\r?\n/g, ' | ').replace(/"/g, "'")
   const safeName = doctorName.replace(/"/g, "'")
   const safePath = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
+  const safeCorrectionsFile = correctionsFile ? correctionsFile.replace(/\\/g, '/').replace(/"/g, "'") : ''
+  const safeSamplesDir = samplesDir ? samplesDir.replace(/\\/g, '/').replace(/"/g, "'") : ''
 
-  const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}`
+  const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}. CorrectionsFile: ${safeCorrectionsFile}. Samples: ${safeSamplesDir}`
 
   log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
   templateJobStartMs = Date.now()
@@ -599,6 +601,12 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections) {
     }
 
     if (code === 0) {
+      // Extract the Step 7 changes report — everything from "Updated:" to end of output
+      const changesReport = (() => {
+        const idx = output.indexOf('Updated:')
+        return idx !== -1 ? output.slice(idx).trim() : null
+      })()
+
       broadcastTemplateJob({
         type: 'update',
         status: 'success',
@@ -606,8 +614,15 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections) {
         lastname,
         templatePath,
         durationMs,
+        changesReport,
         finishedAt: Date.now()
       })
+
+      // Clean up samples staging folder if one was used
+      if (samplesDir && fs.existsSync(samplesDir)) {
+        try { fs.rmSync(samplesDir, { recursive: true, force: true }) } catch (_) {}
+      }
+
       notifyUser('Template updated', `Profile for ${doctorName} updated.`)
     } else {
       broadcastTemplateJob({
@@ -1256,11 +1271,31 @@ function registerIpcHandlers() {
     return { ok: true }
   })
 
+  // ---- browse-corrections-file ----
+  ipcMain.handle('browse-corrections-file', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select corrections file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Text files', extensions: ['txt', 'md', 'docx'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
   // ---- start-template-update ----
-  ipcMain.handle('start-template-update', async (_, doctorName, corrections) => {
+  ipcMain.handle('start-template-update', async (_, doctorName, corrections, correctionsFile, sampleFiles) => {
     const name = (doctorName || '').trim()
     if (!name) return 'Doctor name is required.'
-    if (!(corrections || '').trim()) return 'Corrections are required.'
+
+    const hasCorrections = (corrections || '').trim()
+    const hasCorrectionsFile = correctionsFile && fs.existsSync(correctionsFile)
+    const hasSamples = Array.isArray(sampleFiles) && sampleFiles.length > 0
+    if (!hasCorrections && !hasCorrectionsFile && !hasSamples) {
+      return 'Provide corrections text, a corrections file, or sample notes.'
+    }
     if (templateJobProc) return 'A template job is already running.'
 
     const settings = readSettings()
@@ -1272,7 +1307,27 @@ function registerIpcHandlers() {
       return `Template file missing at ${doctor.templatePath}.`
     }
 
-    spawnTemplateUpdate(name, doctor.templatePath, corrections.trim())
+    // Stage sample files if provided
+    let samplesDir = null
+    if (hasSamples) {
+      const lastname = extractLastname(name) || name.toLowerCase()
+      const ts = Date.now()
+      samplesDir = path.join(NOTES_DIR, 'Templates', '_staging_update', `${lastname}_${ts}`)
+      try {
+        fs.mkdirSync(samplesDir, { recursive: true })
+        for (const src of sampleFiles) {
+          if (fs.existsSync(src)) {
+            fs.copyFileSync(src, path.join(samplesDir, path.basename(src)))
+          }
+        }
+        log(`[template-update] Staged ${sampleFiles.length} sample file(s) → ${samplesDir}`)
+      } catch (e) {
+        log(`[template-update ERR] staging failed: ${e.message}`)
+        return `Staging sample files failed: ${e.message}`
+      }
+    }
+
+    spawnTemplateUpdate(name, doctor.templatePath, (corrections || '').trim(), correctionsFile || null, samplesDir)
     return null  // null = no error
   })
 

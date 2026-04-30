@@ -180,6 +180,7 @@
       <!-- Running job banner -->
       <div id="template-job-banner" class="hidden">
         <div id="template-job-banner-text"></div>
+        <button id="btn-template-view-changes" class="link-btn hidden">View changes</button>
         <button id="btn-template-job-cancel" class="icon-btn" title="Cancel">&#10005;</button>
       </div>
 
@@ -234,11 +235,31 @@
 
         <textarea id="update-template-corrections"
                   placeholder="Describe what to change — e.g. change attribution verb to 'reports', add a new boilerplate block for post-injection care…"
-                  rows="7"
+                  rows="4"
                   spellcheck="true"></textarea>
+
+        <!-- Corrections from file (optional) -->
+        <div class="create-template-files-label">Corrections file (optional)</div>
+        <div id="update-template-corrections-file" class="create-template-files-empty">No file added</div>
+        <button id="btn-update-template-add-corrections-file" class="small">+ Add corrections file (.txt/.md/.docx)</button>
+
+        <!-- Sample files (optional) -->
+        <div class="create-template-files-label">Sample notes (optional)</div>
+        <div id="update-template-files" class="create-template-files-empty">No files added yet</div>
+        <button id="btn-update-template-add-files" class="small">+ Add sample files</button>
+        <div class="setting-hint">Adding samples triggers re-analysis and merges new findings into the template.</div>
 
         <button id="btn-update-template-start" disabled>Start</button>
         <div id="update-template-error" class="config-warn hidden"></div>
+      </div>
+
+      <!-- Changes report panel (overlays template list after a successful update) -->
+      <div id="template-changes-panel" class="hidden">
+        <div class="subview-header">
+          <button id="btn-template-changes-close" class="icon-btn" title="Close">&#10005;</button>
+          <span>Changes applied</span>
+        </div>
+        <pre id="template-changes-text"></pre>
       </div>
 
     </div><!-- /#tab-templates -->
