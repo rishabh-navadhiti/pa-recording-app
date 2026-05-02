@@ -74,8 +74,11 @@ Key properties:
 
 ---
 
-## Template-creation pipeline
+## Template pipelines
 
+Both operations share the same `templateJobProc` lock and `.template_job.json` persistence. The job object has a `type` field (`'create'` or `'update'`) so the renderer banner shows the right text.
+
+**Create:**
 ```
 User           Renderer                Main                            Claude CLI (skill)
  │               │                      │                                │
@@ -83,7 +86,8 @@ User           Renderer                Main                            Claude CL
  │ pick files,   │ startTemplateCreation│                                │
  │ enter name ──▶│ ──IPC──────────────▶ │ stage files into               │
  │               │                      │ <NOTES>/templates/_staging/<x>/│
- │               │                      │ broadcast {status: running}    │
+ │               │                      │ broadcast {type:'create',      │
+ │               │                      │            status: 'running'}  │
  │               │                      │ spawn claude -p ──────────────▶│ create-doctor-profile
  │               │                      │   --model opus-4-7             │   reads staging
  │               │ ◀─template-job-status│   effort=max                   │   analyses N notes
@@ -91,15 +95,36 @@ User           Renderer                Main                            Claude CL
  │               │                      │ on close + file exists:        │
  │               │                      │   register doctor in settings  │
  │               │                      │   delete staging               │
- │               │                      │   broadcast {status: success}  │
+ │               │                      │   broadcast {status: 'success'}│
  │               │ ◀─template-job-status│                                │
  │ banner ✓      │                      │                                │
 ```
 
-Job status is also written to `<NOTES_DIR>/.template_job.json` so:
-- the popup can close and reopen and still see status
-- only one job runs at a time (`templateJobProc !== null` guard)
-- a stale `running` from an app crash is detected and cleared on the next launch
+**Update:**
+```
+User           Renderer                Main                            Claude CLI (skill)
+ │               │                      │                                │
+ │ pick doctor,  │ startTemplateUpdate  │                                │
+ │ type fixes ──▶│ ──IPC──────────────▶ │ resolve templatePath           │
+ │               │                      │   from settings.json           │
+ │               │                      │ broadcast {type:'update',      │
+ │               │                      │            status: 'running'}  │
+ │               │                      │ spawn claude -p ──────────────▶│ update-doctor-profile
+ │               │ ◀─template-job-status│                                │   verify file exists
+ │ banner shown  │                      │                                │   backup → backups/
+ │               │                      │                                │   read full template
+ │               │                      │                                │   apply surgical edits
+ │               │                      │                                │   write back in place
+ │               │                      │ on close (code 0):             │
+ │               │                      │   broadcast {status: 'success'}│
+ │               │ ◀─template-job-status│                                │
+ │ banner ✓      │                      │                                │
+```
+
+`.template_job.json` ensures:
+- popup can close/reopen and still see status
+- one job at a time (`templateJobProc !== null` guard)
+- stale `running` from a crash is cleared on next launch
 
 ---
 
@@ -143,6 +168,7 @@ repo/notes-claude/                       ← source of truth, version-controlled
   skills/
     generate-note/SKILL.md
     create-doctor-profile/SKILL.md
+    update-doctor-profile/SKILL.md
   scripts/, draft/, settings.json
                   │
                   │  copyDirSync on every app start
@@ -161,8 +187,9 @@ Implications:
 Prompt formats the skills expect:
 - `generate-note`: `generate a note using template "<rel>" and transcript "<rel>"`  *(or omit template to fall back to doctor lookup)*
 - `create-doctor-profile`: `create a doctor profile for "<name>" from source folder "<rel>"`
+- `update-doctor-profile`: `update doctor profile. Doctor: <name>. Template: <abs-path>. Corrections: <text>`  *(path is absolute; multi-line corrections are collapsed to ` | ` separators)*
 
-Both paths are relative to the cwd (= `<NOTES_DIR>`).
+The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt uses an absolute path because the template path is already resolved in main.js before the prompt is built.
 
 ---
 
@@ -184,7 +211,9 @@ Both paths are relative to the cwd (= `<NOTES_DIR>`).
 │       └── <case>_soap_note.docx               auto-converted
 ├── templates/
 │   ├── <lastname>.md                           per-doctor template
-│   └── _staging/                               transient — used during AI template creation
+│   ├── _staging/                               transient — used during AI template creation
+│   └── backups/
+│       └── <lastname>_backup_<YYYYMMDD_HHMMSS>.md   timestamped backup created before each AI update
 └── (folder picked at install time wraps all the above)
 ```
 
@@ -242,7 +271,8 @@ Source: [preload.js](../preload.js). Renderer → main are `invoke`/`handle`; ma
 Renderer → main (request/response):
 - Lifecycle: `start-session`, `stop-session`, `start-recording`, `stop-recording`, `pause-recording`, `resume-recording`, `discard-recording`, `submit-patient-name`
 - Doctors: `get-doctors`, `add-doctor`, `update-doctor`, `update-doctor-template`, `remove-doctor`, `select-doctor`
-- Templates tab: `browse-notes-files`, `start-template-creation`, `get-template-job-status`, `cancel-template-creation`, `dismiss-template-job`
+- Templates tab (create): `browse-notes-files`, `start-template-creation`, `get-template-job-status`, `cancel-template-creation`, `dismiss-template-job`
+- Templates tab (update): `start-template-update`, `get-doctors-with-templates`
 - Audio upload: `browse-audio-file`, `process-audio-file`
 - Config: `get-state`, `get-config-status`, `save-elevenlabs-key`, `get-settings`, `save-settings`, `list-audio-devices`, `get-notes-dir`, `change-notes-dir`
 - Window: `hide-window`

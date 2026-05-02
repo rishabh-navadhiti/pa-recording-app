@@ -28,9 +28,10 @@ python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
   transcribe.py               ElevenLabs scribe_v1 → diarised transcript.md
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
-notes-claude/                 Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
-  skills/generate-note/         SOAP-note skill, invoked by `claude -p "generate a note ..."`
-  skills/create-doctor-profile/ Template builder skill, invoked by `claude -p "create a doctor profile ..."`
+notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
+  skills/generate-note/           SOAP-note skill, invoked by `claude -p "generate a note ..."`
+  skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
+  skills/update-doctor-profile/   Template updater skill, invoked by `claude -p "update doctor profile. Doctor: ..."`
   scripts/, draft/, settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
@@ -77,18 +78,24 @@ Service-warning surface: stderr/stdout of transcribe and claude is regex-scanned
 
 ---
 
-## Template-creation pipeline (Templates tab)
+## Template pipelines (Templates tab)
 
-Background job, only one at a time, persisted across popup closes via `<NOTES_DIR>/.template_job.json`.
+Both operations are background jobs sharing the same `templateJobProc` lock (only one at a time) and persisted in `<NOTES_DIR>/.template_job.json`. The job object includes a `type` field (`'create'` or `'update'`) so the renderer banner shows the right verb.
 
+**Create:**
 1. User picks doctor name + sample-note files in the Templates tab.
-2. `start-template-creation` ([main.js:1110](main.js#L1110)) — files staged into `<NOTES_DIR>/Templates/_staging/<lastname>/`.
+2. `start-template-creation` — files staged into `<NOTES_DIR>/Templates/_staging/<lastname>/`.
 3. `spawnTemplateCreation` → `claude -p "create a doctor profile for ... from source folder ..."` with `--model claude-opus-4-7`, `CLAUDE_CODE_EFFORT_LEVEL=max`.
 4. Skill `create-doctor-profile` writes `<NOTES_DIR>/templates/<lastname>.md`.
 5. On success: doctor auto-registered in `settings.json`, staging folder deleted.
-6. Job status JSON broadcast to renderer; banner persists until dismissed.
 
-Stale `running` jobs from a prior crash are cleared on app start ([main.js:634](main.js#L634)) — the child died with the app, so the marker is orphaned.
+**Update:**
+1. User picks a doctor (dropdown — only doctors with an existing template file) and types corrections.
+2. `start-template-update` — resolves template path from `settings.json`, calls `spawnTemplateUpdate`.
+3. `spawnTemplateUpdate` → `claude -p "update doctor profile. Doctor: <name>. Template: <abs-path>. Corrections: <text>"`.
+4. Skill `update-doctor-profile` backs up the existing template to `templates/backups/<lastname>_backup_<ts>.md`, applies surgical edits, writes back in place.
+
+Stale `running` jobs from a prior crash are cleared on app start — the child died with the app, so the marker is orphaned.
 
 ---
 
@@ -108,6 +115,7 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `getDoctors() / addDoctor / updateDoctor / updateDoctorTemplate / removeDoctor / selectDoctor` | Doctor CRUD + picker resolution |
 | `browseAudioFile() / processAudioFile(path, name)` | Audio-file upload flow |
 | `browseNotesFiles() / startTemplateCreation / getTemplateJobStatus / cancelTemplateCreation / dismissTemplateJob` | Template-creation flow |
+| `startTemplateUpdate(doctorName, corrections) / getDoctorsWithTemplates()` | Template-update flow |
 | `getSettings() / saveSettings(s)` | `settings.json` in NOTES_DIR |
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
@@ -147,7 +155,7 @@ These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before chang
 1. **The state machine** — values in `STATE` (main.js + renderer.js) must stay in sync.
 2. **The stdin-stop protocol** ([main.js:888](main.js#L888)) — `stop-recording` writes `stop\n` to Python's stdin. Do NOT switch to `kill()`/`SIGTERM` — TerminateProcess on Windows skips Python's WAV-flush + MP3 convert.
 3. **Skills sync** ([main.js:629](main.js#L629)) — `notes-claude/` is the source of truth, copied to `<NOTES_DIR>/.claude/` on every launch. Don't store skill state inside `<NOTES_DIR>/.claude/` directly.
-4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`. The skills' Step 0/1 expect these exact patterns.
+4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`. The skills' Step 0 expects these exact formats.
 
 ---
 
@@ -202,7 +210,7 @@ docs/
 
 - Logs: `<NOTES_DIR>/app.log`
 - ElevenLabs key + notes path: `<repo>/.env`
-- Skills: `notes-claude/skills/{generate-note,create-doctor-profile}/SKILL.md`
+- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile}/SKILL.md`
 - Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-7` (effort=max)
 - Python entry: `record.py`, `transcribe.py`, `md_to_docx.py`
 - Run: `npm start`
