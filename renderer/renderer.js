@@ -1048,10 +1048,11 @@ function handleTemplateJobStatus(job) {
     // A doctor was added — dismiss the "Doctor not set up" warning if present
     warnDoctor.classList.add('hidden')
     updateConfigWarningsVisibility()
-    // Auto-dismiss after a few seconds
+    // Auto-dismiss after a few seconds and clear the job file
     setTimeout(() => {
       if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
         templateJobBanner.classList.add('hidden')
+        api.dismissTemplateJob()
       }
     }, 6000)
   } else if (job.status === 'failed') {
