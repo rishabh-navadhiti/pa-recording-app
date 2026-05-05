@@ -905,6 +905,7 @@ app.whenReady().then(async () => {
     hideOnWindows(path.join(NOTES_DIR, '.claude'))
     hideOnWindows(LOG_FILE)
     hideOnWindows(getSettingsPath())
+    hideOnWindows(getJobStatusPath())
 
     // Clean up any stale template job from a prior crash/restart — the child
     // process died with the app, so a 'running' status in the file is orphaned.
@@ -1684,6 +1685,7 @@ function registerIpcHandlers() {
     hideOnWindows(path.join(NOTES_DIR, '.claude'))
     hideOnWindows(LOG_FILE)
     hideOnWindows(getSettingsPath())
+    hideOnWindows(getJobStatusPath())
 
     return { ok: true, path: NOTES_DIR }
   })
