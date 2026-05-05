@@ -65,6 +65,14 @@ function loadPaths(notesDir) {
   LOG_FILE      = path.join(notesDir, 'app.log')
 }
 
+function hideOnWindows(absPath) {
+  if (process.platform !== 'win32') return
+  try {
+    if (!fs.existsSync(absPath)) return
+    require('child_process').execFileSync('attrib', ['+H', absPath], { windowsHide: true })
+  } catch {}
+}
+
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
@@ -893,6 +901,11 @@ app.whenReady().then(async () => {
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log('.claude config synced to AI Medical Notes')
 
+    hideOnWindows(TEMPLATES_DIR)
+    hideOnWindows(path.join(NOTES_DIR, '.claude'))
+    hideOnWindows(LOG_FILE)
+    hideOnWindows(getSettingsPath())
+
     // Clean up any stale template job from a prior crash/restart — the child
     // process died with the app, so a 'running' status in the file is orphaned.
     const staleJob = readTemplateJob()
@@ -1666,6 +1679,12 @@ function registerIpcHandlers() {
     writeSettings(oldSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log(`Notes directory set to: ${NOTES_DIR}`)
+
+    hideOnWindows(TEMPLATES_DIR)
+    hideOnWindows(path.join(NOTES_DIR, '.claude'))
+    hideOnWindows(LOG_FILE)
+    hideOnWindows(getSettingsPath())
+
     return { ok: true, path: NOTES_DIR }
   })
 
