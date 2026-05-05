@@ -46,6 +46,8 @@ let doctorPickerResolver = null
 let activeSessionDir = null
 let statusWin = null
 let sessionRecordings = []
+let userMovedPopup = false
+let isProgrammaticMove = false
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -184,8 +186,12 @@ function togglePopup() {
   if (win.isVisible()) {
     win.hide()
   } else {
-    const pos = getPopupPosition(tray, win)
-    win.setPosition(pos.x, pos.y, false)
+    if (!userMovedPopup) {
+      const pos = getPopupPosition(tray, win)
+      isProgrammaticMove = true
+      win.setPosition(pos.x, pos.y, false)
+      setImmediate(() => { isProgrammaticMove = false })
+    }
     win.show()
     win.focus()
   }
@@ -983,6 +989,10 @@ app.whenReady().then(async () => {
   })
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+
+  win.on('move', () => {
+    if (!isProgrammaticMove) userMovedPopup = true
+  })
 
   ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.hide() })
 
