@@ -55,9 +55,6 @@ const btnSaveDoctor     = document.getElementById('btn-save-doctor')
 const doctorPicker      = document.getElementById('doctor-picker')
 const doctorPickerList  = document.getElementById('doctor-picker-list')
 const btnDoctorPickerCancel = document.getElementById('btn-doctor-picker-cancel')
-const doctorListEl      = document.getElementById('doctor-list')
-const newDoctorInput    = document.getElementById('new-doctor-input')
-const btnAddDoctor      = document.getElementById('btn-add-doctor')
 const notesDirPath      = document.getElementById('notes-dir-path')
 const btnChangeNotesDir = document.getElementById('btn-change-notes-dir')
 const apiKeyMasked      = document.getElementById('api-key-masked')
@@ -452,7 +449,6 @@ btnSaveDoctor.addEventListener('click', async () => {
     doctorInput.value = ''
     warnDoctor.classList.add('hidden')
     updateConfigWarningsVisibility()
-    if (settingsOpen) await renderDoctorList()
   }
 })
 
@@ -492,7 +488,6 @@ function maskApiKey(key) {
 async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
-  await renderDoctorList()
   const dir = await api.getNotesDir()
   notesDirPath.textContent = dir
   notesDirPath.title = dir
@@ -535,7 +530,7 @@ btnChangeNotesDir.addEventListener('click', async () => {
 })
 
 async function renderDoctorList(containerEl) {
-  const el = containerEl || doctorListEl
+  const el = containerEl
   if (!el) return
   const doctors = await api.getDoctors()
   el.innerHTML = ''
@@ -708,24 +703,6 @@ deviceSelect.addEventListener('change', () => {
     manualDeviceSelection: val !== '',
     selectedDeviceIndex: val !== '' ? parseInt(val, 10) : null
   })
-})
-
-btnAddDoctor.addEventListener('click', async () => {
-  const name = newDoctorInput.value.trim()
-  if (!name) return
-  btnAddDoctor.disabled = true
-  const res = await api.addDoctor(name)
-  btnAddDoctor.disabled = false
-  if (res.ok) {
-    newDoctorInput.value = ''
-    await renderDoctorList()
-    warnDoctor.classList.add('hidden')
-    updateConfigWarningsVisibility()
-  }
-})
-
-newDoctorInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') btnAddDoctor.click()
 })
 
 // ---------------------------------------------------------------------------
