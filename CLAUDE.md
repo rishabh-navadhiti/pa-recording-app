@@ -28,10 +28,12 @@ python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
   transcribe.py               ElevenLabs scribe_v1 → diarised transcript.md
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
+  extract_attachments.py      Combines multiple prechart files (.md/.txt/.docx/.pdf) into a single .md for the edit-note skill
 notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
   skills/generate-note/           SOAP-note skill, invoked by `claude -p "generate a note ..."`
   skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
   skills/update-doctor-profile/   Template updater skill, invoked by `claude -p "update doctor profile. Doctor: ..."`
+  skills/edit-note/               Pre-chart skill, invoked by `claude -p "edit note. Case: ..."`
   scripts/, draft/, settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
@@ -78,22 +80,30 @@ Service-warning surface: stderr/stdout of transcribe and claude is regex-scanned
 
 ---
 
-## Template pipelines (Templates tab)
+## Template + Pre-chart pipelines
 
-Both operations are background jobs sharing the same `templateJobProc` lock (only one at a time) and persisted in `<NOTES_DIR>/.template_job.json`. The job object includes a `type` field (`'create'` or `'update'`) so the renderer banner shows the right verb.
+All three Claude background jobs (template create, template update, pre-chart edit-note) share the same `templateJobProc` lock (only one at a time) and persist their state to `<NOTES_DIR>/.template_job.json`. The job object includes a `type` field (`'create'`, `'update'`, or `'prechart'`) so the renderer banner shows the right verb.
 
-**Create:**
+**Template create (Templates tab):**
 1. User picks doctor name + sample-note files in the Templates tab.
 2. `start-template-creation` — files staged into `<NOTES_DIR>/Templates/_staging/<lastname>/`.
 3. `spawnTemplateCreation` → `claude -p "create a doctor profile for ... from source folder ..."` with `--model claude-opus-4-7`, `CLAUDE_CODE_EFFORT_LEVEL=max`.
 4. Skill `create-doctor-profile` writes `<NOTES_DIR>/templates/<lastname>.md`.
 5. On success: doctor auto-registered in `settings.json`, staging folder deleted.
 
-**Update:**
+**Template update (Templates tab):**
 1. User picks a doctor (dropdown — only doctors with an existing template file) and types corrections.
 2. `start-template-update` — resolves template path from `settings.json`, calls `spawnTemplateUpdate`.
 3. `spawnTemplateUpdate` → `claude -p "update doctor profile. Doctor: <name>. Template: <abs-path>. Corrections: <text>"`.
 4. Skill `update-doctor-profile` backs up the existing template to `templates/backups/<lastname>_backup_<ts>.md`, applies surgical edits, writes back in place.
+
+**Pre-chart (Record tab → Pre-chart button):**
+1. From SESSION_ACTIVE the user clicks **Pre-chart**, picks an existing patient case (dropdown of recent cases or Browse), types instructions, and optionally attaches one or more files (`.md`/`.txt`/`.docx`/`.pdf`).
+2. `start-prechart-job` — main.js parses `**Doctor:**` from the case's existing `*_soap_note.md` to resolve the doctor's template (falls back to currently-selected doctor).
+3. If files were attached: `python/extract_attachments.py` combines them into a single `prechart_<ts>.md` in OS temp.
+4. `spawnPrechartJob` → `claude -p "edit note. Case: <case>. Template: <tmpl>. Attachment: <combined-or-empty>. Instructions: <text>"` with `--model <soapModel>`, `CLAUDE_CODE_EFFORT_LEVEL=high`.
+5. Skill `edit-note` backs up the existing soap note to `<stem>_soap_note_backup_<ts>.md`, regenerates with the new content, overwrites in place.
+6. On success: temp combined attachment deleted, `spawnDocxConversion` re-runs against the updated soap note.
 
 Stale `running` jobs from a prior crash are cleared on app start — the child died with the app, so the marker is orphaned.
 
@@ -116,6 +126,7 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `browseAudioFile() / processAudioFile(path, name)` | Audio-file upload flow |
 | `browseNotesFiles() / startTemplateCreation / getTemplateJobStatus / cancelTemplateCreation / dismissTemplateJob` | Template-creation flow |
 | `startTemplateUpdate(doctorName, corrections) / getDoctorsWithTemplates()` | Template-update flow |
+| `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
 | `getSettings() / saveSettings(s)` | `settings.json` in NOTES_DIR |
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
@@ -134,7 +145,7 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 |---|---|---|
 | `<repo>/.env` | App writes; user-editable | `ELEVENLABS_API_KEY`, `NOTES_DIR_PATH` |
 | `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `doctors[]`, `soapModel`, `templateModel`, `templateEffort` |
-| `<NOTES_DIR>/.template_job.json` | App writes only | Live + last-finished template job state |
+| `<NOTES_DIR>/.template_job.json` | App writes only | Live + last-finished background-job state (template create/update + pre-chart share this file) |
 | `<NOTES_DIR>/.claude/` | App copies from `notes-claude/` on every startup | Skills + Claude config consumed by `claude -p` |
 | `<NOTES_DIR>/app.log` | App appends | Single log stream from main + Python children |
 
@@ -155,7 +166,7 @@ These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before chang
 1. **The state machine** — values in `STATE` (main.js + renderer.js) must stay in sync.
 2. **The stdin-stop protocol** ([main.js:888](main.js#L888)) — `stop-recording` writes `stop\n` to Python's stdin. Do NOT switch to `kill()`/`SIGTERM` — TerminateProcess on Windows skips Python's WAV-flush + MP3 convert.
 3. **Skills sync** ([main.js:629](main.js#L629)) — `notes-claude/` is the source of truth, copied to `<NOTES_DIR>/.claude/` on every launch. Don't store skill state inside `<NOTES_DIR>/.claude/` directly.
-4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`. The skills' Step 0 expects these exact formats.
+4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [python/extract_attachments.py](python/extract_attachments.py) before the skill is invoked). The skills' Step 0/1 expects these exact formats.
 
 ---
 

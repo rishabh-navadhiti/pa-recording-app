@@ -106,9 +106,31 @@ function readSettings() {
   } catch { return { ...DEFAULT_SETTINGS } }
 }
 
+// Atomic write: write to .tmp then rename, with retry for transient Windows AV locks (EPERM/EBUSY).
+function safeWriteFile(filePath, data) {
+  const tmp = filePath + '.tmp'
+  let lastErr
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      fs.writeFileSync(tmp, data, 'utf8')
+      fs.renameSync(tmp, filePath)
+      return
+    } catch (e) {
+      lastErr = e
+      if (attempt < 3 && (e.code === 'EPERM' || e.code === 'EBUSY')) {
+        // Transient AV/indexer lock — wait and retry
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60)
+      } else {
+        break
+      }
+    }
+  }
+  throw lastErr
+}
+
 function writeSettings(settings) {
   fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true })
-  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8')
+  safeWriteFile(getSettingsPath(), JSON.stringify(settings, null, 2))
 }
 
 // ---------------------------------------------------------------------------
@@ -452,7 +474,7 @@ function readTemplateJob() {
 
 function writeTemplateJob(job) {
   try {
-    fs.writeFileSync(getJobStatusPath(), JSON.stringify(job, null, 2), 'utf8')
+    safeWriteFile(getJobStatusPath(), JSON.stringify(job, null, 2))
   } catch (e) {
     log(`[template-job] WARNING: failed to write job status: ${e.message}`)
   }
@@ -715,6 +737,271 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections) {
     startedAt: templateJobStartMs,
     model,
     effort
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Pre-chart (edit-note) — background job
+// ---------------------------------------------------------------------------
+//
+// Invoked from the SESSION_ACTIVE "Pre-chart" sub-view. Runs the edit-note
+// skill against an existing patient case folder, optionally with new clinical
+// content (one or more files combined into a single .md by extract_attachments.py)
+// and/or scribe instructions. Shares the templateJobProc lock with template
+// creation/update so only one Claude job runs at a time.
+
+function findRecentPatientCases(notesDir, limit = 30) {
+  if (!notesDir) return []
+  const casesRoot = path.join(notesDir, 'Cases')
+  if (!fs.existsSync(casesRoot)) return []
+
+  const results = []
+  let sessions = []
+  try {
+    sessions = fs.readdirSync(casesRoot, { withFileTypes: true }).filter(e => e.isDirectory())
+  } catch { return [] }
+
+  for (const session of sessions) {
+    const sessionPath = path.join(casesRoot, session.name)
+    let caseDirs = []
+    try {
+      caseDirs = fs.readdirSync(sessionPath, { withFileTypes: true }).filter(e => e.isDirectory())
+    } catch { continue }
+    for (const c of caseDirs) {
+      const caseDir = path.join(sessionPath, c.name)
+      let soapNote = null
+      try {
+        soapNote = fs.readdirSync(caseDir).find(f =>
+          f.endsWith('_soap_note.md') && !/_soap_note_backup_/.test(f)
+        )
+      } catch { continue }
+      if (!soapNote) continue
+
+      let mtime = 0
+      try { mtime = fs.statSync(path.join(caseDir, soapNote)).mtimeMs } catch {}
+
+      // Folder name: "<patient>_<YYYY-MM-DD>" or "recording_<YYYY-MM-DD>_<HH-MM-SS>"
+      const m = c.name.match(/^(.+)_(\d{4}-\d{2}-\d{2})(?:_(\d{2}-\d{2}-\d{2}))?$/)
+      let patient = c.name
+      let date = ''
+      if (m) {
+        patient = m[1].replace(/_/g, ' ')
+        date = m[2]
+      }
+      results.push({ caseDir, patient, date, mtime })
+    }
+  }
+
+  results.sort((a, b) => b.mtime - a.mtime)
+  return results.slice(0, limit)
+}
+
+function findExistingSoapNote(caseDir) {
+  if (!caseDir || !fs.existsSync(caseDir)) return null
+  try {
+    const f = fs.readdirSync(caseDir).find(name =>
+      name.endsWith('_soap_note.md') && !/_soap_note_backup_/.test(name)
+    )
+    return f ? path.join(caseDir, f) : null
+  } catch { return null }
+}
+
+function resolveTemplateFromSoapNote(caseDir) {
+  // Priority: parse **Doctor:** header from the existing soap note, match against
+  // settings.json doctors by sanitized last-name. Fall back to active doctor.
+  const settings = readSettings()
+  const doctors = settings.doctors || []
+  const soapPath = findExistingSoapNote(caseDir)
+
+  let parsedLastname = null
+  if (soapPath) {
+    try {
+      // Read just the header section — soap notes are short; reading 4KB is plenty.
+      const head = fs.readFileSync(soapPath, 'utf8').slice(0, 4096)
+      const m = head.match(/\*\*Doctor:\*\*\s*([^\n\r]+)/)
+      if (m) parsedLastname = extractLastname(m[1])
+    } catch {}
+  }
+
+  if (parsedLastname) {
+    const match = doctors.find(d => extractLastname(d.name) === parsedLastname && d.templatePath && fs.existsSync(d.templatePath))
+    if (match) return match.templatePath
+  }
+
+  if (activeDoctorId) {
+    const active = doctors.find(d => d.id === activeDoctorId)
+    if (active && active.templatePath && fs.existsSync(active.templatePath)) return active.templatePath
+  }
+
+  return null
+}
+
+function buildCombinedAttachment(filePaths) {
+  return new Promise((resolve, reject) => {
+    if (!filePaths || filePaths.length === 0) {
+      resolve('')
+      return
+    }
+    const tmp = path.join(os.tmpdir(), `prechart_${Date.now()}_${process.pid}.md`)
+    const proc = spawn(PYTHON, [
+      path.join(__dirname, 'python', 'extract_attachments.py'),
+      '--output', tmp,
+      '--inputs', ...filePaths
+    ], { cwd: __dirname, stdio: 'pipe' })
+
+    let stderr = ''
+    proc.stderr.on('data', d => {
+      const msg = d.toString()
+      stderr += msg
+      log(`[prechart][extract ERR] ${msg.trim()}`)
+    })
+    proc.stdout.on('data', d => log(`[prechart][extract] ${d.toString().trim()}`))
+    proc.on('close', code => {
+      if (code === 0 && fs.existsSync(tmp)) {
+        log(`[prechart][extract] combined ${filePaths.length} file(s) → ${tmp}`)
+        resolve(tmp)
+      } else {
+        reject(new Error(`extract_attachments exited ${code}: ${stderr.trim()}`))
+      }
+    })
+    proc.on('error', err => reject(err))
+  })
+}
+
+function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath) {
+  const caseName = path.basename(caseDir)
+  const patientLabel = caseName.replace(/_\d{4}-\d{2}-\d{2}.*$/, '').replace(/_/g, ' ') || caseName
+  const settings = readSettings()
+  const model = settings.soapModel || 'claude-sonnet-4-6'
+
+  // Build the skill prompt. Match update-doctor-profile's style: literal field names,
+  // shell-safe quoting (replace " with ' inside any user-supplied string).
+  const safeCase    = caseDir.replace(/\\/g, '/').replace(/"/g, "'")
+  const safeTpl     = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
+  const safeAttach  = (combinedAttachmentPath || '').replace(/\\/g, '/').replace(/"/g, "'")
+  const safeInstr   = (instructions || '').replace(/\r?\n/g, ' ').replace(/"/g, "'")
+  const promptText  = `edit note. Case: ${safeCase}. Template: ${safeTpl}. Attachment: ${safeAttach}. Instructions: ${safeInstr}`
+
+  log(`[prechart][${patientLabel}] Spawning: claude -p <edit-note prompt> --model ${model}`)
+  templateJobStartMs = Date.now()
+
+  templateJobProc = spawn(
+    `claude -p "${promptText}" --model ${model} --dangerously-skip-permissions`,
+    [],
+    {
+      cwd: NOTES_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: 'high' }
+    }
+  )
+
+  const outChunks = []
+  templateJobProc.stdout.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[prechart][${patientLabel}] ${msg.trim()}`)
+  })
+  templateJobProc.stderr.on('data', d => {
+    const msg = d.toString()
+    outChunks.push(msg)
+    log(`[prechart][${patientLabel} ERR] ${msg.trim()}`)
+  })
+
+  const cleanupAttachment = () => {
+    if (combinedAttachmentPath) {
+      try {
+        fs.unlinkSync(combinedAttachmentPath)
+        log(`[prechart][${patientLabel}] cleaned up temp attachment`)
+      } catch (e) {
+        log(`[prechart][${patientLabel}] WARNING: failed to delete temp attachment: ${e.message}`)
+      }
+    }
+  }
+
+  templateJobProc.on('close', code => {
+    templateJobProc = null
+    cleanupAttachment()
+    const output = outChunks.join('')
+    const durationMs = Date.now() - templateJobStartMs
+    log(`[prechart][${patientLabel}] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
+
+    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
+      broadcastTemplateJob({
+        type: 'prechart',
+        status: 'failed',
+        doctorName: patientLabel,
+        lastname: patientLabel,
+        caseDir,
+        error: 'Claude usage limit reached. Try again once the limit resets.',
+        finishedAt: Date.now()
+      })
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Pre-chart could not complete — try again once the limit resets.'
+        })
+      }
+      return
+    }
+
+    if (code === 0) {
+      // Skill overwrites the soap note in place — refresh the .docx mirror
+      const updatedNote = findExistingSoapNote(caseDir)
+      if (updatedNote) {
+        spawnDocxConversion(updatedNote, null)
+      } else {
+        log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
+      }
+      broadcastTemplateJob({
+        type: 'prechart',
+        status: 'success',
+        doctorName: patientLabel,
+        lastname: patientLabel,
+        caseDir,
+        durationMs,
+        finishedAt: Date.now()
+      })
+      notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
+    } else {
+      broadcastTemplateJob({
+        type: 'prechart',
+        status: 'failed',
+        doctorName: patientLabel,
+        lastname: patientLabel,
+        caseDir,
+        error: `Claude exited with code ${code}`,
+        finishedAt: Date.now()
+      })
+      notifyUser('Pre-chart failed', `${patientLabel} — check app.log for details`)
+    }
+  })
+
+  templateJobProc.on('error', err => {
+    templateJobProc = null
+    cleanupAttachment()
+    log(`[prechart][${patientLabel} ERR] failed to spawn claude: ${err.message}`)
+    broadcastTemplateJob({
+      type: 'prechart',
+      status: 'failed',
+      doctorName: patientLabel,
+      lastname: patientLabel,
+      caseDir,
+      error: err.code === 'ENOENT'
+        ? 'Claude CLI not installed. Install the Claude CLI to enable pre-chart.'
+        : err.message,
+      finishedAt: Date.now()
+    })
+  })
+
+  broadcastTemplateJob({
+    type: 'prechart',
+    status: 'running',
+    doctorName: patientLabel,
+    lastname: patientLabel,
+    caseDir,
+    startedAt: templateJobStartMs,
+    model
   })
 }
 
@@ -1490,6 +1777,78 @@ function registerIpcHandlers() {
     } catch (e) {
       return { ok: false, error: e.message }
     }
+  })
+
+  // -------------------------------------------------------------------------
+  // Pre-chart (edit-note) — Record tab "Pre-chart" sub-view
+  // -------------------------------------------------------------------------
+
+  // ---- browse-prechart-files ----
+  // Multi-select picker for attachment files (prechart docs, prior visit notes, etc.).
+  // Same formats the edit-note skill knows how to read.
+  ipcMain.handle('browse-prechart-files', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select attachment files',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Attachments', extensions: ['md', 'txt', 'docx', 'pdf'] },
+        { name: 'All Files',   extensions: ['*'] }
+      ]
+    })
+    if (result.canceled) return []
+    return result.filePaths
+  })
+
+  // ---- list-recent-patient-cases ----
+  ipcMain.handle('list-recent-patient-cases', () => findRecentPatientCases(NOTES_DIR, 30))
+
+  // ---- browse-patient-case-folder ----
+  // Folder picker scoped to <NOTES_DIR>/Cases/. Validates the picked folder
+  // contains a *_soap_note.md (excluding backup files).
+  ipcMain.handle('browse-patient-case-folder', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select patient case folder',
+      defaultPath: CASES_DIR,
+      properties: ['openDirectory']
+    })
+    if (result.canceled || !result.filePaths.length) return { ok: false, error: 'cancelled' }
+    const caseDir = result.filePaths[0]
+    if (!findExistingSoapNote(caseDir)) {
+      return { ok: false, error: 'No SOAP note found in the selected folder.' }
+    }
+    return { ok: true, caseDir }
+  })
+
+  // ---- start-prechart-job ----
+  ipcMain.handle('start-prechart-job', async (_, doctorId, caseDir, instructions, attachmentPaths) => {
+    if (templateJobProc) return { ok: false, error: 'Another job is already running.' }
+
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.id === doctorId)
+    if (!doctor || !doctor.templatePath) {
+      return { ok: false, error: 'Selected doctor has no template registered.' }
+    }
+    const templatePath = doctor.templatePath
+
+    if (!caseDir || !fs.existsSync(caseDir)) return { ok: false, error: 'Patient case folder not found.' }
+    if (!findExistingSoapNote(caseDir)) return { ok: false, error: 'No SOAP note found in the selected case folder.' }
+
+    const trimmedInstructions = (instructions || '').trim()
+    const files = Array.isArray(attachmentPaths) ? attachmentPaths.filter(p => p && fs.existsSync(p)) : []
+    if (!trimmedInstructions && files.length === 0) {
+      return { ok: false, error: 'Provide instructions or at least one attachment file.' }
+    }
+
+    let combined = ''
+    try {
+      combined = await buildCombinedAttachment(files)
+    } catch (e) {
+      log(`[prechart ERR] attachment extraction failed: ${e.message}`)
+      return { ok: false, error: `Attachment extraction failed: ${e.message}` }
+    }
+
+    spawnPrechartJob(caseDir, templatePath, trimmedInstructions, combined)
+    return { ok: true }
   })
 
   // ---- update-doctor ----

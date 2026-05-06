@@ -74,9 +74,9 @@ Key properties:
 
 ---
 
-## Template pipelines
+## Template + Pre-chart pipelines
 
-Both operations share the same `templateJobProc` lock and `.template_job.json` persistence. The job object has a `type` field (`'create'` or `'update'`) so the renderer banner shows the right text.
+All three operations (template create, template update, pre-chart edit-note) share the same `templateJobProc` lock and `.template_job.json` persistence. The job object has a `type` field (`'create'`, `'update'`, or `'prechart'`) so the renderer banner shows the right text. Only one of these jobs can run at a time.
 
 **Create:**
 ```
@@ -120,6 +120,37 @@ User           Renderer                Main                            Claude CL
  │               │ ◀─template-job-status│                                │
  │ banner ✓      │                      │                                │
 ```
+
+**Pre-chart (edit-note):**
+```
+User           Renderer                Main                            Claude CLI (skill)
+ │               │                      │                                │
+ │ Record tab    │                      │                                │
+ │ click         │ showPrechartView()   │                                │
+ │ Pre-chart     │ list recent cases    │                                │
+ │ pick case,    │                      │                                │
+ │ type instr,   │                      │                                │
+ │ add files ──▶ │ startPrechartJob ──▶ │ resolve template from          │
+ │               │                      │   *_soap_note.md "**Doctor:**" │
+ │               │                      │ extract_attachments.py ──▶     │
+ │               │                      │   write tmp combined.md        │
+ │               │                      │ broadcast {type:'prechart',    │
+ │               │                      │            status: 'running'}  │
+ │               │                      │ spawn claude -p ──────────────▶│ edit-note
+ │               │ ◀─template-job-status│   --model soapModel            │   backup soap note
+ │ banner shown  │                      │   effort=high                  │   read template+note
+ │               │                      │                                │   integrate attachment
+ │               │                      │                                │   re-enforce template
+ │               │                      │                                │   overwrite *_soap_note.md
+ │               │                      │ on close (code 0):             │
+ │               │                      │   delete tmp combined.md       │
+ │               │                      │   spawnDocxConversion (soap)   │
+ │               │                      │   broadcast {status: 'success'}│
+ │               │ ◀─template-job-status│                                │
+ │ banner ✓      │                      │                                │
+```
+
+The user picks 1+ files in the picker; `python/extract_attachments.py` concatenates their text (handling `.md`/`.txt` directly, `.docx` via python-docx, `.pdf` via pdfplumber→pypdf) into a single `prechart_<ts>.md` in OS temp. That single path is what the skill receives as `Attachment:` — the skill itself only ever processes one attachment, matching its existing contract.
 
 `.template_job.json` ensures:
 - popup can close/reopen and still see status
@@ -188,6 +219,7 @@ Prompt formats the skills expect:
 - `generate-note`: `generate a note using template "<rel>" and transcript "<rel>"`  *(or omit template to fall back to doctor lookup)*
 - `create-doctor-profile`: `create a doctor profile for "<name>" from source folder "<rel>"`
 - `update-doctor-profile`: `update doctor profile. Doctor: <name>. Template: <abs-path>. Corrections: <text>`  *(path is absolute; multi-line corrections are collapsed to ` | ` separators)*
+- `edit-note` (pre-chart): `edit note. Case: <abs-case-dir>. Template: <abs-template-path>. Attachment: <abs-attachment-path-or-empty>. Instructions: <scribe-text-or-empty>`  *(at least one of Attachment/Instructions must be non-empty; multi-file attachments are pre-combined by `extract_attachments.py`)*
 
 The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt uses an absolute path because the template path is already resolved in main.js before the prompt is built.
 
@@ -273,6 +305,7 @@ Renderer → main (request/response):
 - Doctors: `get-doctors`, `add-doctor`, `update-doctor`, `update-doctor-template`, `remove-doctor`, `select-doctor`
 - Templates tab (create): `browse-notes-files`, `start-template-creation`, `get-template-job-status`, `cancel-template-creation`, `dismiss-template-job`
 - Templates tab (update): `start-template-update`, `get-doctors-with-templates`
+- Pre-chart: `browse-prechart-files`, `list-recent-patient-cases`, `browse-patient-case-folder`, `start-prechart-job` (status uses the shared `get-template-job-status` / `template-job-status` channel)
 - Audio upload: `browse-audio-file`, `process-audio-file`
 - Config: `get-state`, `get-config-status`, `save-elevenlabs-key`, `get-settings`, `save-settings`, `list-audio-devices`, `get-notes-dir`, `change-notes-dir`
 - Window: `hide-window`
@@ -284,7 +317,7 @@ Main → renderer (events):
 - `service-warning` — ElevenLabs API errors, Claude usage limits
 - `auto-start-recording` — fired after `stop-recording` completes if `autoRecord` setting is on
 - `pick-doctor` — fires on `start-session` if more than one doctor configured
-- `template-job-status` — fires on every state change of a template-creation job
+- `template-job-status` — fires on every state change of a template-creation, template-update, or pre-chart job (carries `type` field)
 
 ---
 
