@@ -6,7 +6,7 @@ Plan files use the convention `YYYY-MM-DD-<initials>-<slug>.md`.
 
 | Plan | Owner | Status |
 |---|---|---|
-| _(no in-flight plans)_ | — | — |
+| [2026-05-06-sr-prechart-tab.md](2026-05-06-sr-prechart-tab.md) | sr | In progress |
 
 ---
 
