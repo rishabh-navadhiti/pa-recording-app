@@ -27,9 +27,10 @@ contextBridge.exposeInMainWorld('api', {
   browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
   processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
 
-  browseNotesFiles:         ()                           => ipcRenderer.invoke('browse-notes-files'),
-  startTemplateCreation:    (doctorName, filePaths)      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
-  startTemplateUpdate:      (doctorName, corrections)    => ipcRenderer.invoke('start-template-update', doctorName, corrections),
+  browseNotesFiles:         ()                                                           => ipcRenderer.invoke('browse-notes-files'),
+  browseCorrectionsFile:    ()                                                           => ipcRenderer.invoke('browse-corrections-file'),
+  startTemplateCreation:    (doctorName, filePaths)                                      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
+  startTemplateUpdate:      (doctorName, corrections, correctionsFile, sampleFiles)      => ipcRenderer.invoke('start-template-update', doctorName, corrections, correctionsFile, sampleFiles),
   getDoctorsWithTemplates:  ()                           => ipcRenderer.invoke('get-doctors-with-templates'),
   getTemplateJobStatus:     ()                           => ipcRenderer.invoke('get-template-job-status'),
   cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),

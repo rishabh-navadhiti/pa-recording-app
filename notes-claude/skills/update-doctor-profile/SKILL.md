@@ -20,16 +20,20 @@ Follow these steps exactly to apply corrections to an existing template.
 The prompt sent to you is always structured by the app in this exact format:
 
 ```
-update doctor profile. Doctor: <lastname>. Template: <absolute/path/to/lastname.md>. Corrections: <user corrections>
+update doctor profile. Doctor: <lastname>. Template: <absolute/path/to/lastname.md>. Corrections: <user corrections text>. CorrectionsFile: <absolute/path/to/file or empty>. Samples: <absolute/path/to/staging/folder or empty>
 ```
 
-Extract these three fields directly:
+Extract these five fields directly:
 
 - **DOCTOR_NAME** — the value after `Doctor:` (lowercase lastname, e.g. `sabbag`)
 - **TEMPLATE_PATH** — the value after `Template:` (absolute path to the `.md` file, e.g. `C:/Users/you/Documents/AI Medical Notes/templates/sabbag.md`)
-- **CORRECTIONS** — everything after `Corrections:` (may use ` | ` as a line separator for multiple corrections)
+- **CORRECTIONS** — the value after `Corrections:` and before `CorrectionsFile:` (inline text; may use ` | ` as a line separator; may be empty)
+- **CORRECTIONS_FILE** — the value after `CorrectionsFile:` and before `Samples:` (absolute path to a `.txt`, `.md`, or `.docx` file; may be empty)
+- **SAMPLES_DIR** — the value after `Samples:` (absolute path to a folder of staged sample note files; may be empty)
 
-Parse the corrections into individual edit units. Each distinct instruction (separated by ` | ` or natural sentence boundaries) is one unit.
+At least one of CORRECTIONS / CORRECTIONS_FILE / SAMPLES_DIR will be non-empty.
+
+Parse all inline corrections into individual edit units. Each distinct instruction (separated by ` | ` or natural sentence boundaries) is one unit. Additional units from CORRECTIONS_FILE and SAMPLES_DIR are loaded in later steps.
 
 ---
 
@@ -79,6 +83,8 @@ fi
 
 If `BACKUP_FAILED` → stop and inform the user. Do not modify the original template without a confirmed backup.
 
+The current template is your baseline. You will produce a **new** updated template and write it back to `${TEMPLATE_PATH}`. The original is preserved untouched as the backup above. This backup-then-overwrite model applies whether changes come from inline text, a corrections file, or sample analysis.
+
 ---
 
 ## Step 3: Load Existing Template
@@ -91,11 +97,34 @@ Confirm it is non-empty. If empty → stop and inform the user.
 
 ---
 
-## Step 4: Analyze and Classify Each Correction
+## Step 4: Load All Corrections and Classify
 
-Before making any changes, work through every correction unit from Step 0.
+Before making any changes, collect all correction units from every source.
 
-For each correction, identify:
+### 4a — Inline text corrections (CORRECTIONS field from Step 0)
+
+Parse the inline text into individual units separated by ` | ` or natural sentence boundaries.
+
+### 4b — Corrections file (CORRECTIONS_FILE from Step 0; skip if empty)
+
+Read the file at CORRECTIONS_FILE:
+
+- `.txt` or `.md` → read directly with the Read tool
+- `.docx` → extract text:
+
+```bash
+python3 -c "
+from docx import Document
+doc = Document('<CORRECTIONS_FILE>')
+print('\n'.join(p.text for p in doc.paragraphs))
+"
+```
+
+Parse the extracted text as additional correction units exactly as you would inline text.
+
+### 4c — Classify every correction unit
+
+For each correction from 4a and 4b, identify:
 
 | Dimension | What to determine |
 |-----------|-------------------|
@@ -117,6 +146,42 @@ If a correction is **still** unclear after reading the template — do not guess
 > Please retry with more specific instructions.
 
 Do not apply any corrections (even the unambiguous ones) in the same run.
+
+---
+
+## Step 4.5: Sample Analysis (only if SAMPLES_DIR is non-empty)
+
+This step runs the `create-doctor-profile` analysis pipeline on the new samples to discover findings, then adds those findings to the correction units list.
+
+### Phase A — Run `create-doctor-profile` on the new samples
+
+1. Read the `create-doctor-profile` skill at `.claude/skills/create-doctor-profile/SKILL.md` to load the exact methodology.
+
+2. Execute its **Steps 2 through 9** on the files in `SAMPLES_DIR`:
+   - **Step 2**: Inventory files (sample notes vs supporting docs)
+   - **Step 3**: Load supporting documents
+   - **Step 4**: Detect input format and load notes
+   - **Step 5**: Strip EMR noise
+   - **Step 6**: Detect note types
+   - **Step 7**: Boilerplate detection
+   - **Step 8**: Field inventory + per-field deep analysis
+   - **Step 9**: Cross-cutting style analysis
+
+3. The result is a **temporary new profile** built solely from the new samples. Do **not** write it to `templates/<lastname>.md` — the existing template must not be overwritten at this stage.
+
+### Phase B — Compare temporary profile to existing template and produce findings
+
+Walk through the temporary profile section by section and compare against the loaded existing template (from Step 3):
+
+| Finding type | Rule |
+|---|---|
+| **New note type** | Present in temporary profile, absent from existing template → add as a new note type section |
+| **New boilerplate block** | Block in temporary profile not in existing template's Boilerplate Blocks → add it |
+| **Refined frequency evidence** | Temporary profile has stronger sample count for an existing rule → update the count; change the rule only if the direction changes (e.g. primary attribution verb switches) |
+| **Style rule divergence** | Temporary profile diverges on an existing Global Style rule → apply only if decisive (>85% in new samples); otherwise log under "Inferences made" in the report |
+| **New field / subsection** | Field in temporary profile not captured in an existing note type section → add it |
+
+Each finding becomes an additional correction unit, processed in Step 5 alongside the text/file corrections from Step 4.
 
 ---
 
@@ -165,8 +230,10 @@ Work through each classified correction. Touch only the targeted content; leave 
 At the top of the template, find the header metadata block (lines beginning with `**Doctor:**`, `**Notes analyzed:**`, `**Date:**`). Add or update a revision line immediately below it:
 
 ```
-**Last Updated:** <YYYY-MM-DD> — <N> correction(s) applied
+**Last Updated:** <YYYY-MM-DD> — <N> correction(s), <M> finding(s) from <K> new samples
 ```
+
+Omit the samples clause if no samples were analysed.
 
 Write the complete modified template back to `${TEMPLATE_PATH}` using the Write tool.
 
@@ -174,19 +241,23 @@ Write the complete modified template back to `${TEMPLATE_PATH}` using the Write 
 
 ## Step 7: Report to User
 
-Print a concise summary in this format:
+Always begin the report with exactly `Updated: <TEMPLATE_PATH>` on its own line — this is the marker `main.js` uses to locate the report in stdout.
 
 ```
 Updated: <TEMPLATE_PATH>
 Backup:  <BACKUP_PATH>
 
-Changes applied (<N> total):
+Changes from text/file corrections (<N>):
 1. [<Section>] <What changed> (propagated to: <other locations if any>)
 2. [<Section> → <Subsection>] <What changed>
+...
+
+Changes from sample analysis (<M> findings from <K> samples):
+1. [<Section>] <What changed>
 ...
 
 Inferences made (please review):
 - <Any place where the instruction was interpreted rather than literal — what was assumed and why>
 ```
 
-If no inferences were needed, omit the "Inferences made" block.
+Omit any section that is empty (no text corrections, no sample findings, no inferences).

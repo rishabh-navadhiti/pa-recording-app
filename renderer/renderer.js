@@ -91,13 +91,21 @@ const createTemplateFilesEl     = document.getElementById('create-template-files
 const btnCreateTemplateAddFiles = document.getElementById('btn-create-template-add-files')
 const btnCreateTemplateStart    = document.getElementById('btn-create-template-start')
 const createTemplateError       = document.getElementById('create-template-error')
-const btnTemplateUpdateAi       = document.getElementById('btn-template-update-ai')
-const updateTemplateView        = document.getElementById('update-template-view')
-const btnUpdateTemplateBack     = document.getElementById('btn-update-template-back')
-const updateTemplateDoctorSel   = document.getElementById('update-template-doctor-select')
-const updateTemplateCorrections = document.getElementById('update-template-corrections')
-const btnUpdateTemplateStart    = document.getElementById('btn-update-template-start')
-const updateTemplateError       = document.getElementById('update-template-error')
+const btnTemplateUpdateAi                  = document.getElementById('btn-template-update-ai')
+const updateTemplateView                   = document.getElementById('update-template-view')
+const btnUpdateTemplateBack                = document.getElementById('btn-update-template-back')
+const updateTemplateDoctorSel              = document.getElementById('update-template-doctor-select')
+const updateTemplateCorrections            = document.getElementById('update-template-corrections')
+const updateTemplateCorrectionsFileEl      = document.getElementById('update-template-corrections-file')
+const btnUpdateTemplateAddCorrectionsFile  = document.getElementById('btn-update-template-add-corrections-file')
+const updateTemplateFilesEl                = document.getElementById('update-template-files')
+const btnUpdateTemplateAddFiles            = document.getElementById('btn-update-template-add-files')
+const btnUpdateTemplateStart               = document.getElementById('btn-update-template-start')
+const updateTemplateError                  = document.getElementById('update-template-error')
+const btnTemplateViewChanges               = document.getElementById('btn-template-view-changes')
+const templateChangesPanel                 = document.getElementById('template-changes-panel')
+const btnTemplateChangesClose              = document.getElementById('btn-template-changes-close')
+const templateChangesText                  = document.getElementById('template-changes-text')
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -976,11 +984,82 @@ if (btnCreateTemplateStart) {
 // Templates tab — Update with AI sub-view
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Update-with-AI — state
+// ---------------------------------------------------------------------------
+
+let updateTemplateCorrectionsFile = null
+let updateTemplateSampleFiles     = []
+
+function renderUpdateCorrectionsFile() {
+  if (!updateTemplateCorrectionsFileEl) return
+  if (!updateTemplateCorrectionsFile) {
+    updateTemplateCorrectionsFileEl.classList.add('create-template-files-empty')
+    updateTemplateCorrectionsFileEl.textContent = 'No file added'
+    return
+  }
+  updateTemplateCorrectionsFileEl.classList.remove('create-template-files-empty')
+  updateTemplateCorrectionsFileEl.innerHTML = ''
+  const row = document.createElement('div')
+  row.className = 'create-template-file-row'
+  const name = document.createElement('span')
+  name.className = 'create-template-file-name'
+  name.textContent = updateTemplateCorrectionsFile.split(/[\\/]/).pop()
+  name.title = updateTemplateCorrectionsFile
+  const rm = document.createElement('button')
+  rm.className = 'create-template-file-remove'
+  rm.textContent = '✕'
+  rm.title = 'Remove'
+  rm.addEventListener('click', () => {
+    updateTemplateCorrectionsFile = null
+    renderUpdateCorrectionsFile()
+    validateUpdateForm()
+  })
+  row.appendChild(name)
+  row.appendChild(rm)
+  updateTemplateCorrectionsFileEl.appendChild(row)
+}
+
+function renderUpdateTemplateFiles() {
+  if (!updateTemplateFilesEl) return
+  updateTemplateFilesEl.innerHTML = ''
+  if (updateTemplateSampleFiles.length === 0) {
+    updateTemplateFilesEl.classList.add('create-template-files-empty')
+    updateTemplateFilesEl.textContent = 'No files added yet'
+    return
+  }
+  updateTemplateFilesEl.classList.remove('create-template-files-empty')
+  updateTemplateSampleFiles.forEach((fp, idx) => {
+    const row = document.createElement('div')
+    row.className = 'create-template-file-row'
+    const name = document.createElement('span')
+    name.className = 'create-template-file-name'
+    name.textContent = fp.split(/[\\/]/).pop()
+    name.title = fp
+    const rm = document.createElement('button')
+    rm.className = 'create-template-file-remove'
+    rm.textContent = '✕'
+    rm.title = 'Remove'
+    rm.addEventListener('click', () => {
+      updateTemplateSampleFiles.splice(idx, 1)
+      renderUpdateTemplateFiles()
+      validateUpdateForm()
+    })
+    row.appendChild(name)
+    row.appendChild(rm)
+    updateTemplateFilesEl.appendChild(row)
+  })
+}
+
 function showUpdateTemplateSubview() {
+  updateTemplateCorrectionsFile = null
+  updateTemplateSampleFiles = []
   if (updateTemplateDoctorSel) updateTemplateDoctorSel.innerHTML = '<option value="">Select doctor…</option>'
   if (updateTemplateCorrections) updateTemplateCorrections.value = ''
   if (updateTemplateError) updateTemplateError.classList.add('hidden')
   if (btnUpdateTemplateStart) btnUpdateTemplateStart.disabled = true
+  renderUpdateCorrectionsFile()
+  renderUpdateTemplateFiles()
   if (templateListView) templateListView.classList.add('hidden')
   if (updateTemplateView) updateTemplateView.classList.remove('hidden')
 }
@@ -994,7 +1073,9 @@ function validateUpdateForm() {
   if (!btnUpdateTemplateStart) return
   const hasDoctor = updateTemplateDoctorSel && updateTemplateDoctorSel.value
   const hasCorrections = updateTemplateCorrections && updateTemplateCorrections.value.trim()
-  btnUpdateTemplateStart.disabled = !(hasDoctor && hasCorrections)
+  const hasFile = !!updateTemplateCorrectionsFile
+  const hasSamples = updateTemplateSampleFiles.length > 0
+  btnUpdateTemplateStart.disabled = !(hasDoctor && (hasCorrections || hasFile || hasSamples))
 }
 
 if (btnTemplateUpdateAi) {
@@ -1025,15 +1106,45 @@ if (updateTemplateCorrections) {
   updateTemplateCorrections.addEventListener('input', validateUpdateForm)
 }
 
+if (btnUpdateTemplateAddCorrectionsFile) {
+  btnUpdateTemplateAddCorrectionsFile.addEventListener('click', async () => {
+    if (!api.browseCorrectionsFile) return
+    const filePath = await api.browseCorrectionsFile()
+    if (filePath) {
+      updateTemplateCorrectionsFile = filePath
+      renderUpdateCorrectionsFile()
+      validateUpdateForm()
+    }
+  })
+}
+
+if (btnUpdateTemplateAddFiles) {
+  btnUpdateTemplateAddFiles.addEventListener('click', async () => {
+    const paths = await api.browseNotesFiles()
+    if (Array.isArray(paths) && paths.length > 0) {
+      const set = new Set(updateTemplateSampleFiles)
+      paths.forEach(p => set.add(p))
+      updateTemplateSampleFiles = Array.from(set)
+      renderUpdateTemplateFiles()
+      validateUpdateForm()
+    }
+  })
+}
+
 if (btnUpdateTemplateStart) {
   btnUpdateTemplateStart.addEventListener('click', async () => {
     if (updateTemplateError) updateTemplateError.classList.add('hidden')
     const doctorName  = updateTemplateDoctorSel ? updateTemplateDoctorSel.value : ''
     const corrections = updateTemplateCorrections ? updateTemplateCorrections.value.trim() : ''
-    if (!doctorName || !corrections) return
+    if (!doctorName) return
 
     btnUpdateTemplateStart.disabled = true
-    const err = await api.startTemplateUpdate(doctorName, corrections)
+    const err = await api.startTemplateUpdate(
+      doctorName,
+      corrections,
+      updateTemplateCorrectionsFile,
+      updateTemplateSampleFiles
+    )
     if (err) {
       if (updateTemplateError) {
         updateTemplateError.textContent = err
@@ -1088,13 +1199,23 @@ function handleTemplateJobStatus(job) {
     // A doctor was added — dismiss the "Doctor not set up" warning if present
     warnDoctor.classList.add('hidden')
     updateConfigWarningsVisibility()
-    // Auto-dismiss after a few seconds and clear the job file
-    setTimeout(() => {
-      if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
-        templateJobBanner.classList.add('hidden')
-        api.dismissTemplateJob()
-      }
-    }, 6000)
+
+    // Show "View changes" button if a changes report is available
+    if (job.changesReport) {
+      currentChangesReport = job.changesReport
+      if (btnTemplateViewChanges) btnTemplateViewChanges.classList.remove('hidden')
+    } else {
+      if (btnTemplateViewChanges) btnTemplateViewChanges.classList.add('hidden')
+    }
+
+    // Only auto-dismiss if there's no changes report to view
+    if (!job.changesReport) {
+      setTimeout(() => {
+        if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
+          templateJobBanner.classList.add('hidden')
+        }
+      }, 6000)
+    }
   } else if (job.status === 'failed') {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.add('banner-failed')
@@ -1126,6 +1247,28 @@ function stopJobPolling() {
     clearInterval(jobPollInterval)
     jobPollInterval = null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Templates tab — Changes panel
+// ---------------------------------------------------------------------------
+
+let currentChangesReport = null
+
+if (btnTemplateViewChanges) {
+  btnTemplateViewChanges.addEventListener('click', () => {
+    if (!currentChangesReport) return
+    if (templateChangesText) templateChangesText.textContent = currentChangesReport
+    if (templateListView) templateListView.classList.add('hidden')
+    if (templateChangesPanel) templateChangesPanel.classList.remove('hidden')
+  })
+}
+
+if (btnTemplateChangesClose) {
+  btnTemplateChangesClose.addEventListener('click', () => {
+    if (templateChangesPanel) templateChangesPanel.classList.add('hidden')
+    if (templateListView) templateListView.classList.remove('hidden')
+  })
 }
 
 if (btnTemplateJobCancel) {
