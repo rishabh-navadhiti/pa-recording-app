@@ -13,7 +13,7 @@ const { spawn, execSync } = require('child_process')
 // Constants
 // ---------------------------------------------------------------------------
 
-const PYTHON = process.platform === 'win32' ? 'python' : 'python3'
+const PYTHON = process.platform === 'win32' ? 'py' : 'python3'
 
 const STATE = {
   IDLE: 'IDLE',
