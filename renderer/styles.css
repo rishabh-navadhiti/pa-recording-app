@@ -36,6 +36,33 @@ body {
   flex-shrink: 0;
 }
 
+.drag-handle {
+  -webkit-app-region: drag;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+  color: #777;
+  cursor: grab;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.drag-handle svg {
+  width: 6px;
+  height: 10px;
+  fill: currentColor;
+}
+
+.drag-handle:hover {
+  color: #ccc;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
 #btn-window-close {
   color: #aaa;
   font-size: 13px;
