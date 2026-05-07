@@ -277,7 +277,7 @@ function notifyUser(title, body) {
 function hideFileFromUser(filePath) {
   if (process.platform !== 'win32') return
   const { exec } = require('child_process')
-  exec(`attrib +h +s "${filePath}"`, err => {
+  exec(`attrib +h "${filePath}"`, err => {
     if (err) log(`[hide] ${path.basename(filePath)}: ${err.message}`)
   })
 }
