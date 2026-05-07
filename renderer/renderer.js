@@ -107,6 +107,19 @@ const templateChangesPanel                 = document.getElementById('template-c
 const btnTemplateChangesClose              = document.getElementById('btn-template-changes-close')
 const templateChangesText                  = document.getElementById('template-changes-text')
 
+// --- Pre-chart tab refs ---
+const tabPrechart               = document.getElementById('tab-prechart')
+const btnTabPrechart            = document.getElementById('btn-tab-prechart')
+const prechartView              = document.getElementById('prechart-view')
+const prechartDoctorSelect      = document.getElementById('prechart-doctor-select')
+const prechartCaseSelect        = document.getElementById('prechart-case-select')
+const btnPrechartBrowseCase     = document.getElementById('btn-prechart-browse-case')
+const prechartInstructions      = document.getElementById('prechart-instructions')
+const prechartFilesEl           = document.getElementById('prechart-files')
+const btnPrechartAddFiles       = document.getElementById('btn-prechart-add-files')
+const btnPrechartStart          = document.getElementById('btn-prechart-start')
+const prechartError             = document.getElementById('prechart-error')
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -305,6 +318,7 @@ const AUTOSAVE_SECS = 30
 
 function showPatientForm() {
   patientForm.classList.remove('hidden')
+  viewStatusBar.classList.add('hidden')
   patientInput.value = ''
   patientInput.focus()
 
@@ -379,6 +393,191 @@ function showUploadForm(filePath) {
   uploadPatientInput.onkeydown = (e) => {
     if (e.key === 'Enter') btnUploadSaveName.click()
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-chart sub-view
+// ---------------------------------------------------------------------------
+
+let prechartFiles = []
+
+async function refreshPrechartTab() {
+  if (!prechartView) return
+  prechartFiles = []
+  if (prechartInstructions) prechartInstructions.value = ''
+  hidePrechartError()
+  renderPrechartFiles()
+  updatePrechartStartEnabled()
+
+  // Populate the doctor dropdown (only doctors with a template path)
+  if (prechartDoctorSelect) {
+    prechartDoctorSelect.innerHTML = '<option value="">Select doctor…</option>'
+    try {
+      const doctors = await api.getDoctors()
+      doctors.filter(d => d.templatePath).forEach(d => {
+        const opt = document.createElement('option')
+        opt.value = d.id
+        opt.textContent = d.name
+        prechartDoctorSelect.appendChild(opt)
+      })
+    } catch (e) {
+      console.error('getDoctors failed', e)
+    }
+  }
+
+  // Populate the recent-cases dropdown
+  if (prechartCaseSelect) {
+    prechartCaseSelect.innerHTML = '<option value="">Select patient…</option>'
+    try {
+      const cases = await api.listRecentPatientCases()
+      cases.forEach(c => {
+        const opt = document.createElement('option')
+        opt.value = c.caseDir
+        const labelDate = c.date ? `  ·  ${c.date}` : ''
+        opt.textContent = `${c.patient}${labelDate}`
+        prechartCaseSelect.appendChild(opt)
+      })
+    } catch (e) {
+      console.error('listRecentPatientCases failed', e)
+    }
+  }
+}
+
+function renderPrechartFiles() {
+  if (!prechartFilesEl) return
+  prechartFilesEl.innerHTML = ''
+  if (prechartFiles.length === 0) {
+    prechartFilesEl.classList.add('create-template-files-empty')
+    prechartFilesEl.textContent = 'No files added yet'
+    return
+  }
+  prechartFilesEl.classList.remove('create-template-files-empty')
+  prechartFiles.forEach((fp, idx) => {
+    const row = document.createElement('div')
+    row.className = 'create-template-file-row'
+    const name = document.createElement('span')
+    name.className = 'create-template-file-name'
+    name.textContent = fp.split(/[\\/]/).pop()
+    name.title = fp
+    const rm = document.createElement('button')
+    rm.className = 'create-template-file-remove'
+    rm.textContent = '✕'
+    rm.title = 'Remove'
+    rm.addEventListener('click', () => {
+      prechartFiles.splice(idx, 1)
+      renderPrechartFiles()
+      updatePrechartStartEnabled()
+    })
+    row.appendChild(name)
+    row.appendChild(rm)
+    prechartFilesEl.appendChild(row)
+  })
+}
+
+function updatePrechartStartEnabled() {
+  if (!btnPrechartStart) return
+  const hasDoctor = prechartDoctorSelect && prechartDoctorSelect.value
+  const hasCase = prechartCaseSelect && prechartCaseSelect.value
+  const hasInstructions = prechartInstructions && prechartInstructions.value.trim()
+  const hasFiles = prechartFiles.length > 0
+  btnPrechartStart.disabled = !hasDoctor || !hasCase || !(hasInstructions || hasFiles)
+}
+
+function showPrechartError(msg) {
+  if (!prechartError) return
+  prechartError.textContent = msg
+  prechartError.classList.remove('hidden')
+}
+
+function hidePrechartError() {
+  if (prechartError) prechartError.classList.add('hidden')
+}
+
+if (prechartDoctorSelect) {
+  prechartDoctorSelect.addEventListener('change', updatePrechartStartEnabled)
+}
+
+if (prechartCaseSelect) {
+  prechartCaseSelect.addEventListener('change', updatePrechartStartEnabled)
+}
+
+if (prechartInstructions) {
+  prechartInstructions.addEventListener('input', updatePrechartStartEnabled)
+}
+
+if (btnPrechartBrowseCase) {
+  btnPrechartBrowseCase.addEventListener('click', async () => {
+    btnPrechartBrowseCase.disabled = true
+    try {
+      const res = await api.browsePatientCaseFolder()
+      if (!res.ok) {
+        if (res.error && res.error !== 'cancelled') showPrechartError(res.error)
+        return
+      }
+      // Add the picked folder as a new option (or pick existing one)
+      let opt = Array.from(prechartCaseSelect.options).find(o => o.value === res.caseDir)
+      if (!opt) {
+        opt = document.createElement('option')
+        opt.value = res.caseDir
+        opt.textContent = res.caseDir.split(/[\\/]/).pop()
+        prechartCaseSelect.appendChild(opt)
+      }
+      prechartCaseSelect.value = res.caseDir
+      hidePrechartError()
+      updatePrechartStartEnabled()
+    } finally {
+      btnPrechartBrowseCase.disabled = false
+    }
+  })
+}
+
+if (btnPrechartAddFiles) {
+  btnPrechartAddFiles.addEventListener('click', async () => {
+    btnPrechartAddFiles.disabled = true
+    try {
+      const paths = await api.browsePrechartFiles()
+      if (Array.isArray(paths) && paths.length > 0) {
+        const set = new Set(prechartFiles)
+        paths.forEach(p => set.add(p))
+        prechartFiles = Array.from(set)
+        renderPrechartFiles()
+        updatePrechartStartEnabled()
+      }
+    } finally {
+      btnPrechartAddFiles.disabled = false
+    }
+  })
+}
+
+if (btnPrechartStart) {
+  btnPrechartStart.addEventListener('click', async () => {
+    hidePrechartError()
+    const doctorId = prechartDoctorSelect ? prechartDoctorSelect.value : ''
+    const caseDir = prechartCaseSelect ? prechartCaseSelect.value : ''
+    const instructions = prechartInstructions ? prechartInstructions.value : ''
+    if (!doctorId) {
+      showPrechartError('Select a doctor first.')
+      return
+    }
+    if (!caseDir) {
+      showPrechartError('Select a patient case first.')
+      return
+    }
+    if (!instructions.trim() && prechartFiles.length === 0) {
+      showPrechartError('Provide instructions or attach at least one file.')
+      return
+    }
+    btnPrechartStart.disabled = true
+    const res = await api.startPrechartJob(doctorId, caseDir, instructions, prechartFiles)
+    if (!res || !res.ok) {
+      showPrechartError((res && res.error) || 'Failed to start')
+      btnPrechartStart.disabled = false
+      return
+    }
+    // Reset the form for the next run; banner will show progress on any tab.
+    refreshPrechartTab()
+    refreshTemplateJobBanner()
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +946,7 @@ const MAIN_CONTENT_ELS = [
   () => document.getElementById('header-row'),
   () => tabRecord,
   () => tabTemplates,
+  () => tabPrechart,
   () => tabBar
 ]
 
@@ -803,30 +1003,48 @@ let activeTab = 'record'
 
 function showTab(name) {
   activeTab = name
-  const showingRecord = name === 'record'
+  const onRecord    = name === 'record'
+  const onTemplates = name === 'templates'
+  const onPrechart  = name === 'prechart'
 
-  if (tabRecord)    tabRecord.style.display    = showingRecord ? '' : 'none'
+  if (tabRecord) {
+    tabRecord.classList.toggle('hidden', !onRecord)
+    tabRecord.style.display = onRecord ? '' : 'none'
+  }
   if (tabTemplates) {
-    tabTemplates.classList.toggle('hidden', showingRecord)
-    tabTemplates.style.display = showingRecord ? 'none' : ''
+    tabTemplates.classList.toggle('hidden', !onTemplates)
+    tabTemplates.style.display = onTemplates ? '' : 'none'
+  }
+  if (tabPrechart) {
+    tabPrechart.classList.toggle('hidden', !onPrechart)
+    tabPrechart.style.display = onPrechart ? '' : 'none'
   }
 
-  if (statusRow) statusRow.style.display = showingRecord ? '' : 'none'
-  if (tabTitle)  tabTitle.classList.toggle('hidden', showingRecord)
+  if (statusRow) statusRow.style.display = onRecord ? '' : 'none'
+  if (tabTitle) {
+    tabTitle.classList.toggle('hidden', onRecord)
+    if (onTemplates) tabTitle.textContent = 'Templates'
+    else if (onPrechart) tabTitle.textContent = 'Pre-chart'
+  }
 
-  if (btnTabRecord)    btnTabRecord.classList.toggle('tab-active', showingRecord)
-  if (btnTabTemplates) btnTabTemplates.classList.toggle('tab-active', !showingRecord)
+  if (btnTabRecord)    btnTabRecord.classList.toggle('tab-active', onRecord)
+  if (btnTabTemplates) btnTabTemplates.classList.toggle('tab-active', onTemplates)
+  if (btnTabPrechart)  btnTabPrechart.classList.toggle('tab-active', onPrechart)
 
-  if (!showingRecord) {
+  if (onTemplates) {
     // Reset any open sub-view when re-entering the templates tab
     hideCreateTemplateSubview()
     renderDoctorList(templateDoctorListEl)
+    refreshTemplateJobBanner()
+  } else if (onPrechart) {
+    refreshPrechartTab()
     refreshTemplateJobBanner()
   }
 }
 
 if (btnTabRecord)    btnTabRecord.addEventListener('click', () => showTab('record'))
 if (btnTabTemplates) btnTabTemplates.addEventListener('click', () => showTab('templates'))
+if (btnTabPrechart)  btnTabPrechart.addEventListener('click', () => showTab('prechart'))
 
 // ---------------------------------------------------------------------------
 // Templates tab — list + actions
@@ -1179,40 +1397,52 @@ function handleTemplateJobStatus(job) {
     return
   }
   const isUpdate = job.type === 'update'
+  const isPrechart = job.type === 'prechart'
   if (job.status === 'running') {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.remove('banner-failed', 'banner-success')
     const elapsed = formatElapsed(Date.now() - (job.startedAt || Date.now()))
-    const verb = isUpdate ? 'Updating' : 'Creating'
-    templateJobBannerText.innerHTML = `${verb} template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
+    if (isPrechart) {
+      templateJobBannerText.innerHTML = `Pre-charting <strong>${job.doctorName || 'patient'}</strong> — ${elapsed}`
+    } else {
+      const verb = isUpdate ? 'Updating' : 'Creating'
+      templateJobBannerText.innerHTML = `${verb} template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
+    }
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
     startJobPolling()
   } else if (job.status === 'success') {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.add('banner-success')
     templateJobBanner.classList.remove('banner-failed')
-    const doneText = isUpdate ? 'Template updated for' : 'Template ready for'
-    templateJobBannerText.innerHTML = `${doneText} <strong>${job.doctorName || 'doctor'}</strong>`
+    if (isPrechart) {
+      templateJobBannerText.innerHTML = `Pre-chart applied to <strong>${job.doctorName || 'patient'}</strong>'s note`
+    } else {
+      const doneText = isUpdate ? 'Template updated for' : 'Template ready for'
+      templateJobBannerText.innerHTML = `${doneText} <strong>${job.doctorName || 'doctor'}</strong>`
+    }
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.add('hidden')
     stopJobPolling()
-    renderDoctorList(templateDoctorListEl)
-    // A doctor was added — dismiss the "Doctor not set up" warning if present
-    warnDoctor.classList.add('hidden')
-    updateConfigWarningsVisibility()
+    if (!isPrechart) {
+      renderDoctorList(templateDoctorListEl)
+      // A doctor was added — dismiss the "Doctor not set up" warning if present
+      warnDoctor.classList.add('hidden')
+      updateConfigWarningsVisibility()
 
-    // Show "View changes" button if a changes report is available
-    if (job.changesReport) {
-      currentChangesReport = job.changesReport
-      if (btnTemplateViewChanges) btnTemplateViewChanges.classList.remove('hidden')
-    } else {
-      if (btnTemplateViewChanges) btnTemplateViewChanges.classList.add('hidden')
+      // Show "View changes" button if a changes report is available
+      if (job.changesReport) {
+        currentChangesReport = job.changesReport
+        if (btnTemplateViewChanges) btnTemplateViewChanges.classList.remove('hidden')
+      } else {
+        if (btnTemplateViewChanges) btnTemplateViewChanges.classList.add('hidden')
+      }
     }
 
-    // Only auto-dismiss if there's no changes report to view
-    if (!job.changesReport) {
+    // Auto-dismiss if it's a prechart job or there's no changes report to view
+    if (isPrechart || !job.changesReport) {
       setTimeout(() => {
         if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
           templateJobBanner.classList.add('hidden')
+          api.dismissTemplateJob()
         }
       }, 6000)
     }
@@ -1220,7 +1450,9 @@ function handleTemplateJobStatus(job) {
     templateJobBanner.classList.remove('hidden')
     templateJobBanner.classList.add('banner-failed')
     templateJobBanner.classList.remove('banner-success')
-    const failLabel = isUpdate ? 'Template update failed' : 'Template creation failed'
+    const failLabel = isPrechart ? 'Pre-chart failed'
+                    : isUpdate    ? 'Template update failed'
+                                  : 'Template creation failed'
     templateJobBannerText.innerHTML = `<strong>${failLabel}</strong> — ${job.error || 'unknown error'}`
     if (btnTemplateJobCancel) btnTemplateJobCancel.classList.remove('hidden')
     stopJobPolling()
@@ -1279,9 +1511,11 @@ if (btnTemplateJobCancel) {
       templateJobBanner.classList.add('hidden')
       return
     }
-    const cancelMsg = job.type === 'update'
-      ? 'Cancel template update? Progress will be lost.'
-      : 'Cancel template creation? Progress will be lost.'
+    const cancelMsg = job.type === 'prechart'
+      ? 'Cancel pre-chart? Progress will be lost.'
+      : job.type === 'update'
+        ? 'Cancel template update? Progress will be lost.'
+        : 'Cancel template creation? Progress will be lost.'
     if (!confirm(cancelMsg)) return
     btnTemplateJobCancel.disabled = true
     await api.cancelTemplateCreation()

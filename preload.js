@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('api', {
   cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),
   dismissTemplateJob:       ()                           => ipcRenderer.invoke('dismiss-template-job'),
 
+  browsePrechartFiles:      ()                                       => ipcRenderer.invoke('browse-prechart-files'),
+  listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
+  browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
+  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
+
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),

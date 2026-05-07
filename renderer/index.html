@@ -113,6 +113,12 @@
       <div class="folder-setup-existing-hint">Already have AI Medical Notes from a previous install?</div>
     </div>
 
+    <!-- Running job banner — shared across both tabs (template create/update + pre-chart) -->
+    <div id="template-job-banner" class="hidden">
+      <div id="template-job-banner-text"></div>
+      <button id="btn-template-job-cancel" class="icon-btn" title="Cancel">&#10005;</button>
+    </div>
+
     <!-- ============================================================ -->
     <!-- TAB: Record (default)                                         -->
     <!-- ============================================================ -->
@@ -197,13 +203,6 @@
     <!-- ============================================================ -->
     <div id="tab-templates" class="hidden">
 
-      <!-- Running job banner -->
-      <div id="template-job-banner" class="hidden">
-        <div id="template-job-banner-text"></div>
-        <button id="btn-template-view-changes" class="link-btn hidden">View changes</button>
-        <button id="btn-template-job-cancel" class="icon-btn" title="Cancel">&#10005;</button>
-      </div>
-
       <!-- Template list view -->
       <div id="template-list-view">
         <div id="template-doctor-list"></div>
@@ -284,6 +283,43 @@
 
     </div><!-- /#tab-templates -->
 
+    <!-- ============================================================ -->
+    <!-- TAB: Pre-chart                                                -->
+    <!-- ============================================================ -->
+    <div id="tab-prechart" class="hidden">
+
+      <div id="prechart-view">
+        <label class="setting-label">Doctor</label>
+        <select id="prechart-doctor-select">
+          <option value="">Select doctor…</option>
+        </select>
+
+        <label class="setting-label">Patient case</label>
+        <div class="prechart-case-row">
+          <select id="prechart-case-select">
+            <option value="">Select patient…</option>
+          </select>
+          <button id="btn-prechart-browse-case" class="small">Browse…</button>
+        </div>
+
+        <textarea id="prechart-instructions"
+                  placeholder="Scribe corrections, additions, or new clinical details…"
+                  rows="6"
+                  spellcheck="true"></textarea>
+
+        <div class="create-template-files-label">Attachments</div>
+        <div id="prechart-files" class="create-template-files-empty">
+          No files added yet
+        </div>
+        <button id="btn-prechart-add-files" class="small">+ Add files</button>
+        <div class="setting-hint">Optional. Prechart docs, prior visit summaries, typed handwritten slips (.md/.txt/.docx/.pdf).</div>
+
+        <button id="btn-prechart-start" disabled>Start</button>
+        <div id="prechart-error" class="config-warn hidden"></div>
+      </div>
+
+    </div><!-- /#tab-prechart -->
+
     <!-- Bottom tab bar -->
     <div id="tab-bar">
       <button id="btn-tab-record" class="tab-btn tab-active" data-tab="record">
@@ -293,6 +329,10 @@
       <button id="btn-tab-templates" class="tab-btn" data-tab="templates">
         <span class="tab-icon">&#128209;</span>
         <span>Templates</span>
+      </button>
+      <button id="btn-tab-prechart" class="tab-btn" data-tab="prechart">
+        <span class="tab-icon">&#128221;</span>
+        <span>Pre-chart</span>
       </button>
     </div>
 
