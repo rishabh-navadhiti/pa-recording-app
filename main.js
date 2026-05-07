@@ -407,10 +407,12 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
         if (patientFolderName) {
           const entry = sessionRecordings.find(r => r.caseTag === caseTag)
           const patient = entry?.patients?.find(p => p.folderName === patientFolderName)
+          if (patient) patient.soapDocxPath = mdPath.replace(/\.md$/, '.docx')
           notifyUser('SOAP note ready', patient?.name || patientFolderName.replace(/_/g, ' '))
           updatePatientStatus(caseTag, patientFolderName, 'completed')
         } else if (caseTag) {
           const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+          if (entry) entry.soapDocxPath = mdPath.replace(/\.md$/, '.docx')
           notifyUser('SOAP note ready', entry?.displayName || caseTag)
           updateRecordingStatus(caseTag, 'completed')
         }
@@ -1779,6 +1781,12 @@ function registerIpcHandlers() {
   // ---- close-status-window ----
   ipcMain.handle('close-status-window', () => {
     if (statusWin && !statusWin.isDestroyed()) statusWin.close()
+  })
+
+  // ---- open-soap-note ----
+  ipcMain.handle('open-soap-note', async (_, filePath) => {
+    const { shell } = require('electron')
+    return shell.openPath(filePath)
   })
 }
 

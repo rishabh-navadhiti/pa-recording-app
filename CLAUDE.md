@@ -120,6 +120,7 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
 | `hideWindow()` | Close popup |
+| `openSoapNote(filePath)` | Opens SOAP note `.docx` via OS default handler |
 
 Events (`on*`):
 `onStateChange`, `onShowPatientForm`, `onSetupWarning`, `onAutoStartRecording`, `onPickDoctor`, `onServiceWarning`, `onTemplateJobStatus`.
