@@ -46,8 +46,7 @@ let doctorPickerResolver = null
 let activeSessionDir = null
 let statusWin = null
 let sessionRecordings = []
-let userMovedPopup = false
-let isProgrammaticMove = false
+let isQuitting = false
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -180,40 +179,13 @@ function setState(newState) {
 // Tray popup positioning
 // ---------------------------------------------------------------------------
 
-function getPopupPosition(tray, win) {
-  const trayBounds = tray.getBounds()
-  const winBounds = win.getBounds()
-  const { workArea } = screen.getPrimaryDisplay()
-
-  const validTray = trayBounds.x > 0 || trayBounds.y > 0
-  if (!validTray) {
-    return {
-      x: Math.round(workArea.x + workArea.width / 2 - winBounds.width / 2),
-      y: Math.round(workArea.y + workArea.height / 2 - winBounds.height / 2)
-    }
-  }
-
-  const x = Math.round(trayBounds.x + trayBounds.width / 2 - winBounds.width / 2)
-  const y = process.platform === 'darwin'
-    ? trayBounds.y + trayBounds.height   // macOS: menubar at top
-    : trayBounds.y - winBounds.height    // Windows: taskbar at bottom
-
-  return {
-    x: Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - winBounds.width)),
-    y: Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - winBounds.height))
-  }
-}
-
 function togglePopup() {
-  if (win.isVisible()) {
-    win.hide()
+  if (win.isMinimized()) {
+    win.restore()
+    win.focus()
+  } else if (win.isVisible()) {
+    win.minimize()
   } else {
-    if (!userMovedPopup) {
-      const pos = getPopupPosition(tray, win)
-      isProgrammaticMove = true
-      win.setPosition(pos.x, pos.y, false)
-      setImmediate(() => { isProgrammaticMove = false })
-    }
     win.show()
     win.focus()
   }
@@ -1276,7 +1248,7 @@ app.whenReady().then(async () => {
   tray.on('right-click', () => tray.popUpContextMenu(contextMenu))
   tray.on('click', () => togglePopup())
 
-  // Create popup window
+  // Create main window
   win = new BrowserWindow({
     width: 280,
     height: 420,
@@ -1284,7 +1256,6 @@ app.whenReady().then(async () => {
     frame: false,
     resizable: false,
     alwaysOnTop: true,
-    skipTaskbar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1293,12 +1264,17 @@ app.whenReady().then(async () => {
   })
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  win.once('ready-to-show', () => win.show())
 
-  win.on('move', () => {
-    if (!isProgrammaticMove) userMovedPopup = true
+  ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.minimize() })
+
+  // Minimize to taskbar instead of closing; real quit comes from tray → Quit
+  win.on('close', e => {
+    if (!isQuitting) {
+      e.preventDefault()
+      win.minimize()
+    }
   })
-
-  ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.hide() })
 
   // macOS BlackHole check
   if (process.platform === 'darwin') {
@@ -1319,6 +1295,7 @@ app.whenReady().then(async () => {
 
   // Clean up recording process on quit
   app.on('before-quit', () => {
+    isQuitting = true
     if (recordingProcess) {
       log('Killing recording process before quit')
       recordingProcess.kill()
