@@ -50,6 +50,15 @@ function renderRecordings(recordings) {
 
         statusRow.appendChild(dot)
         statusRow.appendChild(label)
+
+        if (patient.status === 'completed' && patient.soapDocxPath) {
+          const btn = document.createElement('button')
+          btn.className = 'open-btn'
+          btn.textContent = 'Open'
+          btn.addEventListener('click', () => api.openSoapNote(patient.soapDocxPath))
+          statusRow.appendChild(btn)
+        }
+
         patientRow.appendChild(patientName)
         patientRow.appendChild(statusRow)
         item.appendChild(patientRow)
@@ -72,6 +81,15 @@ function renderRecordings(recordings) {
 
       statusRow.appendChild(dot)
       statusRow.appendChild(label)
+
+      if (rec.status === 'completed' && rec.soapDocxPath) {
+        const btn = document.createElement('button')
+        btn.className = 'open-btn'
+        btn.textContent = 'Open'
+        btn.addEventListener('click', () => api.openSoapNote(rec.soapDocxPath))
+        statusRow.appendChild(btn)
+      }
+
       item.appendChild(nameRow)
       item.appendChild(statusRow)
     }

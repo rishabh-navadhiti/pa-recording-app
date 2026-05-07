@@ -49,9 +49,10 @@ contextBridge.exposeInMainWorld('api', {
 
   hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
 
-  getSessionRecordings:    ()   => ipcRenderer.invoke('get-session-recordings'),
-  openStatusWindow:        ()   => ipcRenderer.invoke('open-status-window'),
-  closeStatusWindow:       ()   => ipcRenderer.invoke('close-status-window'),
+  getSessionRecordings:    ()           => ipcRenderer.invoke('get-session-recordings'),
+  openStatusWindow:        ()           => ipcRenderer.invoke('open-status-window'),
+  closeStatusWindow:       ()           => ipcRenderer.invoke('close-status-window'),
+  openSoapNote:            (filePath)   => ipcRenderer.invoke('open-soap-note', filePath),
 
   onStateChange:           (cb) => ipcRenderer.on('state-change',            (_, s)       => cb(s)),
   onShowPatientForm:       (cb) => ipcRenderer.on('show-patient-form',       ()           => cb()),
