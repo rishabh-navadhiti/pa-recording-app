@@ -47,6 +47,8 @@ body {
   cursor: grab;
   flex-shrink: 0;
   user-select: none;
+  margin-left: -10px;
+  margin-right: 6px;
 }
 
 .drag-handle svg {
@@ -80,6 +82,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
 }
 
 .icon-btn {
