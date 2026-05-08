@@ -203,7 +203,7 @@ def main():
         print("Usage: python3 md_to_docx.py <path_to_soap_note.md>", file=sys.stderr)
         sys.exit(1)
 
-    md_path = Path(sys.argv[1]).resolve()
+    md_path = Path(sys.argv[1]).absolute()
 
     if not md_path.exists():
         print(f"ERROR: File not found: {md_path}", file=sys.stderr)

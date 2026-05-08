@@ -874,8 +874,17 @@ function registerIpcHandlers() {
     const _stopTemplatePath = _stopDoctor?.templatePath || null
 
     if (fs.existsSync(tempMp3Path)) {
-      fs.renameSync(tempMp3Path, mp3Dest)
-      log(`MP3 moved to: ${mp3Dest}`)
+      try {
+        fs.copyFileSync(tempMp3Path, mp3Dest)
+        fs.unlinkSync(tempMp3Path)
+        log(`MP3 moved to: ${mp3Dest}`)
+      } catch (e) {
+        log(`ERROR moving MP3 from ${tempMp3Path} to ${mp3Dest}: ${e.message}`)
+        tempMp3Path = null
+        setState(STATE.SESSION_ACTIVE)
+        notifyUser('Recording failed', 'Could not save the recording. Check the log.')
+        return false
+      }
     } else {
       log(`WARNING: temp MP3 not found at ${tempMp3Path} — recording may have failed`)
     }
