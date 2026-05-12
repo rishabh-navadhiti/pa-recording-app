@@ -13,7 +13,20 @@ const { spawn, execSync } = require('child_process')
 // Constants
 // ---------------------------------------------------------------------------
 
-const PYTHON = process.platform === 'win32' ? 'py' : 'python3'
+let PYTHON = process.platform === 'win32' ? 'python' : 'python3'
+
+function resolvePythonCommand () {
+  const candidates = process.platform === 'win32'
+    ? ['py', 'python', 'python3']
+    : ['python3', 'python']
+  for (const cmd of candidates) {
+    try {
+      const out = execSync(`${cmd} --version`, { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+      if (/^Python\s+3\./.test(out)) return { cmd, version: out }
+    } catch { /* not available — try next */ }
+  }
+  return null
+}
 
 const STATE = {
   IDLE: 'IDLE',
@@ -1231,11 +1244,12 @@ app.whenReady().then(async () => {
   log(`Electron: ${process.versions.electron}`)
   log(`Node: ${process.version}`)
 
-  try {
-    const pyVer = execSync(`${PYTHON} --version`, { stdio: 'pipe' }).toString().trim()
-    log(`Python: ${pyVer}`)
-  } catch {
-    log('WARNING: Python not found')
+  const pyResolved = resolvePythonCommand()
+  if (pyResolved) {
+    PYTHON = pyResolved.cmd
+    log(`Python: ${pyResolved.version} (via ${PYTHON})`)
+  } else {
+    log('WARNING: Python 3 not found — tried py, python, python3')
   }
 
   try {
