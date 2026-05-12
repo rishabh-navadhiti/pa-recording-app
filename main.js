@@ -259,6 +259,46 @@ function notifyUser(title, body) {
   }
 }
 
+function hideFileFromUser(filePath) {
+  if (process.platform !== 'win32') return
+  const { exec } = require('child_process')
+  exec(`attrib +h "${filePath}"`, err => {
+    if (err) log(`[hide] ${path.basename(filePath)}: ${err.message}`)
+  })
+}
+
+function hideNotesDirInternals() {
+  if (process.platform !== 'win32') return
+  if (!fs.existsSync(NOTES_DIR)) return
+  try {
+    fs.readdirSync(NOTES_DIR, { withFileTypes: true })
+      .filter(e => e.name !== 'Cases')
+      .forEach(e => hideFileFromUser(path.join(NOTES_DIR, e.name)))
+  } catch {}
+}
+
+function hideExistingCaseMdFiles() {
+  if (process.platform !== 'win32') return
+  if (!fs.existsSync(CASES_DIR)) return
+  try {
+    const sessions = fs.readdirSync(CASES_DIR, { withFileTypes: true }).filter(e => e.isDirectory())
+    for (const session of sessions) {
+      const sessionPath = path.join(CASES_DIR, session.name)
+      try {
+        const cases = fs.readdirSync(sessionPath, { withFileTypes: true }).filter(e => e.isDirectory())
+        for (const c of cases) {
+          const caseDir = path.join(sessionPath, c.name)
+          try {
+            fs.readdirSync(caseDir)
+              .filter(f => f.endsWith('.md'))
+              .forEach(f => hideFileFromUser(path.join(caseDir, f)))
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
 function validateElevenLabsKey(apiKey) {
   return new Promise(resolve => {
     const req = https.request(
@@ -409,6 +449,7 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
   proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
   proc.on('close', code => {
     log(`${tag}[docx] exited ${code}`)
+    if (code === 0) hideFileFromUser(mdPath)
     if (path.basename(mdPath) !== 'transcript.md') {
       if (code === 0) {
         if (patientFolderName) {
@@ -955,6 +996,12 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       } else {
         log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
       }
+      // Hide backup .md files created by the edit-note skill
+      try {
+        fs.readdirSync(caseDir)
+          .filter(f => f.endsWith('.md'))
+          .forEach(f => hideFileFromUser(path.join(caseDir, f)))
+      } catch {}
       broadcastTemplateJob({
         type: 'prechart',
         status: 'success',
@@ -1187,6 +1234,8 @@ app.whenReady().then(async () => {
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log('.claude config synced to AI Medical Notes')
+    hideNotesDirInternals()
+    hideExistingCaseMdFiles()
 
     // Clean up any stale template job from a prior crash/restart — the child
     // process died with the app, so a 'running' status in the file is orphaned.
@@ -2105,6 +2154,8 @@ function registerIpcHandlers() {
 
     writeSettings(migratedSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    hideNotesDirInternals()
+    hideExistingCaseMdFiles()
     log(`Notes directory set to: ${NOTES_DIR} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)
     return { ok: true, path: NOTES_DIR }
   })
