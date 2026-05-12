@@ -2093,19 +2093,42 @@ function registerIpcHandlers() {
     const isExisting = mode === 'existing'
     const result = await dialog.showOpenDialog(win, {
       title: isExisting ? 'Select your existing AI Medical Notes folder' : 'Choose where to store your AI Medical Notes',
-      buttonLabel: isExisting ? 'Select Folder' : 'Select Folder',
+      buttonLabel: 'Select Folder',
       properties: ['openDirectory', 'createDirectory']
     })
     if (result.canceled || !result.filePaths.length) return { ok: false }
     const newNotesDir = isExisting ? result.filePaths[0] : path.join(result.filePaths[0], 'AI Medical Notes')
-    const oldSettings = readSettings()
+
+    const oldNotesDir     = NOTES_DIR
+    const oldTemplatesDir = TEMPLATES_DIR
+    const oldSettings     = readSettings()
+
     writeEnvKey('NOTES_DIR_PATH', newNotesDir)
     loadPaths(newNotesDir)
     fs.mkdirSync(CASES_DIR, { recursive: true })
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
-    writeSettings(oldSettings)
+
+    if (oldTemplatesDir &&
+        oldTemplatesDir !== TEMPLATES_DIR &&
+        fs.existsSync(oldTemplatesDir)) {
+      copyDirSync(oldTemplatesDir, TEMPLATES_DIR)
+    }
+
+    const migratedSettings = {
+      ...oldSettings,
+      doctors: (oldSettings.doctors || []).map(d => {
+        if (!d || typeof d.templatePath !== 'string') return d
+        if (oldNotesDir && d.templatePath.startsWith(oldNotesDir + path.sep)) {
+          const rel = path.relative(oldNotesDir, d.templatePath)
+          return { ...d, templatePath: path.join(NOTES_DIR, rel) }
+        }
+        return d
+      })
+    }
+
+    writeSettings(migratedSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-    log(`Notes directory set to: ${NOTES_DIR}`)
+    log(`Notes directory set to: ${NOTES_DIR} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)
     return { ok: true, path: NOTES_DIR }
   })
 
