@@ -18,6 +18,7 @@ Supported markdown elements:
     1. item                         — Numbered list (List Number)
     **bold**                        — Inline bold (within any paragraph type)
     ALL CAPS HEADING:               — Auto-bolded (e.g. WC section headings)
+    | col | col |                   — GFM pipe table with `|---|---|` separator row
     blank line                      — Paragraph spacer (small vertical gap)
     anything else                   — Normal paragraph
 """
@@ -78,6 +79,89 @@ def parse_inline_bold(paragraph, text):
             paragraph.add_run(part)
 
 
+def is_table_row(line):
+    """Pipe-delimited row: starts and ends with '|' and has at least one inner '|'."""
+    stripped = line.strip()
+    return stripped.startswith('|') and stripped.endswith('|') and stripped.count('|') >= 2
+
+
+def is_table_separator(line):
+    """GFM separator row like `|---|:---:|---:|`. Cells are dashes with optional `:` alignment markers."""
+    stripped = line.strip()
+    if not is_table_row(stripped):
+        return False
+    cells = [c.strip() for c in stripped.strip('|').split('|')]
+    if not cells:
+        return False
+    return all(re.match(r'^:?-{2,}:?$', c) for c in cells)
+
+
+def split_table_row(line):
+    return [c.strip() for c in line.strip().strip('|').split('|')]
+
+
+def set_cell_shading(cell, hex_fill):
+    """Apply a solid background colour to a table cell."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), hex_fill)
+    tcPr.append(shd)
+
+
+def set_cell_borders(cell, color='BFBFBF', size='4'):
+    """Add thin borders on all four sides of a cell."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = OxmlElement('w:tcBorders')
+    for edge in ('top', 'left', 'bottom', 'right'):
+        b = OxmlElement(f'w:{edge}')
+        b.set(qn('w:val'), 'single')
+        b.set(qn('w:sz'), size)
+        b.set(qn('w:space'), '0')
+        b.set(qn('w:color'), color)
+        tcBorders.append(b)
+    tcPr.append(tcBorders)
+
+
+def add_md_table(doc, header_row, body_rows):
+    """
+    Render a GFM markdown table as a styled Word table:
+      - dark-blue header bar with bold white text
+      - light-blue body rows with thin grey borders
+      - inline **bold** is honoured inside any cell
+    """
+    cols = len(header_row)
+    table = doc.add_table(rows=1 + len(body_rows), cols=cols)
+    table.autofit = True
+
+    # Header
+    hdr_cells = table.rows[0].cells
+    for c_idx, txt in enumerate(header_row):
+        cell = hdr_cells[c_idx]
+        cell.text = ''
+        p = cell.paragraphs[0]
+        parse_inline_bold(p, txt)
+        for run in p.runs:
+            run.bold = True
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        set_cell_shading(cell, '1F497D')
+        set_cell_borders(cell, color='1F497D', size='6')
+
+    # Body
+    for r_idx, row in enumerate(body_rows):
+        cells = table.rows[r_idx + 1].cells
+        for c_idx in range(cols):
+            cell = cells[c_idx]
+            cell.text = ''
+            value = row[c_idx] if c_idx < len(row) else ''
+            parse_inline_bold(cell.paragraphs[0], value)
+            set_cell_shading(cell, 'DEEAF6')
+            set_cell_borders(cell, color='BFBFBF', size='4')
+
+    return table
+
+
 def is_allcaps_heading(text):
     """
     Return True if the line looks like an ALL CAPS section heading.
@@ -127,7 +211,23 @@ def convert_md_to_docx(md_path: Path, docx_path: Path):
 
     lines = md_path.read_text(encoding='utf-8').splitlines()
 
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # --- GFM pipe table (header + separator + body rows) ---
+        if (is_table_row(line)
+                and i + 1 < len(lines)
+                and is_table_separator(lines[i + 1])):
+            header = split_table_row(line)
+            body = []
+            j = i + 2
+            while j < len(lines) and is_table_row(lines[j]) and not is_table_separator(lines[j]):
+                body.append(split_table_row(lines[j]))
+                j += 1
+            add_md_table(doc, header, body)
+            i = j
+            continue
 
         # --- Heading 1: # Text ---
         if line.startswith('# '):
@@ -190,6 +290,8 @@ def convert_md_to_docx(md_path: Path, docx_path: Path):
             else:
                 p = doc.add_paragraph()
                 parse_inline_bold(p, stripped)
+
+        i += 1
 
     doc.save(str(docx_path))
 
