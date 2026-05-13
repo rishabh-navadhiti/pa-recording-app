@@ -64,13 +64,19 @@ User           Renderer            Main                Python              Eleve
  │               │                  │                   │                       │  reads template
  │               │                  │                   │                       │  + transcript
  │               │                  │                   │                       │  writes _soap_note.md
- │               │                  │ on claude close: spawn md_to_docx.py for both .md files   │
+ │               │                  │ on claude close: spawn claude -p (add-icd-codes) ─────────▶│
+ │               │                  │                   │                       │  add-icd-codes
+ │               │                  │                   │                       │  reads soap note
+ │               │                  │                   │                       │  calls ICD-10 MCP
+ │               │                  │                   │                       │  appends code table
+ │               │                  │ on icd close (ANY exit): spawn md_to_docx.py for both .md │
 ```
 
 Key properties:
 - **Non-blocking**: state returns to `SESSION_ACTIVE` *before* transcription completes. The scribe can start the next case while the pipeline runs.
-- **Detached subtree**: transcribe → soap → docx is a chain, not a supervisor tree. Each child only listens for its predecessor's `close` event.
+- **Detached subtree**: transcribe → soap → icd → docx is a chain, not a supervisor tree. Each child only listens for its predecessor's `close` event.
 - **Single log stream**: every child's stdout/stderr is captured by the main process and written to `<NOTES_DIR>/app.log` with a `[<case>]` tag, so the whole pipeline is reconstructable from one file.
+- **ICD coding is best-effort**: `spawnIcdCoding` always falls through to `spawnDocxConversion`, even on non-zero exit, MCP failure, or empty output. A note without codes is still useful; a hard MCP auth error surfaces as a `service-warning` IPC but does not block the case.
 
 ---
 
@@ -200,13 +206,19 @@ repo/notes-claude/                       ← source of truth, version-controlled
     generate-note/SKILL.md
     create-doctor-profile/SKILL.md
     update-doctor-profile/SKILL.md
+    edit-note/SKILL.md
+    add-icd-codes/SKILL.md
+  .mcp.json                              ← project-scope MCP config (ICD-10 connector)
   scripts/, draft/, settings.json
                   │
                   │  copyDirSync on every app start
                   ▼
 ~/Documents/AI Medical Notes/.claude/    ← runtime workspace for `claude -p`
   skills/...
+~/Documents/AI Medical Notes/.mcp.json   ← written by ensureMcpConfig() next to every sync
 ```
+
+`.mcp.json` lives at the **project root** (`<NOTES_DIR>`), not inside `.claude/`, per Claude Code's MCP discovery rules. `ensureMcpConfig()` writes it from a constant in `main.js` rather than copying the bundled file, so the runtime location is decoupled from the bundle layout.
 
 When the app spawns `claude -p "..."`, the cwd is set to `<NOTES_DIR>` (the AI Medical Notes folder, not the repo). The `claude` CLI auto-discovers `<cwd>/.claude/` and loads the skills there.
 
@@ -220,8 +232,18 @@ Prompt formats the skills expect:
 - `create-doctor-profile`: `create a doctor profile for "<name>" from source folder "<rel>"`
 - `update-doctor-profile`: `update doctor profile. Doctor: <name>. Template: <abs-path>. Corrections: <text>`  *(path is absolute; multi-line corrections are collapsed to ` | ` separators)*
 - `edit-note` (pre-chart): `edit note. Case: <abs-case-dir>. Template: <abs-template-path>. Attachment: <abs-attachment-path-or-empty>. Instructions: <scribe-text-or-empty>`  *(at least one of Attachment/Instructions must be non-empty; multi-file attachments are pre-combined by `extract_attachments.py`)*
+- `add-icd-codes`: `add ICD codes. Soap note: "<rel-or-abs>".`  *(single arg; the skill reads the SOAP `.md`, calls the ICD-10 MCP connector, and appends an `## ICD-10-CM Codes` table. Re-runs strip a prior section and re-write it. Always exits 0 — failures are best-effort.)*
 
-The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt uses an absolute path because the template path is already resolved in main.js before the prompt is built.
+The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt uses an absolute path because the template path is already resolved in main.js before the prompt is built. `add-icd-codes` accepts either — `main.js` passes a relative path.
+
+### MCP integration
+
+`add-icd-codes` calls tools from the claude.ai ICD-10 Codes connector. The connector is registered two ways:
+
+1. **User-level (`~/.claude.json`)** — auto-added when the user logs into `claude` with an account whose org has the connector enabled. Tools appear as `mcp__claude_ai_ICD-10_Codes__*`.
+2. **Project-scope (`<NOTES_DIR>/.mcp.json`)** — bundled with the app and written by `ensureMcpConfig()`. Tools appear as `mcp__icd10__*`.
+
+The skill is tolerant of either namespace. The project-scope config is the fallback that makes the feature robust against per-user login state.
 
 ---
 

@@ -39,6 +39,7 @@ const STATE = {
 const STATUS_LABELS = {
   transcribing:    'Transcribing...',
   generating_note: 'Generating note...',
+  coding_icd:      'Adding ICD codes...',
   converting:      'Converting...',
   completed:       'Completed',
   failed:          'Failed'
@@ -404,7 +405,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     if (code === 0 && soapNoteMdPath) {
       if (fs.existsSync(soapNoteMdPath)) {
         log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
-        spawnDocxConversion(soapNoteMdPath, caseTag)
+        spawnIcdCoding(soapNoteMdPath, caseTag)
       } else {
         // Top-level soap note missing — Claude may have created per-patient subfolders
         const caseDir = path.dirname(soapNoteMdPath)
@@ -418,7 +419,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
           }))
           if (caseTag) setRecordingPatients(caseTag, patients)
           for (const pf of patientFolders) {
-            spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
+            spawnIcdCoding(pf.soapNotePath, caseTag, pf.folderName)
           }
         } else {
           log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
@@ -434,6 +435,82 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     if (err.code === 'ENOENT') {
       win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
     }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// ICD-10 coding — runs between SOAP note generation and .docx conversion.
+// Appends an "## ICD-10-CM Codes" table to the .md via the `add-icd-codes`
+// skill, which uses the claude.ai ICD-10 MCP connector. Best-effort: any
+// non-zero exit, missing connector, or empty result still falls through to
+// `spawnDocxConversion` — the note is still useful without codes.
+// ---------------------------------------------------------------------------
+function spawnIcdCoding(soapNoteMdPath, caseTag, patientFolderName = null) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
+  if (patientFolderName) {
+    updatePatientStatus(caseTag, patientFolderName, 'coding_icd')
+  } else if (caseTag) {
+    updateRecordingStatus(caseTag, 'coding_icd')
+  }
+  const relSoap = path.relative(NOTES_DIR, soapNoteMdPath).replace(/\\/g, '/')
+  const prompt = `add ICD codes. Soap note: "${relSoap}".`
+  const soapModel = readSettings().soapModel
+  const modelFlag = soapModel ? ` --model ${soapModel}` : ''
+  log(`${tag}[icd] Spawning: claude -p "${prompt}"${modelFlag}`)
+
+  const safePrompt = prompt.replace(/"/g, '\\"')
+  const icdProc = spawn(
+    `claude -p "${safePrompt}"${modelFlag} --dangerously-skip-permissions`,
+    [],
+    {
+      cwd: NOTES_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true
+    }
+  )
+
+  const outputChunks = []
+  icdProc.stdout.on('data', d => {
+    const msg = d.toString()
+    outputChunks.push(msg)
+    log(`${tag}[icd] ${msg.trim()}`)
+  })
+  icdProc.stderr.on('data', d => {
+    const msg = d.toString()
+    outputChunks.push(msg)
+    log(`${tag}[icd ERR] ${msg.trim()}`)
+  })
+
+  const finish = () => spawnDocxConversion(soapNoteMdPath, caseTag, patientFolderName)
+
+  icdProc.on('close', code => {
+    log(`${tag}[icd] claude exited ${code}`)
+    const output = outputChunks.join('')
+
+    // Hard MCP failures: connector unauth'd or unreachable. Warn the user — but still produce the .docx.
+    if (/Needs authentication|unauthorized|401|MCP.*(connect|connection).*(fail|error|refused)/i.test(output)) {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('service-warning', {
+          title: 'ICD-10 connector unavailable',
+          message: 'Could not look up ICD-10 codes — the note was generated without codes. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled for your account.'
+        })
+      }
+    } else if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'ICD codes could not be added — try again once the limit resets. The note has been saved without codes.'
+        })
+      }
+    }
+
+    finish()
+  })
+
+  icdProc.on('error', err => {
+    log(`${tag}[icd ERR] failed to spawn claude: ${err.message}`)
+    // Don't block the .docx conversion — coding is best-effort.
+    finish()
   })
 }
 
@@ -989,10 +1066,11 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     }
 
     if (code === 0) {
-      // Skill overwrites the soap note in place — refresh the .docx mirror
+      // Skill overwrites the soap note in place — re-run ICD coding (diagnoses
+      // may have changed), then refresh the .docx mirror.
       const updatedNote = findExistingSoapNote(caseDir)
       if (updatedNote) {
-        spawnDocxConversion(updatedNote, null)
+        spawnIcdCoding(updatedNote, null)
       } else {
         log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
       }
@@ -1081,6 +1159,7 @@ function checkForUpdates() {
     // New commits were pulled — re-sync skills immediately from updated code
     if (NOTES_DIR) {
       copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+      ensureMcpConfig(NOTES_DIR)
       log('[update] Skills re-synced from updated code')
     }
 
@@ -1111,6 +1190,29 @@ function copyDirSync(src, dest) {
     } else {
       fs.copyFileSync(srcPath, destPath)
     }
+  }
+}
+
+// Project-scope MCP config — written to <NOTES_DIR>/.mcp.json so the `claude -p`
+// invocations (cwd: NOTES_DIR) always have the ICD-10 connector available,
+// even if the user's personal `~/.claude.json` doesn't already have it.
+// Re-written on every sync alongside the .claude/ skills copy.
+const MCP_CONFIG = {
+  mcpServers: {
+    icd10: {
+      type: 'http',
+      url: 'https://hcls.mcp.claude.com/icd10_codes/mcp'
+    }
+  }
+}
+
+function ensureMcpConfig(notesDir) {
+  if (!notesDir) return
+  try {
+    const target = path.join(notesDir, '.mcp.json')
+    fs.writeFileSync(target, JSON.stringify(MCP_CONFIG, null, 2) + '\n')
+  } catch (err) {
+    log(`[mcp] failed to write .mcp.json: ${err.message}`)
   }
 }
 
@@ -1233,6 +1335,7 @@ app.whenReady().then(async () => {
     fs.mkdirSync(CASES_DIR, { recursive: true })
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    ensureMcpConfig(NOTES_DIR)
     log('.claude config synced to AI Medical Notes')
     hideNotesDirInternals()
     hideExistingCaseMdFiles()
@@ -2163,6 +2266,7 @@ function registerIpcHandlers() {
 
     writeSettings(migratedSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    ensureMcpConfig(NOTES_DIR)
     hideNotesDirInternals()
     hideExistingCaseMdFiles()
     log(`Notes directory set to: ${NOTES_DIR} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)

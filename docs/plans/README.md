@@ -7,6 +7,7 @@ Plan files use the convention `YYYY-MM-DD-<initials>-<slug>.md`.
 | Plan | Owner | Status |
 |---|---|---|
 | [2026-05-06-sr-prechart-tab.md](2026-05-06-sr-prechart-tab.md) | sr | In progress |
+| [2026-05-13-rs-icd-coding.md](2026-05-13-rs-icd-coding.md) | rs | In progress |
 
 ---
 

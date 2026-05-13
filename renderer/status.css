@@ -130,9 +130,11 @@ body {
 }
 
 .status-transcribing .status-dot,
-.status-generating_note .status-dot  { background: #7b5ea7; animation: pulse 1.4s ease-in-out infinite; }
+.status-generating_note .status-dot,
+.status-coding_icd .status-dot       { background: #7b5ea7; animation: pulse 1.4s ease-in-out infinite; }
 .status-transcribing span:last-child,
-.status-generating_note span:last-child { color: #9b7ec7; }
+.status-generating_note span:last-child,
+.status-coding_icd span:last-child    { color: #9b7ec7; }
 
 .status-converting .status-dot       { background: #c07a00; animation: pulse 1.4s ease-in-out infinite; }
 .status-converting span:last-child    { color: #e09030; }

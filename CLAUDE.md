@@ -9,7 +9,7 @@ Context for Claude Code sessions working on this repo. Read this first.
 **AI Medical Scribe** — an Electron system tray app for medical scribes. The scribe joins a doctor's Microsoft Teams consultation, the app silently captures system audio (loopback), transcribes it with ElevenLabs, and uses Claude (via the local `claude` CLI) to generate a SOAP note from a per-doctor template. Windows is the primary platform; macOS is secondary.
 
 End-to-end flow:
-`Click tray → Start Session → Pick Doctor → Start Recording → Stop → name patient → SESSION_ACTIVE (next case) … background pipeline: MP3 → transcript.md → SOAP note .md → .docx`
+`Click tray → Start Session → Pick Doctor → Start Recording → Stop → name patient → SESSION_ACTIVE (next case) … background pipeline: MP3 → transcript.md → SOAP note .md → ICD-10 codes appended → .docx`
 
 All output lands in `~/Documents/AI Medical Notes/Cases/{patient}_{YYYY-MM-DD}/`.
 
@@ -34,6 +34,8 @@ notes-claude/                   Bundled Claude Code workspace — copied at runt
   skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
   skills/update-doctor-profile/   Template updater skill, invoked by `claude -p "update doctor profile. Doctor: ..."`
   skills/edit-note/               Pre-chart skill, invoked by `claude -p "edit note. Case: ..."`
+  skills/add-icd-codes/           ICD-10 coding skill, invoked by `claude -p "add ICD codes. Soap note: ..."`. Uses the claude.ai ICD-10 MCP connector.
+  .mcp.json                       Project-scope MCP config — copied to <NOTES_DIR>/.mcp.json so `claude -p` always sees the ICD-10 connector. Runtime copy is written by main.js's ensureMcpConfig().
   scripts/, draft/, settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
@@ -71,12 +73,13 @@ After a recording completes, `stop-recording` returns to `SESSION_ACTIVE` immedi
 4. Case folder built: `<NOTES_DIR>/Cases/{patient}_{YYYY-MM-DD}/`. Temp MP3 renamed in.
 5. `spawnTranscription` → `python/transcribe.py` → `transcript.md` (diarised).
 6. On transcribe success: `spawnSoapGeneration` → `claude -p "generate a note using template X and transcript Y"` (cwd = `<NOTES_DIR>`). Skill `generate-note` writes `<case>_soap_note.md`.
-7. On SOAP write: `spawnDocxConversion` → `.docx` of both transcript and SOAP note.
-8. State already returned to `SESSION_ACTIVE` after step 4 — pipeline runs detached.
+7. On SOAP write: `spawnIcdCoding` → `claude -p "add ICD codes. Soap note: <rel>"` (cwd = `<NOTES_DIR>`). Skill `add-icd-codes` uses the claude.ai ICD-10 MCP connector to append an `## ICD-10-CM Codes` table to the SOAP `.md`. **Best-effort:** ICD failure (no connector, MCP auth issue, model glitch) never blocks the next step — `spawnDocxConversion` always runs.
+8. On ICD step close (any exit code): `spawnDocxConversion` → `.docx` of both transcript and SOAP note (the SOAP `.docx` now includes the ICD table).
+9. State already returned to `SESSION_ACTIVE` after step 4 — pipeline runs detached.
 
 Per-step logging tagged with `[<case>]` and `[<phase>]` in `<NOTES_DIR>/app.log`.
 
-Service-warning surface: stderr/stdout of transcribe and claude is regex-scanned for ElevenLabs key/quota errors and Claude usage limits, surfaced to the renderer via `service-warning` IPC.
+Service-warning surface: stderr/stdout of transcribe and claude is regex-scanned for ElevenLabs key/quota errors, Claude usage limits, and ICD MCP auth failures (`Needs authentication` / `401`), surfaced to the renderer via `service-warning` IPC.
 
 ---
 
@@ -148,6 +151,7 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 | `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `doctors[]`, `soapModel`, `templateModel`, `templateEffort` |
 | `<NOTES_DIR>/.template_job.json` | App writes only | Live + last-finished background-job state (template create/update + pre-chart share this file) |
 | `<NOTES_DIR>/.claude/` | App copies from `notes-claude/` on every startup | Skills + Claude config consumed by `claude -p` |
+| `<NOTES_DIR>/.mcp.json` | App writes only (via `ensureMcpConfig()`) | Project-scope MCP config registering the ICD-10 connector. Re-written on every skills-sync. |
 | `<NOTES_DIR>/app.log` | App appends | Single log stream from main + Python children |
 
 `settings.json` defaults are in `DEFAULT_SETTINGS` ([main.js:77](main.js#L77)) — keep additions there, not scattered.
@@ -167,7 +171,8 @@ These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before chang
 1. **The state machine** — values in `STATE` (main.js + renderer.js) must stay in sync.
 2. **The stdin-stop protocol** ([main.js:888](main.js#L888)) — `stop-recording` writes `stop\n` to Python's stdin. Do NOT switch to `kill()`/`SIGTERM` — TerminateProcess on Windows skips Python's WAV-flush + MP3 convert.
 3. **Skills sync** ([main.js:629](main.js#L629)) — `notes-claude/` is the source of truth, copied to `<NOTES_DIR>/.claude/` on every launch. Don't store skill state inside `<NOTES_DIR>/.claude/` directly.
-4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [python/extract_attachments.py](python/extract_attachments.py) before the skill is invoked). The skills' Step 0/1 expects these exact formats.
+4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [python/extract_attachments.py](python/extract_attachments.py) before the skill is invoked); `add-icd-codes` parses `Soap note: "<path>".`. The skills' Step 0/1 expects these exact formats.
+5. **`<NOTES_DIR>/.mcp.json`** — project-scope MCP config written by `ensureMcpConfig()` next to every skills-sync. Registers the ICD-10 connector (`https://hcls.mcp.claude.com/icd10_codes/mcp`) under the `icd10` namespace. If the user is logged into `claude` with an account that also has the connector at the user scope, both registrations coexist — the `add-icd-codes` skill tolerates either namespace.
 
 ---
 
@@ -222,7 +227,8 @@ docs/
 
 - Logs: `<NOTES_DIR>/app.log`
 - ElevenLabs key + notes path: `<repo>/.env`
-- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile}/SKILL.md`
+- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile,edit-note,add-icd-codes}/SKILL.md`
+- ICD-10 MCP connector URL: `https://hcls.mcp.claude.com/icd10_codes/mcp` (registered in `notes-claude/.mcp.json` and copied to `<NOTES_DIR>/.mcp.json`)
 - Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-7` (effort=max)
 - Python entry: `record.py`, `transcribe.py`, `md_to_docx.py`
 - Run: `npm start`
