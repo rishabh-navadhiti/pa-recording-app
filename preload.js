@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   openStatusWindow:        ()           => ipcRenderer.invoke('open-status-window'),
   closeStatusWindow:       ()           => ipcRenderer.invoke('close-status-window'),
   openSoapNote:            (filePath)   => ipcRenderer.invoke('open-soap-note', filePath),
+  bookAppointment:         (soapDocxPath) => ipcRenderer.invoke('book-appointment', soapDocxPath),
 
   onStateChange:           (cb) => ipcRenderer.on('state-change',            (_, s)       => cb(s)),
   onShowPatientForm:       (cb) => ipcRenderer.on('show-patient-form',       ()           => cb()),

@@ -213,6 +213,22 @@ body {
   color: #fff;
 }
 
+.book-icon-btn {
+  padding: 2px;
+  background: transparent;
+  border: none;
+  color: #4a9edd;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+}
+
+.book-icon-btn:hover    { color: #76b8f0; background: rgba(74, 158, 221, 0.12); }
+.book-icon-btn:disabled { opacity: 0.4; cursor: default; }
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.35; }

@@ -57,6 +57,18 @@ function renderRecordings(recordings) {
           btn.textContent = 'Open'
           btn.addEventListener('click', () => api.openSoapNote(patient.soapDocxPath))
           statusRow.appendChild(btn)
+
+          const bookBtn = document.createElement('button')
+          bookBtn.className = 'book-icon-btn'
+          bookBtn.title = 'Book Appointment'
+          bookBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3.5" width="13" height="11" rx="1.5"/><path d="M1.5 7.5h13"/><path d="M5 1.5v4M11 1.5v4"/></svg>'
+          bookBtn.addEventListener('click', async () => {
+            bookBtn.disabled = true
+            const result = await api.bookAppointment(patient.soapDocxPath)
+            if (result?.ok) bookBtn.style.color = '#1D9E75'
+            else bookBtn.disabled = false
+          })
+          statusRow.appendChild(bookBtn)
         }
 
         patientRow.appendChild(patientName)
@@ -88,6 +100,18 @@ function renderRecordings(recordings) {
         btn.textContent = 'Open'
         btn.addEventListener('click', () => api.openSoapNote(rec.soapDocxPath))
         statusRow.appendChild(btn)
+
+        const bookBtn = document.createElement('button')
+        bookBtn.className = 'book-icon-btn'
+        bookBtn.title = 'Book Appointment'
+        bookBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3.5" width="13" height="11" rx="1.5"/><path d="M1.5 7.5h13"/><path d="M5 1.5v4M11 1.5v4"/></svg>'
+        bookBtn.addEventListener('click', async () => {
+          bookBtn.disabled = true
+          const result = await api.bookAppointment(rec.soapDocxPath)
+          if (result?.ok) bookBtn.style.color = '#1D9E75'
+          else bookBtn.disabled = false
+        })
+        statusRow.appendChild(bookBtn)
       }
 
       item.appendChild(nameRow)

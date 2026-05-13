@@ -60,6 +60,7 @@ let activeSessionDir = null
 let statusWin = null
 let sessionRecordings = []
 let isQuitting = false
+let appointmentCounter = 0
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -306,6 +307,24 @@ function validateElevenLabsKey(apiKey) {
       res => resolve(res.statusCode === 200 ? 'valid' : res.statusCode === 401 ? 'invalid' : 'unknown')
     )
     req.on('error', () => resolve('unknown'))
+    req.end()
+  })
+}
+
+function postBookingWebhook(payload) {
+  return new Promise(resolve => {
+    const body = JSON.stringify(payload)
+    const req = https.request(
+      {
+        hostname: 'pa.n8n.ndproject.dev',
+        path: '/webhook/book-appointment',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      },
+      res => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode })
+    )
+    req.on('error', err => resolve({ ok: false, error: err.message }))
+    req.write(body)
     req.end()
   })
 }
@@ -2220,6 +2239,42 @@ function registerIpcHandlers() {
   ipcMain.handle('open-soap-note', async (_, filePath) => {
     const { shell } = require('electron')
     return shell.openPath(filePath)
+  })
+
+  // ---- book-appointment ----
+  ipcMain.handle('book-appointment', async (_, soapDocxPath) => {
+    const PATIENT_NUMBERS = ['9019680914', '7899654883']
+    const patientNumber = PATIENT_NUMBERS[appointmentCounter % 2]
+    appointmentCounter++
+
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.id === activeDoctorId)
+    const doctorName = doctor?.name || 'Unknown Doctor'
+
+    let patientName = 'Unknown Patient'
+    for (const rec of sessionRecordings) {
+      if (rec.soapDocxPath === soapDocxPath) { patientName = rec.displayName; break }
+      const p = rec.patients?.find(p => p.soapDocxPath === soapDocxPath)
+      if (p) { patientName = p.name; break }
+    }
+
+    const soapMdPath = soapDocxPath.replace(/\.docx$/, '.md')
+    let noteContent = ''
+    try { noteContent = fs.readFileSync(soapMdPath, 'utf8') } catch (e) {
+      log(`[book-appointment] Could not read soap note: ${e.message}`)
+    }
+
+    const payload = {
+      details: {
+        doctor_name: doctorName,
+        doctor_email: 'rishabh@navadhiti.com',
+        patient_name: patientName,
+        patient_number: patientNumber
+      },
+      generated_note: noteContent
+    }
+    log(`[book-appointment] Sending for patient "${patientName}" (doctor: "${doctorName}")`)
+    return postBookingWebhook(payload)
   })
 }
 
