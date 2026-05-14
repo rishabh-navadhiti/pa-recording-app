@@ -21,9 +21,10 @@ All output lands in `~/Documents/AI Medical Notes/Cases/{patient}_{YYYY-MM-DD}/`
 main.js                       Electron main process — tray, popup window, state machine, IPC, pipeline orchestration, child-process management
 preload.js                    contextBridge → window.api — the ONLY surface renderer can use
 renderer/
-  index.html                  Popup UI (280×420, two tabs: Record + Templates)
+  index.html                  Main window UI (280×420, three tabs: Record + Pre-chart + Templates)
   renderer.js                 State-driven UI; renders by current STATE; owns timer + forms
   styles.css                  Dark theme, single file
+  status.html / status.js     Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
   transcribe.py               ElevenLabs scribe_v1 → diarised transcript.md
@@ -125,7 +126,11 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `getDoctors() / addDoctor / updateDoctor / updateDoctorTemplate / removeDoctor / selectDoctor` | Doctor CRUD + picker resolution |
 | `browseAudioFile() / processAudioFile(path, name)` | Audio-file upload flow |
 | `browseNotesFiles() / startTemplateCreation / getTemplateJobStatus / cancelTemplateCreation / dismissTemplateJob` | Template-creation flow |
-| `startTemplateUpdate(doctorName, corrections) / getDoctorsWithTemplates()` | Template-update flow |
+| `startTemplateUpdate(doctorName, corrections, correctionsFile, sampleFiles) / browseCorrectionsFile() / getDoctorsWithTemplates()` | Template-update flow (corrections can be typed AND/OR loaded from a file; optional extra sample notes for additional context) |
+| `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(doctorId, caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
+| `getSessionRecordings() / openStatusWindow() / closeStatusWindow()` | Floating status window for tracking concurrent background pipelines |
+| `openSoapNote(filePath)` | Opens the SOAP `.docx` in the OS default handler |
+| `getElevenLabsKey()` | Returns the configured ElevenLabs key for the Settings view |
 | `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
 | `getSettings() / saveSettings(s)` | `settings.json` in NOTES_DIR |
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
@@ -134,7 +139,7 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `openSoapNote(filePath)` | Opens SOAP note `.docx` via OS default handler |
 
 Events (`on*`):
-`onStateChange`, `onShowPatientForm`, `onSetupWarning`, `onAutoStartRecording`, `onPickDoctor`, `onServiceWarning`, `onTemplateJobStatus`.
+`onStateChange`, `onShowPatientForm`, `onSetupWarning`, `onAutoStartRecording`, `onPickDoctor`, `onServiceWarning`, `onTemplateJobStatus`, `onRecordingStatusUpdate` (driving the floating status window).
 
 When adding an IPC method: add to `preload.js`, register handler in `registerIpcHandlers()` in `main.js`, document the call in this table.
 
@@ -151,6 +156,14 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 | `<NOTES_DIR>/app.log` | App appends | Single log stream from main + Python children |
 
 `settings.json` defaults are in `DEFAULT_SETTINGS` ([main.js:77](main.js#L77)) — keep additions there, not scattered.
+
+---
+
+## Windows-only conveniences
+
+- **File hiding** — on Windows the app calls `attrib +h` on (a) every `.md` file inside case folders, and (b) every entry inside `<NOTES_DIR>` except `Cases/` (so users see only the patient folders and `.docx` finals, not transcripts, raw markdown, settings, or `.claude/`). `hideFileFromUser()` / `hideNotesDirInternals()` / `hideExistingCaseMdFiles()` in main.js. Helpers no-op on macOS.
+- **Close-to-minimize** — clicking the window close button minimizes instead of quitting; only the tray menu's Quit or `before-quit` actually exits. `isQuitting` flag gates this.
+- **Smart Python resolution** — on Windows we try `py`, then `python`, then `python3` to handle Python launcher / store-app / PATH variations. `PYTHON` constant resolves once at startup.
 
 ---
 
@@ -186,13 +199,14 @@ These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before chang
 
 ## Documentation conventions
 
-Five living docs. Keep them tight; everything else goes in `docs/archive/`.
+Six living docs. Keep them tight; everything else goes in `docs/archive/`.
 
 ```
 README.md                          Public-facing quickstart (GitHub front page)
-CLAUDE.md                          This file
+CLAUDE.md                          This file — context for Claude Code sessions
 docs/
-  ARCHITECTURE.md                  Pipeline, state machine, IPC, file flow
+  OVERVIEW.md                      What this app is, who uses it, how it hangs together (self-contained for new readers)
+  ARCHITECTURE.md                  Pipeline, state machine, IPC, file flow (deeper view)
   DECISIONS.md                     Append-only, dated, initialed
   plans/
     README.md                      Index of in-flight feature plans
@@ -200,6 +214,8 @@ docs/
   archive/                         Anything historical or shipped
     plans/                         Plans for shipped features end up here
 ```
+
+If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md is the entry point** — it's the standalone explainer of what the app is and how it works. ARCHITECTURE.md is the deeper technical view (assumes you've already oriented).
 
 **When you change code, update docs in the same PR.** Specifically:
 - Touched the state machine, IPC channels, pipeline, or settings → update [CLAUDE.md](CLAUDE.md) **and** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

@@ -1,6 +1,10 @@
 # AI Medical Scribe
 
-A system tray app for medical scribes to capture and transcribe Teams call audio, generate SOAP notes, and manage doctor templates.
+A desktop app for medical scribes that captures system audio from Teams consultations, transcribes it with ElevenLabs, generates per-doctor SOAP notes via the local `claude` CLI, appends ICD-10-CM codes, and exports `.docx` — all running in the background while the scribe moves on to the next case.
+
+Three tabs in the popup: **Record** (the main flow), **Pre-chart** (edit an existing note with new attachments/instructions), **Templates** (manage doctors and per-doctor templates, including AI-built ones).
+
+For a deeper explanation see [docs/OVERVIEW.md](docs/OVERVIEW.md). For architecture see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -21,7 +25,7 @@ Install these before anything else:
 
 ```cmd
 git clone <repo-url>
-cd pa-recording-app
+cd recording-app
 ```
 
 ### 2. Install Node dependencies
@@ -56,7 +60,7 @@ npm start
 
 > **PowerShell users:** If you see a script execution error, either run `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` first, or use Command Prompt (cmd) instead — execution policies don't apply there.
 
-On first launch the app will ask you to pick a folder for your notes. After that a tray icon appears in the system tray (bottom-right). Click it to open the popup.
+On first launch the app asks you to pick a folder for your notes (creates an `AI Medical Notes` subfolder inside). After that the main window opens; closing it minimizes to taskbar. A tray icon also lives in the system tray (bottom-right) — left-click toggles the window, right-click → Quit actually exits the app.
 
 ---
 
