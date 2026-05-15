@@ -7,7 +7,9 @@ Plan files use the convention `YYYY-MM-DD-<initials>-<slug>.md`.
 | Plan | Owner | Status |
 |---|---|---|
 | [2026-05-06-sr-prechart-tab.md](2026-05-06-sr-prechart-tab.md) | sr | In progress |
+| [2026-05-13-rs-icd-coding.md](2026-05-13-rs-icd-coding.md) | rs | In progress (impl on `icd10-coding` branch) |
 | [2026-05-14-sr-token-usage-logging.md](2026-05-14-sr-token-usage-logging.md) | sr | Planned |
+| [2026-05-15-rs-sqlite-state-store.md](2026-05-15-rs-sqlite-state-store.md) | rs | Planned |
 
 ---
 
