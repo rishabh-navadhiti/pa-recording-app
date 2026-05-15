@@ -184,12 +184,49 @@ These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before chang
 
 ---
 
+## Branching + release flow
+
+Three long-lived branches, promoted in one direction only:
+
+```
+feature/* ──► develop ──► staging ──► main
+                            ▲           │
+                            └── auto-update on running installs
+```
+
+| Branch | What runs against it | Purpose |
+|---|---|---|
+| `develop` | `npm start` during dev | Latest accepted features. Devs test by running source. |
+| `staging` | Installed via `install-staging.ps1` | Mirrors what users will see. Devs run this as a real installed app so the **auto-update + `notes-claude/` sync pipeline** is exercised before users hit it. |
+| `main` | Installed via `install.ps1` (user-facing) | What every end-user install auto-pulls on launch. |
+
+**Rules — follow these exactly when the user asks to "merge to staging" or "push to main":**
+
+1. **Never merge `develop` straight to `main`.** Promotion is `develop → staging → main`, never skipped.
+2. **`develop → staging` is the test gate.** After this merge, sit on staging long enough that at least one auto-update cycle has fired on a dev's staging install. Confirm it didn't break before promoting onward.
+3. **`staging → main` should be a fast-forward** (no extra work between staging and main — staging *is* the candidate for main). If it can't fast-forward, that means a hotfix landed directly on main; back-merge `main → staging` first, then `staging → main` again.
+4. **Hotfix rule:** truly urgent fixes land on a `hotfix/*` branch, merged to **both** `main` and `staging` (and `develop`) in the same session. Never let `staging` fall behind `main`.
+5. **Branch contents are identical across all three.** No staging-only files committed. Staging-mode behavior is gated by a local-only `.staging-marker` file (gitignored) written by `install-staging.ps1`. See "Staging detection" below.
+6. **Squashing:** prefer merge commits (not squash) on `develop → staging` and `staging → main` so the relationship between branches stays visible in `git log --graph`.
+
+### Staging detection
+
+A staging build is **not** identified by branch name — it's identified by the local file `.staging-marker` in the install directory. The marker is written by `install-staging.ps1` and is `.gitignored`, so it can never leak into a user's production install regardless of which branch the code is on. Read by [`isStagingBuild()`](main.js) on startup. When true:
+
+- The header shows a yellow `STAGING` badge ([renderer/index.html](renderer/index.html), `#staging-badge`).
+- Update notifications and the tray tooltip include `(staging)` in the title.
+- `[Build: STAGING ...]` is logged at startup.
+
+If you add staging-mode behavior, gate it on `isStagingBuild()` in main.js or on `api.getBuildInfo().isStaging` in the renderer — never on branch name and never on a committed file.
+
+---
+
 ## Development conventions
 
 - **Edit, don't rewrite.** Prefer `Edit` over `Write` for existing files. Keep diffs small.
 - **No Co-Authored-By in commits.** Single-author per the user's preference.
 - **Commit style:** `<type>: <imperative summary>` (e.g. `feat: add pause button`, `fix: strip Dr. prefix from lastname`). Match existing `git log`.
-- **Branches:** ongoing work on `develop-rs` (or per-dev develop branch). PRs to `main`.
+- **Branches:** see the **Branching + release flow** section below — never merge straight to `main`, always go through `staging`.
 - **Logging:** use the `log()` helper in main.js. All Python output already piped through it tagged.
 - **Comments:** only when the *why* isn't obvious. The code has a few load-bearing ones — don't strip them.
 - **Test the UI before claiming done** — run `npm start` and exercise the change. Type-check passes don't prove the popup still works.

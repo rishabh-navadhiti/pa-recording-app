@@ -364,6 +364,8 @@ Helpers: `hideFileFromUser(path)`, `hideNotesDirInternals()`, `hideExistingCaseM
 
 Failures (no git, conflicts, network) are logged and ignored. The app never blocks on this.
 
+The pull is branch-agnostic — whatever branch the clone is on. User installs (`install.ps1`) clone `main`; staging installs (`install-staging.ps1`) clone `staging` and write a local `.staging-marker` that flips the UI badge and prefixes tooltip / notification titles with `(staging)`. See CLAUDE.md → *Branching + release flow* for the promotion rules.
+
 ---
 
 ## Cross-cutting: error surfacing
