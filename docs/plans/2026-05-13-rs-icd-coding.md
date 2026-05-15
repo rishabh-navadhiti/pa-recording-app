@@ -2,6 +2,7 @@
 
 **Owner:** rs
 **Date:** 2026-05-13
+**Status:** In progress — skill + spawn implemented on this branch (`icd10-coding`); not yet merged into `develop`. DB integration (see below) is pending the SQLite state-store plan landing.
 
 ## Goal
 
@@ -113,3 +114,76 @@ Per user preference: warn only on MCP auth/connector errors. Silent on "no diagn
 - Per-doctor template-driven placement (some doctors want codes inline at A&P; others at the end of letter). Out of scope for v1.
 - Should ICD coding be a settings toggle? Default-on now; revisit if some doctors don't want codes at all.
 - CPT (procedure) codes are a separate code set; the connector supports them too. Not in v1.
+
+---
+
+## DB integration (added 2026-05-15)
+
+Once the SQLite state store (planned in `2026-05-15-rs-sqlite-state-store.md` on `develop`) is in place, the ICD step participates the same way every other Claude job does: one `processing_events` row per spawn, bracketed by `startEvent` + `finishEvent` calls inside `spawnIcdCoding`. Nothing about the skill or its prompt contract changes — this is purely a wiring change on the main-process side.
+
+### What `spawnIcdCoding` writes to the DB
+
+`spawnIcdCoding` goes through the shared `spawnClaude` wrapper just like the other four Claude jobs (soap / template-create / template-update / prechart). The wrapper already parses `--output-format stream-json` and surfaces `usage.*`, `total_cost_usd`, `num_turns`, `duration_ms` to `onClose` — once the state-store plan's "forward full `result` event as 4th `onClose` arg" change lands, the ICD spawn picks it up for free.
+
+Per-spawn DB pattern (mirrors the other stages in the state-store plan):
+
+```js
+let eventId = null
+try {
+  eventId = events.startEvent({
+    case_id: caseId,                       // resolved from soapNoteMdPath → cases.soap_note_path
+    job_kind: 'icd',                       // <-- new value in the job_kind enum
+    model_used: soapModel,                 // same model as the soap step
+    related_doctor_id: case.doctor_id,     // for filtering "ICD spend per doctor"
+    started_at: nowIso()
+  })
+} catch (e) {
+  log(`[db] startEvent failed for icd: ${e.message}`)
+}
+```
+
+On close (best-effort — DB write failure must not break the pipeline):
+
+```js
+try {
+  if (eventId) events.finishEvent(eventId, {
+    status:               code === 0 ? 'success' : (isMcpAuthError ? 'rate_limited' : 'failed'),
+    input_tokens:         resultEvent?.usage?.input_tokens,
+    output_tokens:        resultEvent?.usage?.output_tokens,
+    cache_read_tokens:    resultEvent?.usage?.cache_read_input_tokens,
+    cache_created_tokens: resultEvent?.usage?.cache_creation_input_tokens,
+    cost_usd:             resultEvent?.total_cost_usd,
+    num_turns:            resultEvent?.num_turns,
+    duration_ms:          resultEvent?.duration_ms,
+    error_message:        code === 0 ? null : errText.slice(0, 1024),
+    finished_at:          nowIso()
+  })
+} catch (e) {
+  log(`[db] finishEvent failed for icd: ${e.message}`)
+}
+```
+
+Note that `spawnIcdCoding` always proceeds to `spawnDocxConversion` regardless of exit code — that produces a separate `docx` row, unchanged from the state-store plan. The case row's status timeline becomes:
+
+```
+recording → transcribing → generating_note → coding_icd → converting → completed
+```
+
+`coding_icd` is set on the parent `cases.status` (single-patient) or per-patient row (multi-patient) — same surfaces that today update via `updateRecordingStatus` / `updatePatientStatus`. The state-store plan's status enum already includes the in-flight stages; `coding_icd` joins them.
+
+### Schema impact
+
+Zero schema changes. The state-store plan already lists `'icd'` as a valid `job_kind` value, with `spawnIcdCoding` named as a call site in the "every spawn site emits events" table.
+
+### Sequencing
+
+1. **First:** state-store plan lands on `develop` (creates `db/`, migrations, `getDb()`, `spawnClaude` forwards `resultEvent`).
+2. **Then:** this branch merges to `develop`. The merge adds `spawnIcdCoding` *with* DB writes already wired — no follow-up PR to retrofit token logging.
+
+If this branch needs to merge first for any reason, the spawn ships without DB writes (it still works — best-effort logging to `app.log` continues via `spawnClaude`'s usage line). The state-store PR then adds the `startEvent` / `finishEvent` bracket as part of its "every spawn site emits events" checklist — `spawnIcdCoding` is the sixth site in that list.
+
+### Verification (additions to the existing test plan)
+
+- After a recording with diagnoses present, `SELECT job_kind, status, cost_usd FROM processing_events WHERE case_id = ?` returns rows in order: `transcribe`, `soap`, `icd`, `docx`, `docx` (transcript + soap docx — two rows expected per the state-store plan).
+- After Pre-chart on a case whose diagnoses changed, a new `icd` row appears, followed by a new `docx` row. The existing `soap` row from the original run is untouched (Pre-chart is an `edit-note` skill run, recorded as `job_kind='prechart'`).
+- ICD connector auth failure → `processing_events.status = 'failed'`, `error_message` contains the auth/MCP detail. Pipeline still completes (case row reaches `completed`).
