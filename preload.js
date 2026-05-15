@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
   getState:          ()     => ipcRenderer.invoke('get-state'),
+  getBuildInfo:      ()     => ipcRenderer.invoke('get-build-info'),
   startSession:      ()     => ipcRenderer.invoke('start-session'),
   stopSession:       ()     => ipcRenderer.invoke('stop-session'),
   startRecording:    ()     => ipcRenderer.invoke('start-recording'),

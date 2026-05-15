@@ -15,6 +15,22 @@ const { spawn, execSync } = require('child_process')
 
 let PYTHON = process.platform === 'win32' ? 'python' : 'python3'
 
+// Staging-build detection. Presence of `.staging-marker` (gitignored, written by
+// install-staging.ps1) flips the app into staging mode — UI badge, tooltip
+// suffix on update notifications, etc. Marker is local-only by design so the
+// same code on every branch behaves correctly without leaking the flag to users.
+const STAGING_MARKER = path.join(__dirname, '.staging-marker')
+function isStagingBuild () {
+  try { return fs.existsSync(STAGING_MARKER) } catch { return false }
+}
+
+function getCurrentBranch () {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim()
+  } catch { return 'unknown' }
+}
+
 function resolvePythonCommand () {
   const candidates = process.platform === 'win32'
     ? ['py', 'python', 'python3']
@@ -1064,12 +1080,13 @@ function checkForUpdates() {
 
     // Notify the user via tray tooltip and OS notification
     log('[update] New version pulled — notifying user')
-    if (tray) tray.setToolTip('AI Medical Scribe — updated, restart to apply')
+    const stagingTag = isStagingBuild() ? ' (staging)' : ''
+    if (tray) tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
 
     const { Notification } = require('electron')
     if (Notification.isSupported()) {
       new Notification({
-        title: 'AI Medical Scribe updated',
+        title: `AI Medical Scribe${stagingTag} updated`,
         body: 'A new version was downloaded. Restart the app to apply it.',
         silent: true
       }).show()
@@ -1251,6 +1268,8 @@ app.whenReady().then(async () => {
     log('WARNING: Python 3 not found — tried py, python, python3')
   }
 
+  log(`Build: ${isStagingBuild() ? 'STAGING' : 'production'} (branch=${getCurrentBranch()})`)
+
   try {
     const ffVer = execSync('ffmpeg -version', { stdio: 'pipe' }).toString().split('\n')[0].trim()
     log(`ffmpeg: ${ffVer}`)
@@ -1367,6 +1386,12 @@ function waitForExit(proc) {
 function registerIpcHandlers() {
   // ---- get-state ----
   ipcMain.handle('get-state', () => currentState)
+
+  // ---- get-build-info ----
+  ipcMain.handle('get-build-info', () => ({
+    isStaging: isStagingBuild(),
+    branch:    getCurrentBranch()
+  }))
 
   // ---- start-session ----
   ipcMain.handle('start-session', async () => {

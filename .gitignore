@@ -3,3 +3,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local-only marker written by install-staging.ps1.
+# Its presence flips the app into "staging build" mode (badge in UI,
+# tooltip label, etc.). Must never be committed — staging vs prod is a
+# property of the local install, not of branch contents.
+.staging-marker

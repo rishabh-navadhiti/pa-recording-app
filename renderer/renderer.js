@@ -1530,6 +1530,17 @@ if (btnTemplateJobCancel) {
 async function init() {
   const state = await api.getState()
   render(state)
+
+  // Staging badge — visible only when the local install has a .staging-marker.
+  // Marker is gitignored, so this is a no-op on production installs.
+  try {
+    const build = await api.getBuildInfo()
+    if (build && build.isStaging) {
+      const badge = document.getElementById('staging-badge')
+      if (badge) badge.classList.remove('hidden')
+    }
+  } catch { /* old main process without get-build-info — ignore */ }
+
   const cfg = await api.getConfigStatus()
 
   if (cfg.notesDirMissing) {
