@@ -18,6 +18,9 @@ Supported markdown elements:
     1. item                         — Numbered list (List Number)
     **bold**                        — Inline bold (within any paragraph type)
     ALL CAPS HEADING:               — Auto-bolded (e.g. WC section headings)
+    | col | col |                   — GFM pipe table (styled: dark-blue header + grey-bordered body)
+    <!-- layout --> + GFM table     — Borderless 2-col layout table for label/value blocks
+                                      (no header styling, no borders, fixed label/value widths)
     blank line                      — Paragraph spacer (small vertical gap)
     anything else                   — Normal paragraph
 """
@@ -28,7 +31,7 @@ from pathlib import Path
 
 try:
     from docx import Document
-    from docx.shared import Pt, RGBColor
+    from docx.shared import Pt, RGBColor, Inches
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 except ImportError:
@@ -38,7 +41,7 @@ except ImportError:
         stdout=subprocess.DEVNULL
     )
     from docx import Document
-    from docx.shared import Pt, RGBColor
+    from docx.shared import Pt, RGBColor, Inches
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
@@ -76,6 +79,126 @@ def parse_inline_bold(paragraph, text):
             run.bold = True
         elif part:
             paragraph.add_run(part)
+
+
+def is_table_row(line):
+    """Pipe-delimited row: starts and ends with '|' and has at least one inner '|'."""
+    stripped = line.strip()
+    return stripped.startswith('|') and stripped.endswith('|') and stripped.count('|') >= 2
+
+
+def is_table_separator(line):
+    """GFM separator row like `|---|:---:|---:|`. Cells are dashes with optional `:` alignment markers."""
+    stripped = line.strip()
+    if not is_table_row(stripped):
+        return False
+    cells = [c.strip() for c in stripped.strip('|').split('|')]
+    if not cells:
+        return False
+    return all(re.match(r'^:?-{2,}:?$', c) for c in cells)
+
+
+def split_table_row(line):
+    return [c.strip() for c in line.strip().strip('|').split('|')]
+
+
+def set_cell_shading(cell, hex_fill):
+    """Apply a solid background colour to a table cell."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), hex_fill)
+    tcPr.append(shd)
+
+
+def set_cell_borders(cell, color='BFBFBF', size='4'):
+    """Add thin borders on all four sides of a cell."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = OxmlElement('w:tcBorders')
+    for edge in ('top', 'left', 'bottom', 'right'):
+        b = OxmlElement(f'w:{edge}')
+        b.set(qn('w:val'), 'single')
+        b.set(qn('w:sz'), size)
+        b.set(qn('w:space'), '0')
+        b.set(qn('w:color'), color)
+        tcBorders.append(b)
+    tcPr.append(tcBorders)
+
+
+def add_md_table(doc, header_row, body_rows):
+    """
+    Render a GFM markdown table as a styled Word table:
+      - dark-blue header bar with bold white text
+      - light-blue body rows with thin grey borders
+      - inline **bold** is honoured inside any cell
+    """
+    cols = len(header_row)
+    table = doc.add_table(rows=1 + len(body_rows), cols=cols)
+    table.autofit = True
+
+    # Header
+    hdr_cells = table.rows[0].cells
+    for c_idx, txt in enumerate(header_row):
+        cell = hdr_cells[c_idx]
+        cell.text = ''
+        p = cell.paragraphs[0]
+        parse_inline_bold(p, txt)
+        for run in p.runs:
+            run.bold = True
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        set_cell_shading(cell, '1F497D')
+        set_cell_borders(cell, color='1F497D', size='6')
+
+    # Body
+    for r_idx, row in enumerate(body_rows):
+        cells = table.rows[r_idx + 1].cells
+        for c_idx in range(cols):
+            cell = cells[c_idx]
+            cell.text = ''
+            value = row[c_idx] if c_idx < len(row) else ''
+            parse_inline_bold(cell.paragraphs[0], value)
+            set_cell_shading(cell, 'DEEAF6')
+            set_cell_borders(cell, color='BFBFBF', size='4')
+
+    return table
+
+
+def add_layout_table(doc, header_row, body_rows,
+                     label_col_width=Inches(1.4),
+                     value_col_width=Inches(5.0)):
+    """
+    Borderless 2-column layout table for header blocks (label/value alignment).
+    No header styling, no borders, no cell shading — every row is plain text
+    in two aligned columns. Inline **bold** is honoured inside cells.
+
+    Used for things like the WC PR-1/PR-2 demographic header where labels
+    (TO:, Patient:, DOB:, …) need to sit in a narrow bold column with values
+    aligned to their right.
+    """
+    cols = len(header_row)
+    rows = 1 + len(body_rows)
+    table = doc.add_table(rows=rows, cols=cols)
+    table.autofit = False
+
+    all_rows = [header_row] + body_rows
+    for r_idx, row_data in enumerate(all_rows):
+        cells = table.rows[r_idx].cells
+        for c_idx in range(cols):
+            cell = cells[c_idx]
+            cell.text = ''
+            value = row_data[c_idx] if c_idx < len(row_data) else ''
+            parse_inline_bold(cell.paragraphs[0], value)
+            # Deliberately no shading, no borders — this is a plain layout grid.
+
+    # Fixed widths for 2-col label/value layout. python-docx requires setting
+    # cell widths per-row (autofit must be False, which we already set).
+    if cols == 2:
+        for row in table.rows:
+            row.cells[0].width = label_col_width
+            row.cells[1].width = value_col_width
+
+    return table
 
 
 def is_allcaps_heading(text):
@@ -127,7 +250,45 @@ def convert_md_to_docx(md_path: Path, docx_path: Path):
 
     lines = md_path.read_text(encoding='utf-8').splitlines()
 
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # --- Borderless layout table: <!-- layout --> + GFM table ---
+        # Used for header blocks (e.g. WC TO/CC/Patient demographic block)
+        # where we want label/value alignment without table styling.
+        if line.strip() == '<!-- layout -->':
+            if (i + 1 < len(lines)
+                    and is_table_row(lines[i + 1])
+                    and i + 2 < len(lines)
+                    and is_table_separator(lines[i + 2])):
+                header = split_table_row(lines[i + 1])
+                body = []
+                j = i + 3
+                while j < len(lines) and is_table_row(lines[j]) and not is_table_separator(lines[j]):
+                    body.append(split_table_row(lines[j]))
+                    j += 1
+                add_layout_table(doc, header, body)
+                i = j
+                continue
+            else:
+                # Marker without a following table — skip the marker silently.
+                i += 1
+                continue
+
+        # --- GFM pipe table (header + separator + body rows) ---
+        if (is_table_row(line)
+                and i + 1 < len(lines)
+                and is_table_separator(lines[i + 1])):
+            header = split_table_row(line)
+            body = []
+            j = i + 2
+            while j < len(lines) and is_table_row(lines[j]) and not is_table_separator(lines[j]):
+                body.append(split_table_row(lines[j]))
+                j += 1
+            add_md_table(doc, header, body)
+            i = j
+            continue
 
         # --- Heading 1: # Text ---
         if line.startswith('# '):
@@ -190,6 +351,8 @@ def convert_md_to_docx(md_path: Path, docx_path: Path):
             else:
                 p = doc.add_paragraph()
                 parse_inline_bold(p, stripped)
+
+        i += 1
 
     doc.save(str(docx_path))
 

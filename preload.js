@@ -27,6 +27,20 @@ contextBridge.exposeInMainWorld('api', {
   browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
   processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
 
+  browseNotesFiles:         ()                                                           => ipcRenderer.invoke('browse-notes-files'),
+  browseCorrectionsFile:    ()                                                           => ipcRenderer.invoke('browse-corrections-file'),
+  startTemplateCreation:    (doctorName, filePaths)                                      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
+  startTemplateUpdate:      (doctorName, corrections, correctionsFile, sampleFiles)      => ipcRenderer.invoke('start-template-update', doctorName, corrections, correctionsFile, sampleFiles),
+  getDoctorsWithTemplates:  ()                           => ipcRenderer.invoke('get-doctors-with-templates'),
+  getTemplateJobStatus:     ()                           => ipcRenderer.invoke('get-template-job-status'),
+  cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),
+  dismissTemplateJob:       ()                           => ipcRenderer.invoke('dismiss-template-job'),
+
+  browsePrechartFiles:      ()                                       => ipcRenderer.invoke('browse-prechart-files'),
+  listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
+  browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
+  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
+
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
@@ -35,9 +49,10 @@ contextBridge.exposeInMainWorld('api', {
 
   hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
 
-  getSessionRecordings:    ()   => ipcRenderer.invoke('get-session-recordings'),
-  openStatusWindow:        ()   => ipcRenderer.invoke('open-status-window'),
-  closeStatusWindow:       ()   => ipcRenderer.invoke('close-status-window'),
+  getSessionRecordings:    ()           => ipcRenderer.invoke('get-session-recordings'),
+  openStatusWindow:        ()           => ipcRenderer.invoke('open-status-window'),
+  closeStatusWindow:       ()           => ipcRenderer.invoke('close-status-window'),
+  openSoapNote:            (filePath)   => ipcRenderer.invoke('open-soap-note', filePath),
 
   onStateChange:           (cb) => ipcRenderer.on('state-change',            (_, s)       => cb(s)),
   onShowPatientForm:       (cb) => ipcRenderer.on('show-patient-form',       ()           => cb()),
@@ -45,5 +60,6 @@ contextBridge.exposeInMainWorld('api', {
   onAutoStartRecording:    (cb) => ipcRenderer.on('auto-start-recording',    ()           => cb()),
   onPickDoctor:            (cb) => ipcRenderer.on('pick-doctor',             (_, doctors) => cb(doctors)),
   onServiceWarning:        (cb) => ipcRenderer.on('service-warning',         (_, data)    => cb(data)),
-  onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data))
+  onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data)),
+  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job))
 })

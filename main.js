@@ -13,7 +13,20 @@ const { spawn, execSync } = require('child_process')
 // Constants
 // ---------------------------------------------------------------------------
 
-const PYTHON = process.platform === 'win32' ? 'python' : 'python3'
+let PYTHON = process.platform === 'win32' ? 'python' : 'python3'
+
+function resolvePythonCommand () {
+  const candidates = process.platform === 'win32'
+    ? ['py', 'python', 'python3']
+    : ['python3', 'python']
+  for (const cmd of candidates) {
+    try {
+      const out = execSync(`${cmd} --version`, { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+      if (/^Python\s+3\./.test(out)) return { cmd, version: out }
+    } catch { /* not available — try next */ }
+  }
+  return null
+}
 
 const STATE = {
   IDLE: 'IDLE',
@@ -46,6 +59,7 @@ let doctorPickerResolver = null
 let activeSessionDir = null
 let statusWin = null
 let sessionRecordings = []
+let isQuitting = false
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -89,7 +103,13 @@ const DEFAULT_SETTINGS = {
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  doctors: []
+  doctors: [],
+  // Model config — surfaced in settings.json so it can be edited without a code change.
+  // UI controls for these will come later; for now they are silent defaults that can be
+  // overridden by editing settings.json directly.
+  soapModel:      'claude-sonnet-4-6',
+  templateModel:  'claude-opus-4-7',
+  templateEffort: 'max'
 }
 
 function readSettings() {
@@ -98,9 +118,31 @@ function readSettings() {
   } catch { return { ...DEFAULT_SETTINGS } }
 }
 
+// Atomic write: write to .tmp then rename, with retry for transient Windows AV locks (EPERM/EBUSY).
+function safeWriteFile(filePath, data) {
+  const tmp = filePath + '.tmp'
+  let lastErr
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      fs.writeFileSync(tmp, data, 'utf8')
+      fs.renameSync(tmp, filePath)
+      return
+    } catch (e) {
+      lastErr = e
+      if (attempt < 3 && (e.code === 'EPERM' || e.code === 'EBUSY')) {
+        // Transient AV/indexer lock — wait and retry
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60)
+      } else {
+        break
+      }
+    }
+  }
+  throw lastErr
+}
+
 function writeSettings(settings) {
   fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true })
-  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8')
+  safeWriteFile(getSettingsPath(), JSON.stringify(settings, null, 2))
 }
 
 // ---------------------------------------------------------------------------
@@ -150,36 +192,13 @@ function setState(newState) {
 // Tray popup positioning
 // ---------------------------------------------------------------------------
 
-function getPopupPosition(tray, win) {
-  const trayBounds = tray.getBounds()
-  const winBounds = win.getBounds()
-  const { workArea } = screen.getPrimaryDisplay()
-
-  const validTray = trayBounds.x > 0 || trayBounds.y > 0
-  if (!validTray) {
-    return {
-      x: Math.round(workArea.x + workArea.width / 2 - winBounds.width / 2),
-      y: Math.round(workArea.y + workArea.height / 2 - winBounds.height / 2)
-    }
-  }
-
-  const x = Math.round(trayBounds.x + trayBounds.width / 2 - winBounds.width / 2)
-  const y = process.platform === 'darwin'
-    ? trayBounds.y + trayBounds.height   // macOS: menubar at top
-    : trayBounds.y - winBounds.height    // Windows: taskbar at bottom
-
-  return {
-    x: Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - winBounds.width)),
-    y: Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - winBounds.height))
-  }
-}
-
 function togglePopup() {
-  if (win.isVisible()) {
-    win.hide()
+  if (win.isMinimized()) {
+    win.restore()
+    win.focus()
+  } else if (win.isVisible()) {
+    win.minimize()
   } else {
-    const pos = getPopupPosition(tray, win)
-    win.setPosition(pos.x, pos.y, false)
     win.show()
     win.focus()
   }
@@ -192,6 +211,12 @@ function togglePopup() {
 // ---------------------------------------------------------------------------
 // Shared helpers — used by both recording flow and upload flow
 // ---------------------------------------------------------------------------
+
+function extractLastname(fullName) {
+  const stripped = fullName.trim().replace(/^(dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)\s*/i, '')
+  const parts = stripped.trim().split(/\s+/)
+  return sanitizeName(parts[parts.length - 1])
+}
 
 function sanitizeName(name) {
   if (!name) return null
@@ -232,6 +257,46 @@ function notifyUser(title, body) {
   if (Notification.isSupported()) {
     new Notification({ title, body, silent: false }).show()
   }
+}
+
+function hideFileFromUser(filePath) {
+  if (process.platform !== 'win32') return
+  const { exec } = require('child_process')
+  exec(`attrib +h "${filePath}"`, err => {
+    if (err) log(`[hide] ${path.basename(filePath)}: ${err.message}`)
+  })
+}
+
+function hideNotesDirInternals() {
+  if (process.platform !== 'win32') return
+  if (!fs.existsSync(NOTES_DIR)) return
+  try {
+    fs.readdirSync(NOTES_DIR, { withFileTypes: true })
+      .filter(e => e.name !== 'Cases')
+      .forEach(e => hideFileFromUser(path.join(NOTES_DIR, e.name)))
+  } catch {}
+}
+
+function hideExistingCaseMdFiles() {
+  if (process.platform !== 'win32') return
+  if (!fs.existsSync(CASES_DIR)) return
+  try {
+    const sessions = fs.readdirSync(CASES_DIR, { withFileTypes: true }).filter(e => e.isDirectory())
+    for (const session of sessions) {
+      const sessionPath = path.join(CASES_DIR, session.name)
+      try {
+        const cases = fs.readdirSync(sessionPath, { withFileTypes: true }).filter(e => e.isDirectory())
+        for (const c of cases) {
+          const caseDir = path.join(sessionPath, c.name)
+          try {
+            fs.readdirSync(caseDir)
+              .filter(f => f.endsWith('.md'))
+              .forEach(f => hideFileFromUser(path.join(caseDir, f)))
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
 }
 
 function validateElevenLabsKey(apiKey) {
@@ -286,6 +351,68 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
   log(`${tag}Transcription started for: ${mp3Path}`)
 }
 
+// Shared wrapper for all claude -p invocations.
+// Adds --output-format stream-json, parses the result event, and logs one usage line per job.
+// onClose(code, errText, resultText) is called on exit; onError(err) on spawn failure (optional).
+// Any future Claude feature calls spawnClaude() and gets usage logging automatically.
+function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError }) {
+  const safePrompt = prompt.replace(/"/g, '\\"')
+  const modelFlag = model ? ` --model ${model}` : ''
+  const spawnEnv = { ...process.env, ...(effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}), ...(env || {}) }
+
+  const proc = spawn(
+    `claude -p "${safePrompt}"${modelFlag} --output-format stream-json --verbose --dangerously-skip-permissions`,
+    [],
+    { cwd: NOTES_DIR, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }
+  )
+
+  let buf = ''
+  let resultText = ''
+  const errChunks = []
+
+  const processLine = line => {
+    if (!line.trim()) return
+    try {
+      const ev = JSON.parse(line)
+      if (ev.type === 'result') {
+        resultText = ev.result || ''
+        const u = ev.usage || {}
+        const cost = ev.total_cost_usd != null ? `$${ev.total_cost_usd.toFixed(4)}` : 'n/a'
+        log(`${tag}[${label}][usage] input=${u.input_tokens || 0} output=${u.output_tokens || 0} cache_read=${u.cache_read_input_tokens || 0} cache_created=${u.cache_creation_input_tokens || 0} cost=${cost} turns=${ev.num_turns || '?'} time=${Math.round((ev.duration_ms || 0) / 1000)}s`)
+      }
+    } catch (_) {
+      if (line.trim()) log(`${tag}[${label}] ${line.trim()}`)
+    }
+  }
+
+  proc.stdout.on('data', chunk => {
+    buf += chunk.toString()
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) processLine(line)
+  })
+
+  proc.stderr.on('data', d => {
+    const msg = d.toString()
+    errChunks.push(msg)
+    log(`${tag}[${label} ERR] ${msg.trim()}`)
+  })
+
+  proc.on('close', code => {
+    if (buf.trim()) processLine(buf)
+    log(`${tag}[${label}] claude exited ${code}`)
+    onClose(code, errChunks.join(''), resultText)
+  })
+
+  proc.on('error', err => {
+    log(`${tag}[${label} ERR] failed to spawn claude: ${err.message}`)
+    if (onError) onError(err)
+    else onClose(null, '', '')
+  })
+
+  return proc
+}
+
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
@@ -299,73 +426,55 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   }
 
   const attempt = isRetry ? ' (retry)' : ''
-  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"`)
+  const soapModel = readSettings().soapModel
+  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''}`)
 
-  const safePrompt = prompt.replace(/"/g, '\\"')
-  const claudeProc = spawn(
-    `claude -p "${safePrompt}" --dangerously-skip-permissions`,
-    [],
-    {
-      cwd: NOTES_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true
-    }
-  )
-
-  const soapOutputChunks = []
-  claudeProc.stdout.on('data', d => {
-    const msg = d.toString()
-    soapOutputChunks.push(msg)
-    log(`${tag}[soap] ${msg.trim()}`)
-  })
-  claudeProc.stderr.on('data', d => {
-    const msg = d.toString()
-    soapOutputChunks.push(msg)
-    log(`${tag}[soap ERR] ${msg.trim()}`)
-  })
-  claudeProc.on('close', code => {
-    log(`${tag}[soap] claude exited ${code}`)
-    const soapOutput = soapOutputChunks.join('')
-    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(soapOutput)) {
-      win.webContents.send('service-warning', {
-        title: 'Claude usage limit reached',
-        message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
-      })
-      if (caseTag) updateRecordingStatus(caseTag, 'failed')
-      return
-    }
-    if (code === 0 && soapNoteMdPath) {
-      if (fs.existsSync(soapNoteMdPath)) {
-        log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
-        spawnDocxConversion(soapNoteMdPath, caseTag)
-      } else {
-        // Top-level soap note missing — Claude may have created per-patient subfolders
-        const caseDir = path.dirname(soapNoteMdPath)
-        const patientFolders = detectPatientFolders(caseDir)
-        if (patientFolders.length > 0) {
-          log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
-          const patients = patientFolders.map(pf => ({
-            name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
-            folderName: pf.folderName,
-            status: 'converting'
-          }))
-          if (caseTag) setRecordingPatients(caseTag, patients)
-          for (const pf of patientFolders) {
-            spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
-          }
-        } else {
-          log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
-          if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        }
+  spawnClaude({
+    prompt,
+    model: soapModel,
+    tag,
+    label: 'soap',
+    onClose(code, errText, resultText) {
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
+        })
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
       }
-    } else if (code !== 0) {
-      if (caseTag) updateRecordingStatus(caseTag, 'failed')
-    }
-  })
-  claudeProc.on('error', err => {
-    log(`${tag}[soap ERR] failed to spawn claude: ${err.message}`)
-    if (err.code === 'ENOENT') {
-      win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+      if (code === 0 && soapNoteMdPath) {
+        if (fs.existsSync(soapNoteMdPath)) {
+          log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
+          spawnDocxConversion(soapNoteMdPath, caseTag)
+        } else {
+          // Top-level soap note missing — Claude may have created per-patient subfolders
+          const caseDir = path.dirname(soapNoteMdPath)
+          const patientFolders = detectPatientFolders(caseDir)
+          if (patientFolders.length > 0) {
+            log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
+            const patients = patientFolders.map(pf => ({
+              name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
+              folderName: pf.folderName,
+              status: 'converting'
+            }))
+            if (caseTag) setRecordingPatients(caseTag, patients)
+            for (const pf of patientFolders) {
+              spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
+            }
+          } else {
+            log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
+            if (caseTag) updateRecordingStatus(caseTag, 'failed')
+          }
+        }
+      } else if (code !== 0) {
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      }
+    },
+    onError(err) {
+      if (err.code === 'ENOENT') {
+        win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+      }
     }
   })
 }
@@ -382,15 +491,18 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
   proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
   proc.on('close', code => {
     log(`${tag}[docx] exited ${code}`)
+    if (code === 0) hideFileFromUser(mdPath)
     if (path.basename(mdPath) !== 'transcript.md') {
       if (code === 0) {
         if (patientFolderName) {
           const entry = sessionRecordings.find(r => r.caseTag === caseTag)
           const patient = entry?.patients?.find(p => p.folderName === patientFolderName)
+          if (patient) patient.soapDocxPath = mdPath.replace(/\.md$/, '.docx')
           notifyUser('SOAP note ready', patient?.name || patientFolderName.replace(/_/g, ' '))
           updatePatientStatus(caseTag, patientFolderName, 'completed')
         } else if (caseTag) {
           const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+          if (entry) entry.soapDocxPath = mdPath.replace(/\.md$/, '.docx')
           notifyUser('SOAP note ready', entry?.displayName || caseTag)
           updateRecordingStatus(caseTag, 'completed')
         }
@@ -404,6 +516,520 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
     }
   })
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
+}
+
+// ---------------------------------------------------------------------------
+// Template creation (Doctor Profile) — background job
+// ---------------------------------------------------------------------------
+//
+// Invoked from the Templates tab "Create with AI" flow.
+// Runs the create-doctor-profile skill via Claude (Opus 4.7 max effort by default)
+// on a folder of sample notes + supporting docs the user has uploaded.
+// Only ONE job can run at a time (lock). Job state is written to
+// <NOTES_DIR>/.template_job.json so the renderer can poll while the popup
+// is closed and pick up progress on reopen.
+
+let templateJobProc = null
+let templateJobStartMs = 0
+
+function getJobStatusPath() { return path.join(NOTES_DIR, '.template_job.json') }
+
+function readTemplateJob() {
+  try {
+    return JSON.parse(fs.readFileSync(getJobStatusPath(), 'utf8'))
+  } catch {
+    return { status: 'idle' }
+  }
+}
+
+function writeTemplateJob(job) {
+  try {
+    safeWriteFile(getJobStatusPath(), JSON.stringify(job, null, 2))
+  } catch (e) {
+    log(`[template-job] WARNING: failed to write job status: ${e.message}`)
+  }
+}
+
+function broadcastTemplateJob(job) {
+  writeTemplateJob(job)
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('template-job-status', job)
+  }
+}
+
+function spawnTemplateCreation(doctorName, stagingDir) {
+  const lastname = extractLastname(doctorName) || 'doctor'
+  const stagingRel = path.relative(NOTES_DIR, stagingDir).replace(/\\/g, '/')
+  const settings = readSettings()
+  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const effort = settings.templateEffort || 'max'
+
+  const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
+
+  log(`[template] Spawning: claude -p "${prompt}" --model ${model} (effort=${effort})`)
+  templateJobStartMs = Date.now()
+
+  templateJobProc = spawnClaude({
+    prompt,
+    model,
+    effort,
+    tag: '',
+    label: 'template',
+    onClose(code, errText, resultText) {
+      templateJobProc = null
+      const durationMs = Date.now() - templateJobStartMs
+
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        broadcastTemplateJob({
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: 'Claude usage limit reached. Try again once the limit resets.',
+          finishedAt: Date.now()
+        })
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'Template creation could not complete — try again once the limit resets.'
+          })
+        }
+        return
+      }
+
+      const expectedPath = path.join(TEMPLATES_DIR, `${lastname}.md`)
+      if (code === 0 && fs.existsSync(expectedPath)) {
+        // Success — register the doctor in settings.json (if not already there)
+        try {
+          const s = readSettings()
+          const doctors = s.doctors || []
+          const existingIdx = doctors.findIndex(d =>
+            d.templatePath === expectedPath ||
+            sanitizeName(d.name) === lastname
+          )
+          const doctorEntry = {
+            id: existingIdx >= 0 ? doctors[existingIdx].id : String(Date.now()),
+            name: doctorName.trim(),
+            templatePath: expectedPath
+          }
+          if (existingIdx >= 0) doctors[existingIdx] = doctorEntry
+          else doctors.push(doctorEntry)
+          writeSettings({ ...s, doctors })
+          log(`[template] Doctor registered: ${doctorName} (${expectedPath})`)
+        } catch (e) {
+          log(`[template] WARNING: failed to register doctor: ${e.message}`)
+        }
+
+        // Delete staging folder after success
+        try {
+          fs.rmSync(stagingDir, { recursive: true, force: true })
+          log(`[template] Staging deleted: ${stagingDir}`)
+        } catch (e) {
+          log(`[template] WARNING: failed to delete staging: ${e.message}`)
+        }
+
+        broadcastTemplateJob({
+          status: 'success',
+          doctorName,
+          lastname,
+          templatePath: expectedPath,
+          durationMs,
+          finishedAt: Date.now()
+        })
+        notifyUser('Template ready', `Profile for ${doctorName} saved.`)
+      } else {
+        broadcastTemplateJob({
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: code === 0
+            ? `Claude exited 0 but template file not found at ${expectedPath}`
+            : `Claude exited with code ${code}`,
+          finishedAt: Date.now()
+        })
+        notifyUser('Template creation failed', `${doctorName} — check app.log for details`)
+      }
+    },
+    onError(err) {
+      templateJobProc = null
+      broadcastTemplateJob({
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: err.code === 'ENOENT'
+          ? 'Claude CLI not installed. Install the Claude CLI to enable template creation.'
+          : err.message,
+        finishedAt: Date.now()
+      })
+    }
+  })
+
+  broadcastTemplateJob({
+    status: 'running',
+    doctorName,
+    lastname,
+    startedAt: templateJobStartMs,
+    model,
+    effort
+  })
+}
+
+function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsFile, samplesDir) {
+  const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
+  const settings = readSettings()
+  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const effort = settings.templateEffort || 'max'
+
+  // Flatten multi-line corrections and strip double quotes to avoid breaking shell quoting on Windows
+  const safeCorrections = (corrections || '').replace(/\r?\n/g, ' | ').replace(/"/g, "'")
+  const safeName = doctorName.replace(/"/g, "'")
+  const safePath = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
+  const safeCorrectionsFile = correctionsFile ? correctionsFile.replace(/\\/g, '/').replace(/"/g, "'") : ''
+  const safeSamplesDir = samplesDir ? samplesDir.replace(/\\/g, '/').replace(/"/g, "'") : ''
+
+  const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}. CorrectionsFile: ${safeCorrectionsFile}. Samples: ${safeSamplesDir}`
+
+  log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
+  templateJobStartMs = Date.now()
+
+  templateJobProc = spawnClaude({
+    prompt,
+    model,
+    effort,
+    tag: '',
+    label: 'template-update',
+    onClose(code, errText, resultText) {
+      templateJobProc = null
+      const durationMs = Date.now() - templateJobStartMs
+
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        broadcastTemplateJob({
+          type: 'update',
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: 'Claude usage limit reached. Try again once the limit resets.',
+          finishedAt: Date.now()
+        })
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'Template update could not complete — try again once the limit resets.'
+          })
+        }
+        return
+      }
+
+      if (code === 0) {
+        // Extract the Step 7 changes report — everything from "Updated:" to end of output
+        const changesReport = (() => {
+          const idx = resultText.indexOf('Updated:')
+          return idx !== -1 ? resultText.slice(idx).trim() : null
+        })()
+
+        broadcastTemplateJob({
+          type: 'update',
+          status: 'success',
+          doctorName,
+          lastname,
+          templatePath,
+          durationMs,
+          changesReport,
+          finishedAt: Date.now()
+        })
+
+        // Clean up samples staging folder if one was used
+        if (samplesDir && fs.existsSync(samplesDir)) {
+          try { fs.rmSync(samplesDir, { recursive: true, force: true }) } catch (_) {}
+        }
+
+        notifyUser('Template updated', `Profile for ${doctorName} updated.`)
+      } else {
+        broadcastTemplateJob({
+          type: 'update',
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: `Claude exited with code ${code}`,
+          finishedAt: Date.now()
+        })
+        notifyUser('Template update failed', `${doctorName} — check app.log for details`)
+      }
+    },
+    onError(err) {
+      templateJobProc = null
+      broadcastTemplateJob({
+        type: 'update',
+        status: 'failed',
+        doctorName,
+        lastname,
+        error: err.code === 'ENOENT'
+          ? 'Claude CLI not installed. Install the Claude CLI to enable template updates.'
+          : err.message,
+        finishedAt: Date.now()
+      })
+    }
+  })
+
+  broadcastTemplateJob({
+    type: 'update',
+    status: 'running',
+    doctorName,
+    lastname,
+    startedAt: templateJobStartMs,
+    model,
+    effort
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Pre-chart (edit-note) — background job
+// ---------------------------------------------------------------------------
+//
+// Invoked from the SESSION_ACTIVE "Pre-chart" sub-view. Runs the edit-note
+// skill against an existing patient case folder, optionally with new clinical
+// content (one or more files combined into a single .md by extract_attachments.py)
+// and/or scribe instructions. Shares the templateJobProc lock with template
+// creation/update so only one Claude job runs at a time.
+
+function findRecentPatientCases(notesDir, limit = 30) {
+  if (!notesDir) return []
+  const casesRoot = path.join(notesDir, 'Cases')
+  if (!fs.existsSync(casesRoot)) return []
+
+  const results = []
+  let sessions = []
+  try {
+    sessions = fs.readdirSync(casesRoot, { withFileTypes: true }).filter(e => e.isDirectory())
+  } catch { return [] }
+
+  for (const session of sessions) {
+    const sessionPath = path.join(casesRoot, session.name)
+    let caseDirs = []
+    try {
+      caseDirs = fs.readdirSync(sessionPath, { withFileTypes: true }).filter(e => e.isDirectory())
+    } catch { continue }
+    for (const c of caseDirs) {
+      const caseDir = path.join(sessionPath, c.name)
+      let soapNote = null
+      try {
+        soapNote = fs.readdirSync(caseDir).find(f =>
+          f.endsWith('_soap_note.md') && !/_soap_note_backup_/.test(f)
+        )
+      } catch { continue }
+      if (!soapNote) continue
+
+      let mtime = 0
+      try { mtime = fs.statSync(path.join(caseDir, soapNote)).mtimeMs } catch {}
+
+      // Folder name: "<patient>_<YYYY-MM-DD>" or "recording_<YYYY-MM-DD>_<HH-MM-SS>"
+      const m = c.name.match(/^(.+)_(\d{4}-\d{2}-\d{2})(?:_(\d{2}-\d{2}-\d{2}))?$/)
+      let patient = c.name
+      let date = ''
+      if (m) {
+        patient = m[1].replace(/_/g, ' ')
+        date = m[2]
+      }
+      results.push({ caseDir, patient, date, mtime })
+    }
+  }
+
+  results.sort((a, b) => b.mtime - a.mtime)
+  return results.slice(0, limit)
+}
+
+function findExistingSoapNote(caseDir) {
+  if (!caseDir || !fs.existsSync(caseDir)) return null
+  try {
+    const f = fs.readdirSync(caseDir).find(name =>
+      name.endsWith('_soap_note.md') && !/_soap_note_backup_/.test(name)
+    )
+    return f ? path.join(caseDir, f) : null
+  } catch { return null }
+}
+
+function resolveTemplateFromSoapNote(caseDir) {
+  // Priority: parse **Doctor:** header from the existing soap note, match against
+  // settings.json doctors by sanitized last-name. Fall back to active doctor.
+  const settings = readSettings()
+  const doctors = settings.doctors || []
+  const soapPath = findExistingSoapNote(caseDir)
+
+  let parsedLastname = null
+  if (soapPath) {
+    try {
+      // Read just the header section — soap notes are short; reading 4KB is plenty.
+      const head = fs.readFileSync(soapPath, 'utf8').slice(0, 4096)
+      const m = head.match(/\*\*Doctor:\*\*\s*([^\n\r]+)/)
+      if (m) parsedLastname = extractLastname(m[1])
+    } catch {}
+  }
+
+  if (parsedLastname) {
+    const match = doctors.find(d => extractLastname(d.name) === parsedLastname && d.templatePath && fs.existsSync(d.templatePath))
+    if (match) return match.templatePath
+  }
+
+  if (activeDoctorId) {
+    const active = doctors.find(d => d.id === activeDoctorId)
+    if (active && active.templatePath && fs.existsSync(active.templatePath)) return active.templatePath
+  }
+
+  return null
+}
+
+function buildCombinedAttachment(filePaths) {
+  return new Promise((resolve, reject) => {
+    if (!filePaths || filePaths.length === 0) {
+      resolve('')
+      return
+    }
+    const tmp = path.join(os.tmpdir(), `prechart_${Date.now()}_${process.pid}.md`)
+    const proc = spawn(PYTHON, [
+      path.join(__dirname, 'python', 'extract_attachments.py'),
+      '--output', tmp,
+      '--inputs', ...filePaths
+    ], { cwd: __dirname, stdio: 'pipe' })
+
+    let stderr = ''
+    proc.stderr.on('data', d => {
+      const msg = d.toString()
+      stderr += msg
+      log(`[prechart][extract ERR] ${msg.trim()}`)
+    })
+    proc.stdout.on('data', d => log(`[prechart][extract] ${d.toString().trim()}`))
+    proc.on('close', code => {
+      if (code === 0 && fs.existsSync(tmp)) {
+        log(`[prechart][extract] combined ${filePaths.length} file(s) → ${tmp}`)
+        resolve(tmp)
+      } else {
+        reject(new Error(`extract_attachments exited ${code}: ${stderr.trim()}`))
+      }
+    })
+    proc.on('error', err => reject(err))
+  })
+}
+
+function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath) {
+  const caseName = path.basename(caseDir)
+  const patientLabel = caseName.replace(/_\d{4}-\d{2}-\d{2}.*$/, '').replace(/_/g, ' ') || caseName
+  const settings = readSettings()
+  const model = settings.soapModel || 'claude-sonnet-4-6'
+
+  // Build the skill prompt. Match update-doctor-profile's style: literal field names,
+  // shell-safe quoting (replace " with ' inside any user-supplied string).
+  const safeCase    = caseDir.replace(/\\/g, '/').replace(/"/g, "'")
+  const safeTpl     = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
+  const safeAttach  = (combinedAttachmentPath || '').replace(/\\/g, '/').replace(/"/g, "'")
+  const safeInstr   = (instructions || '').replace(/\r?\n/g, ' ').replace(/"/g, "'")
+  const promptText  = `edit note. Case: ${safeCase}. Template: ${safeTpl}. Attachment: ${safeAttach}. Instructions: ${safeInstr}`
+
+  log(`[prechart][${patientLabel}] Spawning: claude -p <edit-note prompt> --model ${model}`)
+  templateJobStartMs = Date.now()
+
+  const cleanupAttachment = () => {
+    if (combinedAttachmentPath) {
+      try {
+        fs.unlinkSync(combinedAttachmentPath)
+        log(`[prechart][${patientLabel}] cleaned up temp attachment`)
+      } catch (e) {
+        log(`[prechart][${patientLabel}] WARNING: failed to delete temp attachment: ${e.message}`)
+      }
+    }
+  }
+
+  templateJobProc = spawnClaude({
+    prompt: promptText,
+    model,
+    effort: 'high',
+    tag: '',
+    label: `prechart][${patientLabel}`,
+    onClose(code, errText, resultText) {
+      templateJobProc = null
+      cleanupAttachment()
+      const durationMs = Date.now() - templateJobStartMs
+
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        broadcastTemplateJob({
+          type: 'prechart',
+          status: 'failed',
+          doctorName: patientLabel,
+          lastname: patientLabel,
+          caseDir,
+          error: 'Claude usage limit reached. Try again once the limit resets.',
+          finishedAt: Date.now()
+        })
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'Pre-chart could not complete — try again once the limit resets.'
+          })
+        }
+        return
+      }
+
+      if (code === 0) {
+        // Skill overwrites the soap note in place — refresh the .docx mirror
+        const updatedNote = findExistingSoapNote(caseDir)
+        if (updatedNote) {
+          spawnDocxConversion(updatedNote, null)
+        } else {
+          log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
+        }
+        // Hide backup .md files created by the edit-note skill
+        try {
+          fs.readdirSync(caseDir)
+            .filter(f => f.endsWith('.md'))
+            .forEach(f => hideFileFromUser(path.join(caseDir, f)))
+        } catch {}
+        broadcastTemplateJob({
+          type: 'prechart',
+          status: 'success',
+          doctorName: patientLabel,
+          lastname: patientLabel,
+          caseDir,
+          durationMs,
+          finishedAt: Date.now()
+        })
+        notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
+      } else {
+        broadcastTemplateJob({
+          type: 'prechart',
+          status: 'failed',
+          doctorName: patientLabel,
+          lastname: patientLabel,
+          caseDir,
+          error: `Claude exited with code ${code}`,
+          finishedAt: Date.now()
+        })
+        notifyUser('Pre-chart failed', `${patientLabel} — check app.log for details`)
+      }
+    },
+    onError(err) {
+      templateJobProc = null
+      cleanupAttachment()
+      broadcastTemplateJob({
+        type: 'prechart',
+        status: 'failed',
+        doctorName: patientLabel,
+        lastname: patientLabel,
+        caseDir,
+        error: err.code === 'ENOENT'
+          ? 'Claude CLI not installed. Install the Claude CLI to enable pre-chart.'
+          : err.message,
+        finishedAt: Date.now()
+      })
+    }
+  })
+
+  broadcastTemplateJob({
+    type: 'prechart',
+    status: 'running',
+    doctorName: patientLabel,
+    lastname: patientLabel,
+    caseDir,
+    startedAt: templateJobStartMs,
+    model
+  })
 }
 
 function checkForUpdates() {
@@ -586,6 +1212,22 @@ app.whenReady().then(async () => {
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     log('.claude config synced to AI Medical Notes')
+    hideNotesDirInternals()
+    hideExistingCaseMdFiles()
+
+    // Clean up any stale template job from a prior crash/restart — the child
+    // process died with the app, so a 'running' status in the file is orphaned.
+    const staleJob = readTemplateJob()
+    if (staleJob && staleJob.status === 'running') {
+      writeTemplateJob({
+        status: 'failed',
+        doctorName: staleJob.doctorName,
+        lastname: staleJob.lastname,
+        error: 'Job was interrupted by an app restart. Please retry.',
+        finishedAt: Date.now()
+      })
+      log('[template] Cleared stale running job state from previous run')
+    }
   }
   // If no path set, the renderer will show the folder setup view
 
@@ -601,11 +1243,12 @@ app.whenReady().then(async () => {
   log(`Electron: ${process.versions.electron}`)
   log(`Node: ${process.version}`)
 
-  try {
-    const pyVer = execSync(`${PYTHON} --version`, { stdio: 'pipe' }).toString().trim()
-    log(`Python: ${pyVer}`)
-  } catch {
-    log('WARNING: Python not found')
+  const pyResolved = resolvePythonCommand()
+  if (pyResolved) {
+    PYTHON = pyResolved.cmd
+    log(`Python: ${pyResolved.version} (via ${PYTHON})`)
+  } else {
+    log('WARNING: Python 3 not found — tried py, python, python3')
   }
 
   try {
@@ -646,15 +1289,14 @@ app.whenReady().then(async () => {
   tray.on('right-click', () => tray.popUpContextMenu(contextMenu))
   tray.on('click', () => togglePopup())
 
-  // Create popup window
+  // Create main window
   win = new BrowserWindow({
     width: 280,
-    height: 360,
+    height: 420,
     show: false,
     frame: false,
     resizable: false,
     alwaysOnTop: true,
-    skipTaskbar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -663,8 +1305,17 @@ app.whenReady().then(async () => {
   })
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  win.once('ready-to-show', () => win.show())
 
-  ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.hide() })
+  ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.minimize() })
+
+  // Minimize to taskbar instead of closing; real quit comes from tray → Quit
+  win.on('close', e => {
+    if (!isQuitting) {
+      e.preventDefault()
+      win.minimize()
+    }
+  })
 
   // macOS BlackHole check
   if (process.platform === 'darwin') {
@@ -685,6 +1336,7 @@ app.whenReady().then(async () => {
 
   // Clean up recording process on quit
   app.on('before-quit', () => {
+    isQuitting = true
     if (recordingProcess) {
       log('Killing recording process before quit')
       recordingProcess.kill()
@@ -1063,6 +1715,226 @@ function registerIpcHandlers() {
     return { ok: true, doctor }
   })
 
+  // -------------------------------------------------------------------------
+  // Template creation (AI profile builder) — Templates tab
+  // -------------------------------------------------------------------------
+
+  // ---- browse-notes-files ----
+  // Multi-select file picker for sample notes + supporting documents.
+  ipcMain.handle('browse-notes-files', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select sample notes and supporting documents',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Notes',     extensions: ['md', 'docx', 'txt', 'json'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled) return []
+    return result.filePaths
+  })
+
+  // ---- start-template-creation ----
+  // Stages the user-selected files into NOTES_DIR/Templates/_staging/<lastname>/
+  // then spawns the create-doctor-profile skill via Claude.
+  ipcMain.handle('start-template-creation', async (_, doctorName, filePaths) => {
+    const name = (doctorName || '').trim()
+    if (!name) return { ok: false, error: 'Doctor name is required' }
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+      return { ok: false, error: 'At least one source file is required' }
+    }
+    if (templateJobProc) {
+      return { ok: false, error: 'A template creation job is already running' }
+    }
+
+    const lastname = extractLastname(name)
+    if (!lastname) return { ok: false, error: 'Doctor name produced an empty identifier' }
+
+    const stagingDir = path.join(NOTES_DIR, 'Templates', '_staging', lastname)
+    try {
+      // Fresh staging folder — wipe any leftovers from a prior failed run
+      if (fs.existsSync(stagingDir)) {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      }
+      fs.mkdirSync(stagingDir, { recursive: true })
+
+      for (const src of filePaths) {
+        if (!fs.existsSync(src)) continue
+        const dest = path.join(stagingDir, path.basename(src))
+        fs.copyFileSync(src, dest)
+      }
+      log(`[template] Staged ${filePaths.length} file(s) → ${stagingDir}`)
+    } catch (e) {
+      log(`[template ERR] staging failed: ${e.message}`)
+      return { ok: false, error: `Staging failed: ${e.message}` }
+    }
+
+    spawnTemplateCreation(name, stagingDir)
+    return { ok: true }
+  })
+
+  // ---- browse-corrections-file ----
+  ipcMain.handle('browse-corrections-file', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select corrections file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Text files', extensions: ['txt', 'md', 'docx'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // ---- start-template-update ----
+  ipcMain.handle('start-template-update', async (_, doctorName, corrections, correctionsFile, sampleFiles) => {
+    const name = (doctorName || '').trim()
+    if (!name) return 'Doctor name is required.'
+
+    const hasCorrections = (corrections || '').trim()
+    const hasCorrectionsFile = correctionsFile && fs.existsSync(correctionsFile)
+    const hasSamples = Array.isArray(sampleFiles) && sampleFiles.length > 0
+    if (!hasCorrections && !hasCorrectionsFile && !hasSamples) {
+      return 'Provide corrections text, a corrections file, or sample notes.'
+    }
+    if (templateJobProc) return 'A template job is already running.'
+
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.name === name)
+    if (!doctor || !doctor.templatePath) {
+      return `No template registered for "${name}". Create a template first.`
+    }
+    if (!fs.existsSync(doctor.templatePath)) {
+      return `Template file missing at ${doctor.templatePath}.`
+    }
+
+    // Stage sample files if provided
+    let samplesDir = null
+    if (hasSamples) {
+      const lastname = extractLastname(name) || name.toLowerCase()
+      const ts = Date.now()
+      samplesDir = path.join(NOTES_DIR, 'Templates', '_staging_update', `${lastname}_${ts}`)
+      try {
+        fs.mkdirSync(samplesDir, { recursive: true })
+        for (const src of sampleFiles) {
+          if (fs.existsSync(src)) {
+            fs.copyFileSync(src, path.join(samplesDir, path.basename(src)))
+          }
+        }
+        log(`[template-update] Staged ${sampleFiles.length} sample file(s) → ${samplesDir}`)
+      } catch (e) {
+        log(`[template-update ERR] staging failed: ${e.message}`)
+        return `Staging sample files failed: ${e.message}`
+      }
+    }
+
+    spawnTemplateUpdate(name, doctor.templatePath, (corrections || '').trim(), correctionsFile || null, samplesDir)
+    return null  // null = no error
+  })
+
+  // ---- get-doctors-with-templates ----
+  ipcMain.handle('get-doctors-with-templates', () => {
+    const settings = readSettings()
+    return (settings.doctors || [])
+      .filter(d => d.templatePath && fs.existsSync(d.templatePath))
+      .map(d => d.name)
+      .sort()
+  })
+
+  // ---- get-template-job-status ----
+  ipcMain.handle('get-template-job-status', () => readTemplateJob())
+
+  // ---- dismiss-template-job ----
+  ipcMain.handle('dismiss-template-job', () => {
+    writeTemplateJob({ status: 'idle' })
+    return { ok: true }
+  })
+
+  // ---- cancel-template-creation ----
+  ipcMain.handle('cancel-template-creation', () => {
+    if (!templateJobProc) return { ok: false, error: 'No job running' }
+    try {
+      templateJobProc.kill()
+      log('[template] Cancellation requested')
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // -------------------------------------------------------------------------
+  // Pre-chart (edit-note) — Record tab "Pre-chart" sub-view
+  // -------------------------------------------------------------------------
+
+  // ---- browse-prechart-files ----
+  // Multi-select picker for attachment files (prechart docs, prior visit notes, etc.).
+  // Same formats the edit-note skill knows how to read.
+  ipcMain.handle('browse-prechart-files', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select attachment files',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Attachments', extensions: ['md', 'txt', 'docx', 'pdf'] },
+        { name: 'All Files',   extensions: ['*'] }
+      ]
+    })
+    if (result.canceled) return []
+    return result.filePaths
+  })
+
+  // ---- list-recent-patient-cases ----
+  ipcMain.handle('list-recent-patient-cases', () => findRecentPatientCases(NOTES_DIR, 30))
+
+  // ---- browse-patient-case-folder ----
+  // Folder picker scoped to <NOTES_DIR>/Cases/. Validates the picked folder
+  // contains a *_soap_note.md (excluding backup files).
+  ipcMain.handle('browse-patient-case-folder', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select patient case folder',
+      defaultPath: CASES_DIR,
+      properties: ['openDirectory']
+    })
+    if (result.canceled || !result.filePaths.length) return { ok: false, error: 'cancelled' }
+    const caseDir = result.filePaths[0]
+    if (!findExistingSoapNote(caseDir)) {
+      return { ok: false, error: 'No SOAP note found in the selected folder.' }
+    }
+    return { ok: true, caseDir }
+  })
+
+  // ---- start-prechart-job ----
+  ipcMain.handle('start-prechart-job', async (_, doctorId, caseDir, instructions, attachmentPaths) => {
+    if (templateJobProc) return { ok: false, error: 'Another job is already running.' }
+
+    const settings = readSettings()
+    const doctor = (settings.doctors || []).find(d => d.id === doctorId)
+    if (!doctor || !doctor.templatePath) {
+      return { ok: false, error: 'Selected doctor has no template registered.' }
+    }
+    const templatePath = doctor.templatePath
+
+    if (!caseDir || !fs.existsSync(caseDir)) return { ok: false, error: 'Patient case folder not found.' }
+    if (!findExistingSoapNote(caseDir)) return { ok: false, error: 'No SOAP note found in the selected case folder.' }
+
+    const trimmedInstructions = (instructions || '').trim()
+    const files = Array.isArray(attachmentPaths) ? attachmentPaths.filter(p => p && fs.existsSync(p)) : []
+    if (!trimmedInstructions && files.length === 0) {
+      return { ok: false, error: 'Provide instructions or at least one attachment file.' }
+    }
+
+    let combined = ''
+    try {
+      combined = await buildCombinedAttachment(files)
+    } catch (e) {
+      log(`[prechart ERR] attachment extraction failed: ${e.message}`)
+      return { ok: false, error: `Attachment extraction failed: ${e.message}` }
+    }
+
+    spawnPrechartJob(caseDir, templatePath, trimmedInstructions, combined)
+    return { ok: true }
+  })
+
   // ---- update-doctor ----
   ipcMain.handle('update-doctor', (_, id, name) => {
     const trimmed = (name || '').trim()
@@ -1080,8 +1952,23 @@ function registerIpcHandlers() {
   ipcMain.handle('remove-doctor', (_, id) => {
     try {
       const settings = readSettings()
+      const doctor = (settings.doctors || []).find(d => d.id === id)
       const doctors = (settings.doctors || []).filter(d => d.id !== id)
       writeSettings({ ...settings, doctors })
+
+      if (doctor?.templatePath) {
+        const tp = doctor.templatePath
+        const stillUsed = doctors.some(d => d.templatePath === tp)
+        if (!stillUsed && tp.startsWith(TEMPLATES_DIR) && fs.existsSync(tp)) {
+          try {
+            fs.unlinkSync(tp)
+            log(`Template file removed: ${tp}`)
+          } catch (e) {
+            log(`WARNING: failed to delete template file ${tp}: ${e.message}`)
+          }
+        }
+      }
+
       log(`Doctor removed: ${id}`)
       return { ok: true }
     } catch (e) {
@@ -1219,19 +2106,44 @@ function registerIpcHandlers() {
     const isExisting = mode === 'existing'
     const result = await dialog.showOpenDialog(win, {
       title: isExisting ? 'Select your existing AI Medical Notes folder' : 'Choose where to store your AI Medical Notes',
-      buttonLabel: isExisting ? 'Select Folder' : 'Select Folder',
+      buttonLabel: 'Select Folder',
       properties: ['openDirectory', 'createDirectory']
     })
     if (result.canceled || !result.filePaths.length) return { ok: false }
     const newNotesDir = isExisting ? result.filePaths[0] : path.join(result.filePaths[0], 'AI Medical Notes')
-    const oldSettings = readSettings()
+
+    const oldNotesDir     = NOTES_DIR
+    const oldTemplatesDir = TEMPLATES_DIR
+    const oldSettings     = readSettings()
+
     writeEnvKey('NOTES_DIR_PATH', newNotesDir)
     loadPaths(newNotesDir)
     fs.mkdirSync(CASES_DIR, { recursive: true })
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
-    writeSettings(oldSettings)
+
+    if (oldTemplatesDir &&
+        oldTemplatesDir !== TEMPLATES_DIR &&
+        fs.existsSync(oldTemplatesDir)) {
+      copyDirSync(oldTemplatesDir, TEMPLATES_DIR)
+    }
+
+    const migratedSettings = {
+      ...oldSettings,
+      doctors: (oldSettings.doctors || []).map(d => {
+        if (!d || typeof d.templatePath !== 'string') return d
+        if (oldNotesDir && d.templatePath.startsWith(oldNotesDir + path.sep)) {
+          const rel = path.relative(oldNotesDir, d.templatePath)
+          return { ...d, templatePath: path.join(NOTES_DIR, rel) }
+        }
+        return d
+      })
+    }
+
+    writeSettings(migratedSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-    log(`Notes directory set to: ${NOTES_DIR}`)
+    hideNotesDirInternals()
+    hideExistingCaseMdFiles()
+    log(`Notes directory set to: ${NOTES_DIR} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)
     return { ok: true, path: NOTES_DIR }
   })
 
@@ -1280,6 +2192,12 @@ function registerIpcHandlers() {
   // ---- close-status-window ----
   ipcMain.handle('close-status-window', () => {
     if (statusWin && !statusWin.isDestroyed()) statusWin.close()
+  })
+
+  // ---- open-soap-note ----
+  ipcMain.handle('open-soap-note', async (_, filePath) => {
+    const { shell } = require('electron')
+    return shell.openPath(filePath)
   })
 }
 
