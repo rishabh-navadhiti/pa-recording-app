@@ -351,6 +351,68 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
   log(`${tag}Transcription started for: ${mp3Path}`)
 }
 
+// Shared wrapper for all claude -p invocations.
+// Adds --output-format stream-json, parses the result event, and logs one usage line per job.
+// onClose(code, errText, resultText) is called on exit; onError(err) on spawn failure (optional).
+// Any future Claude feature calls spawnClaude() and gets usage logging automatically.
+function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError }) {
+  const safePrompt = prompt.replace(/"/g, '\\"')
+  const modelFlag = model ? ` --model ${model}` : ''
+  const spawnEnv = { ...process.env, ...(effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}), ...(env || {}) }
+
+  const proc = spawn(
+    `claude -p "${safePrompt}"${modelFlag} --output-format stream-json --verbose --dangerously-skip-permissions`,
+    [],
+    { cwd: NOTES_DIR, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }
+  )
+
+  let buf = ''
+  let resultText = ''
+  const errChunks = []
+
+  const processLine = line => {
+    if (!line.trim()) return
+    try {
+      const ev = JSON.parse(line)
+      if (ev.type === 'result') {
+        resultText = ev.result || ''
+        const u = ev.usage || {}
+        const cost = ev.total_cost_usd != null ? `$${ev.total_cost_usd.toFixed(4)}` : 'n/a'
+        log(`${tag}[${label}][usage] input=${u.input_tokens || 0} output=${u.output_tokens || 0} cache_read=${u.cache_read_input_tokens || 0} cache_created=${u.cache_creation_input_tokens || 0} cost=${cost} turns=${ev.num_turns || '?'} time=${Math.round((ev.duration_ms || 0) / 1000)}s`)
+      }
+    } catch (_) {
+      if (line.trim()) log(`${tag}[${label}] ${line.trim()}`)
+    }
+  }
+
+  proc.stdout.on('data', chunk => {
+    buf += chunk.toString()
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) processLine(line)
+  })
+
+  proc.stderr.on('data', d => {
+    const msg = d.toString()
+    errChunks.push(msg)
+    log(`${tag}[${label} ERR] ${msg.trim()}`)
+  })
+
+  proc.on('close', code => {
+    if (buf.trim()) processLine(buf)
+    log(`${tag}[${label}] claude exited ${code}`)
+    onClose(code, errChunks.join(''), resultText)
+  })
+
+  proc.on('error', err => {
+    log(`${tag}[${label} ERR] failed to spawn claude: ${err.message}`)
+    if (onError) onError(err)
+    else onClose(null, '', '')
+  })
+
+  return proc
+}
+
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
@@ -365,74 +427,54 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
 
   const attempt = isRetry ? ' (retry)' : ''
   const soapModel = readSettings().soapModel
-  const modelFlag = soapModel ? ` --model ${soapModel}` : ''
-  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"${modelFlag}`)
+  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''}`)
 
-  const safePrompt = prompt.replace(/"/g, '\\"')
-  const claudeProc = spawn(
-    `claude -p "${safePrompt}"${modelFlag} --dangerously-skip-permissions`,
-    [],
-    {
-      cwd: NOTES_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true
-    }
-  )
-
-  const soapOutputChunks = []
-  claudeProc.stdout.on('data', d => {
-    const msg = d.toString()
-    soapOutputChunks.push(msg)
-    log(`${tag}[soap] ${msg.trim()}`)
-  })
-  claudeProc.stderr.on('data', d => {
-    const msg = d.toString()
-    soapOutputChunks.push(msg)
-    log(`${tag}[soap ERR] ${msg.trim()}`)
-  })
-  claudeProc.on('close', code => {
-    log(`${tag}[soap] claude exited ${code}`)
-    const soapOutput = soapOutputChunks.join('')
-    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(soapOutput)) {
-      win.webContents.send('service-warning', {
-        title: 'Claude usage limit reached',
-        message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
-      })
-      if (caseTag) updateRecordingStatus(caseTag, 'failed')
-      return
-    }
-    if (code === 0 && soapNoteMdPath) {
-      if (fs.existsSync(soapNoteMdPath)) {
-        log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
-        spawnDocxConversion(soapNoteMdPath, caseTag)
-      } else {
-        // Top-level soap note missing — Claude may have created per-patient subfolders
-        const caseDir = path.dirname(soapNoteMdPath)
-        const patientFolders = detectPatientFolders(caseDir)
-        if (patientFolders.length > 0) {
-          log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
-          const patients = patientFolders.map(pf => ({
-            name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
-            folderName: pf.folderName,
-            status: 'converting'
-          }))
-          if (caseTag) setRecordingPatients(caseTag, patients)
-          for (const pf of patientFolders) {
-            spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
-          }
-        } else {
-          log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
-          if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        }
+  spawnClaude({
+    prompt,
+    model: soapModel,
+    tag,
+    label: 'soap',
+    onClose(code, errText, resultText) {
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        win.webContents.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
+        })
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
       }
-    } else if (code !== 0) {
-      if (caseTag) updateRecordingStatus(caseTag, 'failed')
-    }
-  })
-  claudeProc.on('error', err => {
-    log(`${tag}[soap ERR] failed to spawn claude: ${err.message}`)
-    if (err.code === 'ENOENT') {
-      win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+      if (code === 0 && soapNoteMdPath) {
+        if (fs.existsSync(soapNoteMdPath)) {
+          log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
+          spawnDocxConversion(soapNoteMdPath, caseTag)
+        } else {
+          // Top-level soap note missing — Claude may have created per-patient subfolders
+          const caseDir = path.dirname(soapNoteMdPath)
+          const patientFolders = detectPatientFolders(caseDir)
+          if (patientFolders.length > 0) {
+            log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
+            const patients = patientFolders.map(pf => ({
+              name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
+              folderName: pf.folderName,
+              status: 'converting'
+            }))
+            if (caseTag) setRecordingPatients(caseTag, patients)
+            for (const pf of patientFolders) {
+              spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
+            }
+          } else {
+            log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
+            if (caseTag) updateRecordingStatus(caseTag, 'failed')
+          }
+        }
+      } else if (code !== 0) {
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      }
+    },
+    onError(err) {
+      if (err.code === 'ENOENT') {
+        win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+      }
     }
   })
 }
@@ -523,126 +565,102 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   const effort = settings.templateEffort || 'max'
 
   const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
-  const safePrompt = prompt.replace(/"/g, '\\"')
 
   log(`[template] Spawning: claude -p "${prompt}" --model ${model} (effort=${effort})`)
   templateJobStartMs = Date.now()
 
-  templateJobProc = spawn(
-    `claude -p "${safePrompt}" --model ${model} --dangerously-skip-permissions`,
-    [],
-    {
-      cwd: NOTES_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: effort }
-    }
-  )
+  templateJobProc = spawnClaude({
+    prompt,
+    model,
+    effort,
+    tag: '',
+    label: 'template',
+    onClose(code, errText, resultText) {
+      templateJobProc = null
+      const durationMs = Date.now() - templateJobStartMs
 
-  const outChunks = []
-  templateJobProc.stdout.on('data', d => {
-    const msg = d.toString()
-    outChunks.push(msg)
-    log(`[template] ${msg.trim()}`)
-  })
-  templateJobProc.stderr.on('data', d => {
-    const msg = d.toString()
-    outChunks.push(msg)
-    log(`[template ERR] ${msg.trim()}`)
-  })
-
-  templateJobProc.on('close', code => {
-    const proc = templateJobProc
-    templateJobProc = null
-    const output = outChunks.join('')
-    const durationMs = Date.now() - templateJobStartMs
-    log(`[template] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
-
-    // Detect Claude usage-limit errors and surface them as a service warning
-    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
-      broadcastTemplateJob({
-        status: 'failed',
-        doctorName,
-        lastname,
-        error: 'Claude usage limit reached. Try again once the limit resets.',
-        finishedAt: Date.now()
-      })
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: 'Template creation could not complete — try again once the limit resets.'
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        broadcastTemplateJob({
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: 'Claude usage limit reached. Try again once the limit resets.',
+          finishedAt: Date.now()
         })
-      }
-      return
-    }
-
-    const expectedPath = path.join(TEMPLATES_DIR, `${lastname}.md`)
-    if (code === 0 && fs.existsSync(expectedPath)) {
-      // Success — register the doctor in settings.json (if not already there)
-      try {
-        const s = readSettings()
-        const doctors = s.doctors || []
-        const existingIdx = doctors.findIndex(d =>
-          d.templatePath === expectedPath ||
-          sanitizeName(d.name) === lastname
-        )
-        const doctorEntry = {
-          id: existingIdx >= 0 ? doctors[existingIdx].id : String(Date.now()),
-          name: doctorName.trim(),
-          templatePath: expectedPath
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'Template creation could not complete — try again once the limit resets.'
+          })
         }
-        if (existingIdx >= 0) doctors[existingIdx] = doctorEntry
-        else doctors.push(doctorEntry)
-        writeSettings({ ...s, doctors })
-        log(`[template] Doctor registered: ${doctorName} (${expectedPath})`)
-      } catch (e) {
-        log(`[template] WARNING: failed to register doctor: ${e.message}`)
+        return
       }
 
-      // Delete staging folder after success
-      try {
-        fs.rmSync(stagingDir, { recursive: true, force: true })
-        log(`[template] Staging deleted: ${stagingDir}`)
-      } catch (e) {
-        log(`[template] WARNING: failed to delete staging: ${e.message}`)
-      }
+      const expectedPath = path.join(TEMPLATES_DIR, `${lastname}.md`)
+      if (code === 0 && fs.existsSync(expectedPath)) {
+        // Success — register the doctor in settings.json (if not already there)
+        try {
+          const s = readSettings()
+          const doctors = s.doctors || []
+          const existingIdx = doctors.findIndex(d =>
+            d.templatePath === expectedPath ||
+            sanitizeName(d.name) === lastname
+          )
+          const doctorEntry = {
+            id: existingIdx >= 0 ? doctors[existingIdx].id : String(Date.now()),
+            name: doctorName.trim(),
+            templatePath: expectedPath
+          }
+          if (existingIdx >= 0) doctors[existingIdx] = doctorEntry
+          else doctors.push(doctorEntry)
+          writeSettings({ ...s, doctors })
+          log(`[template] Doctor registered: ${doctorName} (${expectedPath})`)
+        } catch (e) {
+          log(`[template] WARNING: failed to register doctor: ${e.message}`)
+        }
 
-      broadcastTemplateJob({
-        status: 'success',
-        doctorName,
-        lastname,
-        templatePath: expectedPath,
-        durationMs,
-        finishedAt: Date.now()
-      })
-      notifyUser('Template ready', `Profile for ${doctorName} saved.`)
-    } else {
+        // Delete staging folder after success
+        try {
+          fs.rmSync(stagingDir, { recursive: true, force: true })
+          log(`[template] Staging deleted: ${stagingDir}`)
+        } catch (e) {
+          log(`[template] WARNING: failed to delete staging: ${e.message}`)
+        }
+
+        broadcastTemplateJob({
+          status: 'success',
+          doctorName,
+          lastname,
+          templatePath: expectedPath,
+          durationMs,
+          finishedAt: Date.now()
+        })
+        notifyUser('Template ready', `Profile for ${doctorName} saved.`)
+      } else {
+        broadcastTemplateJob({
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: code === 0
+            ? `Claude exited 0 but template file not found at ${expectedPath}`
+            : `Claude exited with code ${code}`,
+          finishedAt: Date.now()
+        })
+        notifyUser('Template creation failed', `${doctorName} — check app.log for details`)
+      }
+    },
+    onError(err) {
+      templateJobProc = null
       broadcastTemplateJob({
         status: 'failed',
         doctorName,
         lastname,
-        error: code === 0
-          ? `Claude exited 0 but template file not found at ${expectedPath}`
-          : `Claude exited with code ${code}`,
+        error: err.code === 'ENOENT'
+          ? 'Claude CLI not installed. Install the Claude CLI to enable template creation.'
+          : err.message,
         finishedAt: Date.now()
       })
-      notifyUser('Template creation failed', `${doctorName} — check app.log for details`)
     }
-  })
-
-  templateJobProc.on('error', err => {
-    const proc = templateJobProc
-    templateJobProc = null
-    log(`[template ERR] failed to spawn claude: ${err.message}`)
-    broadcastTemplateJob({
-      status: 'failed',
-      doctorName,
-      lastname,
-      error: err.code === 'ENOENT'
-        ? 'Claude CLI not installed. Install the Claude CLI to enable template creation.'
-        : err.message,
-      finishedAt: Date.now()
-    })
   })
 
   broadcastTemplateJob({
@@ -673,103 +691,83 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
   log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
   templateJobStartMs = Date.now()
 
-  templateJobProc = spawn(
-    `claude -p "${prompt}" --model ${model} --dangerously-skip-permissions`,
-    [],
-    {
-      cwd: NOTES_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: effort }
-    }
-  )
+  templateJobProc = spawnClaude({
+    prompt,
+    model,
+    effort,
+    tag: '',
+    label: 'template-update',
+    onClose(code, errText, resultText) {
+      templateJobProc = null
+      const durationMs = Date.now() - templateJobStartMs
 
-  const outChunks = []
-  templateJobProc.stdout.on('data', d => {
-    const msg = d.toString()
-    outChunks.push(msg)
-    log(`[template-update] ${msg.trim()}`)
-  })
-  templateJobProc.stderr.on('data', d => {
-    const msg = d.toString()
-    outChunks.push(msg)
-    log(`[template-update ERR] ${msg.trim()}`)
-  })
-
-  templateJobProc.on('close', code => {
-    templateJobProc = null
-    const output = outChunks.join('')
-    const durationMs = Date.now() - templateJobStartMs
-    log(`[template-update] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
-
-    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
-      broadcastTemplateJob({
-        type: 'update',
-        status: 'failed',
-        doctorName,
-        lastname,
-        error: 'Claude usage limit reached. Try again once the limit resets.',
-        finishedAt: Date.now()
-      })
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: 'Template update could not complete — try again once the limit resets.'
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        broadcastTemplateJob({
+          type: 'update',
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: 'Claude usage limit reached. Try again once the limit resets.',
+          finishedAt: Date.now()
         })
-      }
-      return
-    }
-
-    if (code === 0) {
-      // Extract the Step 7 changes report — everything from "Updated:" to end of output
-      const changesReport = (() => {
-        const idx = output.indexOf('Updated:')
-        return idx !== -1 ? output.slice(idx).trim() : null
-      })()
-
-      broadcastTemplateJob({
-        type: 'update',
-        status: 'success',
-        doctorName,
-        lastname,
-        templatePath,
-        durationMs,
-        changesReport,
-        finishedAt: Date.now()
-      })
-
-      // Clean up samples staging folder if one was used
-      if (samplesDir && fs.existsSync(samplesDir)) {
-        try { fs.rmSync(samplesDir, { recursive: true, force: true }) } catch (_) {}
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'Template update could not complete — try again once the limit resets.'
+          })
+        }
+        return
       }
 
-      notifyUser('Template updated', `Profile for ${doctorName} updated.`)
-    } else {
+      if (code === 0) {
+        // Extract the Step 7 changes report — everything from "Updated:" to end of output
+        const changesReport = (() => {
+          const idx = resultText.indexOf('Updated:')
+          return idx !== -1 ? resultText.slice(idx).trim() : null
+        })()
+
+        broadcastTemplateJob({
+          type: 'update',
+          status: 'success',
+          doctorName,
+          lastname,
+          templatePath,
+          durationMs,
+          changesReport,
+          finishedAt: Date.now()
+        })
+
+        // Clean up samples staging folder if one was used
+        if (samplesDir && fs.existsSync(samplesDir)) {
+          try { fs.rmSync(samplesDir, { recursive: true, force: true }) } catch (_) {}
+        }
+
+        notifyUser('Template updated', `Profile for ${doctorName} updated.`)
+      } else {
+        broadcastTemplateJob({
+          type: 'update',
+          status: 'failed',
+          doctorName,
+          lastname,
+          error: `Claude exited with code ${code}`,
+          finishedAt: Date.now()
+        })
+        notifyUser('Template update failed', `${doctorName} — check app.log for details`)
+      }
+    },
+    onError(err) {
+      templateJobProc = null
       broadcastTemplateJob({
         type: 'update',
         status: 'failed',
         doctorName,
         lastname,
-        error: `Claude exited with code ${code}`,
+        error: err.code === 'ENOENT'
+          ? 'Claude CLI not installed. Install the Claude CLI to enable template updates.'
+          : err.message,
         finishedAt: Date.now()
       })
-      notifyUser('Template update failed', `${doctorName} — check app.log for details`)
     }
-  })
-
-  templateJobProc.on('error', err => {
-    templateJobProc = null
-    log(`[template-update ERR] failed to spawn claude: ${err.message}`)
-    broadcastTemplateJob({
-      type: 'update',
-      status: 'failed',
-      doctorName,
-      lastname,
-      error: err.code === 'ENOENT'
-        ? 'Claude CLI not installed. Install the Claude CLI to enable template updates.'
-        : err.message,
-      finishedAt: Date.now()
-    })
   })
 
   broadcastTemplateJob({
@@ -928,29 +926,6 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   log(`[prechart][${patientLabel}] Spawning: claude -p <edit-note prompt> --model ${model}`)
   templateJobStartMs = Date.now()
 
-  templateJobProc = spawn(
-    `claude -p "${promptText}" --model ${model} --dangerously-skip-permissions`,
-    [],
-    {
-      cwd: NOTES_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: 'high' }
-    }
-  )
-
-  const outChunks = []
-  templateJobProc.stdout.on('data', d => {
-    const msg = d.toString()
-    outChunks.push(msg)
-    log(`[prechart][${patientLabel}] ${msg.trim()}`)
-  })
-  templateJobProc.stderr.on('data', d => {
-    const msg = d.toString()
-    outChunks.push(msg)
-    log(`[prechart][${patientLabel} ERR] ${msg.trim()}`)
-  })
-
   const cleanupAttachment = () => {
     if (combinedAttachmentPath) {
       try {
@@ -962,85 +937,88 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     }
   }
 
-  templateJobProc.on('close', code => {
-    templateJobProc = null
-    cleanupAttachment()
-    const output = outChunks.join('')
-    const durationMs = Date.now() - templateJobStartMs
-    log(`[prechart][${patientLabel}] claude exited ${code} after ${Math.round(durationMs / 1000)}s`)
+  templateJobProc = spawnClaude({
+    prompt: promptText,
+    model,
+    effort: 'high',
+    tag: '',
+    label: `prechart][${patientLabel}`,
+    onClose(code, errText, resultText) {
+      templateJobProc = null
+      cleanupAttachment()
+      const durationMs = Date.now() - templateJobStartMs
 
-    if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
-      broadcastTemplateJob({
-        type: 'prechart',
-        status: 'failed',
-        doctorName: patientLabel,
-        lastname: patientLabel,
-        caseDir,
-        error: 'Claude usage limit reached. Try again once the limit resets.',
-        finishedAt: Date.now()
-      })
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: 'Pre-chart could not complete — try again once the limit resets.'
+      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        broadcastTemplateJob({
+          type: 'prechart',
+          status: 'failed',
+          doctorName: patientLabel,
+          lastname: patientLabel,
+          caseDir,
+          error: 'Claude usage limit reached. Try again once the limit resets.',
+          finishedAt: Date.now()
         })
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'Pre-chart could not complete — try again once the limit resets.'
+          })
+        }
+        return
       }
-      return
-    }
 
-    if (code === 0) {
-      // Skill overwrites the soap note in place — refresh the .docx mirror
-      const updatedNote = findExistingSoapNote(caseDir)
-      if (updatedNote) {
-        spawnDocxConversion(updatedNote, null)
+      if (code === 0) {
+        // Skill overwrites the soap note in place — refresh the .docx mirror
+        const updatedNote = findExistingSoapNote(caseDir)
+        if (updatedNote) {
+          spawnDocxConversion(updatedNote, null)
+        } else {
+          log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
+        }
+        // Hide backup .md files created by the edit-note skill
+        try {
+          fs.readdirSync(caseDir)
+            .filter(f => f.endsWith('.md'))
+            .forEach(f => hideFileFromUser(path.join(caseDir, f)))
+        } catch {}
+        broadcastTemplateJob({
+          type: 'prechart',
+          status: 'success',
+          doctorName: patientLabel,
+          lastname: patientLabel,
+          caseDir,
+          durationMs,
+          finishedAt: Date.now()
+        })
+        notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
       } else {
-        log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
+        broadcastTemplateJob({
+          type: 'prechart',
+          status: 'failed',
+          doctorName: patientLabel,
+          lastname: patientLabel,
+          caseDir,
+          error: `Claude exited with code ${code}`,
+          finishedAt: Date.now()
+        })
+        notifyUser('Pre-chart failed', `${patientLabel} — check app.log for details`)
       }
-      // Hide backup .md files created by the edit-note skill
-      try {
-        fs.readdirSync(caseDir)
-          .filter(f => f.endsWith('.md'))
-          .forEach(f => hideFileFromUser(path.join(caseDir, f)))
-      } catch {}
-      broadcastTemplateJob({
-        type: 'prechart',
-        status: 'success',
-        doctorName: patientLabel,
-        lastname: patientLabel,
-        caseDir,
-        durationMs,
-        finishedAt: Date.now()
-      })
-      notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
-    } else {
+    },
+    onError(err) {
+      templateJobProc = null
+      cleanupAttachment()
       broadcastTemplateJob({
         type: 'prechart',
         status: 'failed',
         doctorName: patientLabel,
         lastname: patientLabel,
         caseDir,
-        error: `Claude exited with code ${code}`,
+        error: err.code === 'ENOENT'
+          ? 'Claude CLI not installed. Install the Claude CLI to enable pre-chart.'
+          : err.message,
         finishedAt: Date.now()
       })
-      notifyUser('Pre-chart failed', `${patientLabel} — check app.log for details`)
     }
-  })
-
-  templateJobProc.on('error', err => {
-    templateJobProc = null
-    cleanupAttachment()
-    log(`[prechart][${patientLabel} ERR] failed to spawn claude: ${err.message}`)
-    broadcastTemplateJob({
-      type: 'prechart',
-      status: 'failed',
-      doctorName: patientLabel,
-      lastname: patientLabel,
-      caseDir,
-      error: err.code === 'ENOENT'
-        ? 'Claude CLI not installed. Install the Claude CLI to enable pre-chart.'
-        : err.message,
-      finishedAt: Date.now()
-    })
   })
 
   broadcastTemplateJob({
