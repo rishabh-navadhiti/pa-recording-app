@@ -8,6 +8,11 @@ const fs = require('fs')
 const os = require('os')
 const https = require('https')
 const { spawn, execSync } = require('child_process')
+const { initDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup } = require('./db/init')
+const dbDoctors  = require('./db/doctors')
+const dbSessions = require('./db/sessions')
+const dbCases    = require('./db/cases')
+const dbEvents   = require('./db/events')
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,7 +76,9 @@ let recordingProcess = null
 let tempMp3Path = null
 let patientNameResolver = null
 let activeDoctorId = null
+let activeSessionId = null
 let doctorPickerResolver = null
+let pendingAudioDuration = null  // set by record.py DURATION_SECONDS output; consumed in stop-recording
 let activeSessionDir = null
 let statusWin = null
 let sessionRecordings = []
@@ -109,6 +116,21 @@ function log(msg) {
   }
 }
 
+function nowIso() { return new Date().toISOString() }
+
+// Canonical doctor list: DB first, then the one-time migration backup as last resort.
+// settings.json no longer carries doctors[] after the v1 migration.
+function getAllDoctors() {
+  const fromDb = dbDoctors.listDoctors()
+  if (fromDb.length > 0) return fromDb
+  try {
+    const backupPath = path.join(NOTES_DIR, 'settings.doctors.backup.json')
+    const raw = JSON.parse(fs.readFileSync(backupPath, 'utf8'))
+    if (Array.isArray(raw) && raw.length > 0) return raw
+  } catch (_) {}
+  return []
+}
+
 // ---------------------------------------------------------------------------
 // Settings helpers (settings.json in NOTES_DIR)
 // ---------------------------------------------------------------------------
@@ -119,7 +141,6 @@ const DEFAULT_SETTINGS = {
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  doctors: [],
   // Model config — surfaced in settings.json so it can be edited without a code change.
   // UI controls for these will come later; for now they are silent defaults that can be
   // overridden by editing settings.json directly.
@@ -326,9 +347,32 @@ function validateElevenLabsKey(apiKey) {
   })
 }
 
-function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath) {
+// Extract token + cost fields from a Claude stream-json result event for DB writes.
+function extractUsage(ev) {
+  if (!ev) return {}
+  const u = ev.usage || {}
+  return {
+    inputTokens:         u.input_tokens          ?? null,
+    outputTokens:        u.output_tokens          ?? null,
+    cacheReadTokens:     u.cache_read_input_tokens ?? null,
+    cacheCreatedTokens:  u.cache_creation_input_tokens ?? null,
+    costUsd:             ev.total_cost_usd        ?? null,
+    numTurns:            ev.num_turns             ?? null,
+    durationMs:          ev.duration_ms           ?? null
+  }
+}
+
+function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   const stderrChunks = []
+  const startedAt = nowIso()
+  const wallStart = Date.now()
+
+  let eventId = null
+  try {
+    eventId = dbEvents.startEvent({ caseId, jobKind: 'transcribe', startedAt })
+  } catch (e) { log(`[db] startEvent(transcribe) failed: ${e.message}`) }
+
   const transcribeProc = spawn(PYTHON, [
     path.join(__dirname, 'python', 'transcribe.py'),
     '--input', mp3Path,
@@ -343,10 +387,21 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
   })
   transcribeProc.on('close', code => {
     log(`${tag}[transcribe] exited ${code}`)
+    const durationMs = Date.now() - wallStart
     if (code === 0) {
-      spawnSoapGeneration(transcriptDest, soapNotePath, caseTag, false, templatePath)
-      spawnDocxConversion(transcriptDest, caseTag)
+      try {
+        dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: nowIso() })
+        dbCases.updateCasePaths(caseId, { status: 'generating_note', transcript_path: transcriptDest })
+      } catch (e) { log(`[db] transcribe success update failed: ${e.message}`) }
+      spawnSoapGeneration(transcriptDest, soapNotePath, caseTag, false, templatePath, caseId)
+      spawnDocxConversion(transcriptDest, caseTag, null, caseId)
     } else {
+      try {
+        const stderr = stderrChunks.join('')
+        dbEvents.finishEvent(eventId, { status: 'failed', durationMs, errorMessage: stderr.slice(0, 1024), finishedAt: nowIso() })
+        dbCases.setCaseStatus(caseId, 'failed')
+        if (caseId) dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+      } catch (e) { log(`[db] transcribe failure update failed: ${e.message}`) }
       if (caseTag) updateRecordingStatus(caseTag, 'failed')
       const stderr = stderrChunks.join('')
       if (/401|invalid.api.key|unauthorized/i.test(stderr)) {
@@ -369,8 +424,10 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
 
 // Shared wrapper for all claude -p invocations.
 // Adds --output-format stream-json, parses the result event, and logs one usage line per job.
-// onClose(code, errText, resultText) is called on exit; onError(err) on spawn failure (optional).
-// Any future Claude feature calls spawnClaude() and gets usage logging automatically.
+// onClose(code, errText, resultText, resultEvent) is called on exit;
+// resultEvent is the full parsed { type:'result', usage:{...}, total_cost_usd, num_turns, duration_ms, result:'...' }
+// or null if Claude exited without emitting a result event.
+// onError(err) on spawn failure (optional).
 function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError }) {
   const safePrompt = prompt.replace(/"/g, '\\"')
   const modelFlag = model ? ` --model ${model}` : ''
@@ -384,6 +441,7 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
 
   let buf = ''
   let resultText = ''
+  let resultEvent = null
   const errChunks = []
 
   const processLine = line => {
@@ -391,6 +449,7 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
     try {
       const ev = JSON.parse(line)
       if (ev.type === 'result') {
+        resultEvent = ev
         resultText = ev.result || ''
         const u = ev.usage || {}
         const cost = ev.total_cost_usd != null ? `$${ev.total_cost_usd.toFixed(4)}` : 'n/a'
@@ -417,7 +476,7 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
   proc.on('close', code => {
     if (buf.trim()) processLine(buf)
     log(`${tag}[${label}] claude exited ${code}`)
-    onClose(code, errChunks.join(''), resultText)
+    onClose(code, errChunks.join(''), resultText, resultEvent)
   })
 
   proc.on('error', err => {
@@ -429,7 +488,7 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
   return proc
 }
 
-function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null) {
+function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
@@ -445,13 +504,30 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   const soapModel = readSettings().soapModel
   log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''}`)
 
+  const startedAt = nowIso()
+  let eventId = null
+  try {
+    eventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: soapModel, startedAt })
+  } catch (e) { log(`[db] startEvent(soap) failed: ${e.message}`) }
+
   spawnClaude({
     prompt,
     model: soapModel,
     tag,
     label: 'soap',
-    onClose(code, errText, resultText) {
-      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+    onClose(code, errText, resultText, resultEvent) {
+      const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)
+      if (isRateLimited) {
+        try {
+          dbEvents.finishEvent(eventId, {
+            status: 'rate_limited',
+            ...extractUsage(resultEvent),
+            errorMessage: 'Claude usage limit reached',
+            finishedAt: nowIso()
+          })
+          dbCases.setCaseStatus(caseId, 'failed')
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        } catch (e) { log(`[db] soap rate-limited update failed: ${e.message}`) }
         win.webContents.send('service-warning', {
           title: 'Claude usage limit reached',
           message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
@@ -462,13 +538,20 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       if (code === 0 && soapNoteMdPath) {
         if (fs.existsSync(soapNoteMdPath)) {
           log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
-          spawnDocxConversion(soapNoteMdPath, caseTag)
+          try {
+            dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
+            dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapNoteMdPath })
+          } catch (e) { log(`[db] soap success update failed: ${e.message}`) }
+          spawnDocxConversion(soapNoteMdPath, caseTag, null, caseId)
         } else {
           // Top-level soap note missing — Claude may have created per-patient subfolders
           const caseDir = path.dirname(soapNoteMdPath)
           const patientFolders = detectPatientFolders(caseDir)
           if (patientFolders.length > 0) {
             log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
+            try {
+              dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
+            } catch (e) { log(`[db] soap multi-patient finish failed: ${e.message}`) }
             const patients = patientFolders.map(pf => ({
               name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
               folderName: pf.folderName,
@@ -476,18 +559,33 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
             }))
             if (caseTag) setRecordingPatients(caseTag, patients)
             for (const pf of patientFolders) {
-              spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName)
+              spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName, caseId)
             }
           } else {
             log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
+            try {
+              dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'SOAP note file missing after exit 0', finishedAt: nowIso() })
+              dbCases.setCaseStatus(caseId, 'failed')
+              dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+            } catch (e) { log(`[db] soap missing-file update failed: ${e.message}`) }
             if (caseTag) updateRecordingStatus(caseTag, 'failed')
           }
         }
       } else if (code !== 0) {
+        try {
+          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
+          dbCases.setCaseStatus(caseId, 'failed')
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        } catch (e) { log(`[db] soap failure update failed: ${e.message}`) }
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
       }
     },
     onError(err) {
+      try {
+        dbEvents.finishEvent(eventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
+        dbCases.setCaseStatus(caseId, 'failed')
+        dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+      } catch (e) { log(`[db] soap onError update failed: ${e.message}`) }
       if (err.code === 'ENOENT') {
         win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
       }
@@ -495,9 +593,17 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   })
 }
 
-function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
+function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   log(`${tag}[docx] Converting: ${mdPath}`)
+  const isSoapDocx = path.basename(mdPath) !== 'transcript.md'
+  const wallStart = Date.now()
+
+  let eventId = null
+  try {
+    eventId = dbEvents.startEvent({ caseId, jobKind: 'docx', startedAt: nowIso() })
+  } catch (e) { log(`[db] startEvent(docx) failed: ${e.message}`) }
+
   const proc = spawn(PYTHON, [
     path.join(__dirname, 'python', 'md_to_docx.py'),
     mdPath
@@ -507,28 +613,47 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null) {
   proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
   proc.on('close', code => {
     log(`${tag}[docx] exited ${code}`)
+    const durationMs = Date.now() - wallStart
+    const docxPath = mdPath.replace(/\.md$/, '.docx')
     if (code === 0) hideFileFromUser(mdPath)
-    if (path.basename(mdPath) !== 'transcript.md') {
+
+    if (isSoapDocx) {
       if (code === 0) {
+        try {
+          dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: nowIso() })
+          dbCases.updateCasePaths(caseId, { status: 'completed', soap_docx_path: docxPath, completed_at: nowIso() })
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: false })
+        } catch (e) { log(`[db] docx soap success update failed: ${e.message}`) }
         if (patientFolderName) {
           const entry = sessionRecordings.find(r => r.caseTag === caseTag)
           const patient = entry?.patients?.find(p => p.folderName === patientFolderName)
-          if (patient) patient.soapDocxPath = mdPath.replace(/\.md$/, '.docx')
+          if (patient) patient.soapDocxPath = docxPath
           notifyUser('SOAP note ready', patient?.name || patientFolderName.replace(/_/g, ' '))
           updatePatientStatus(caseTag, patientFolderName, 'completed')
         } else if (caseTag) {
           const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-          if (entry) entry.soapDocxPath = mdPath.replace(/\.md$/, '.docx')
+          if (entry) entry.soapDocxPath = docxPath
           notifyUser('SOAP note ready', entry?.displayName || caseTag)
           updateRecordingStatus(caseTag, 'completed')
         }
       } else {
+        try {
+          dbEvents.finishEvent(eventId, { status: 'failed', durationMs, finishedAt: nowIso() })
+          dbCases.setCaseStatus(caseId, 'failed')
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        } catch (e) { log(`[db] docx soap failure update failed: ${e.message}`) }
         if (patientFolderName) {
           updatePatientStatus(caseTag, patientFolderName, 'failed')
         } else if (caseTag) {
           updateRecordingStatus(caseTag, 'failed')
         }
       }
+    } else {
+      // transcript docx — just record the path, don't change case status
+      try {
+        dbEvents.finishEvent(eventId, { status: code === 0 ? 'success' : 'failed', durationMs, finishedAt: nowIso() })
+        if (code === 0) dbCases.updateCasePaths(caseId, { transcript_docx_path: docxPath })
+      } catch (e) { log(`[db] docx transcript update failed: ${e.message}`) }
     }
   })
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
@@ -585,17 +710,26 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   log(`[template] Spawning: claude -p "${prompt}" --model ${model} (effort=${effort})`)
   templateJobStartMs = Date.now()
 
+  const templateCreateStartedAt = nowIso()
+  let templateCreateEventId = null
+  try {
+    templateCreateEventId = dbEvents.startEvent({ jobKind: 'template_create', modelUsed: model, effort, startedAt: templateCreateStartedAt })
+  } catch (e) { log(`[db] startEvent(template_create) failed: ${e.message}`) }
+
   templateJobProc = spawnClaude({
     prompt,
     model,
     effort,
     tag: '',
     label: 'template',
-    onClose(code, errText, resultText) {
+    onClose(code, errText, resultText, resultEvent) {
       templateJobProc = null
       const durationMs = Date.now() - templateJobStartMs
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        try {
+          dbEvents.finishEvent(templateCreateEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
         broadcastTemplateJob({
           status: 'failed',
           doctorName,
@@ -614,26 +748,20 @@ function spawnTemplateCreation(doctorName, stagingDir) {
 
       const expectedPath = path.join(TEMPLATES_DIR, `${lastname}.md`)
       if (code === 0 && fs.existsSync(expectedPath)) {
-        // Success — register the doctor in settings.json (if not already there)
+        // Register the doctor in DB (and keep settings.json in sync for backward compat)
+        let doctorId = null
         try {
-          const s = readSettings()
-          const doctors = s.doctors || []
-          const existingIdx = doctors.findIndex(d =>
-            d.templatePath === expectedPath ||
-            sanitizeName(d.name) === lastname
-          )
-          const doctorEntry = {
-            id: existingIdx >= 0 ? doctors[existingIdx].id : String(Date.now()),
-            name: doctorName.trim(),
-            templatePath: expectedPath
-          }
-          if (existingIdx >= 0) doctors[existingIdx] = doctorEntry
-          else doctors.push(doctorEntry)
-          writeSettings({ ...s, doctors })
-          log(`[template] Doctor registered: ${doctorName} (${expectedPath})`)
+          const existing = dbDoctors.getDoctorByLastname(lastname)
+          doctorId = existing ? existing.id : String(Date.now())
+          dbDoctors.upsertDoctor({ id: doctorId, name: doctorName.trim(), lastname, templatePath: expectedPath })
+          log(`[template] Doctor registered in DB: ${doctorName} (${expectedPath})`)
         } catch (e) {
-          log(`[template] WARNING: failed to register doctor: ${e.message}`)
+          log(`[template] WARNING: failed to register doctor in DB: ${e.message}`)
         }
+
+        try {
+          dbEvents.finishEvent(templateCreateEventId, { status: 'success', ...extractUsage(resultEvent), relatedDoctorId: doctorId, finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
 
         // Delete staging folder after success
         try {
@@ -653,6 +781,13 @@ function spawnTemplateCreation(doctorName, stagingDir) {
         })
         notifyUser('Template ready', `Profile for ${doctorName} saved.`)
       } else {
+        try {
+          dbEvents.finishEvent(templateCreateEventId, {
+            status: 'failed', ...extractUsage(resultEvent),
+            errorMessage: code === 0 ? `Template file not found at ${expectedPath}` : `Exit code ${code}`,
+            finishedAt: nowIso()
+          })
+        } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
         broadcastTemplateJob({
           status: 'failed',
           doctorName,
@@ -667,6 +802,9 @@ function spawnTemplateCreation(doctorName, stagingDir) {
     },
     onError(err) {
       templateJobProc = null
+      try {
+        dbEvents.finishEvent(templateCreateEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
+      } catch (e) { log(`[db] finishEvent(template_create) onError failed: ${e.message}`) }
       broadcastTemplateJob({
         status: 'failed',
         doctorName,
@@ -707,17 +845,29 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
   log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
   templateJobStartMs = Date.now()
 
+  const doctorForUpdate = dbDoctors.getDoctorByLastname(lastname)
+  const doctorIdForUpdate = doctorForUpdate?.id || null
+
+  const templateUpdateStartedAt = nowIso()
+  let templateUpdateEventId = null
+  try {
+    templateUpdateEventId = dbEvents.startEvent({ jobKind: 'template_update', relatedDoctorId: doctorIdForUpdate, modelUsed: model, effort, startedAt: templateUpdateStartedAt })
+  } catch (e) { log(`[db] startEvent(template_update) failed: ${e.message}`) }
+
   templateJobProc = spawnClaude({
     prompt,
     model,
     effort,
     tag: '',
     label: 'template-update',
-    onClose(code, errText, resultText) {
+    onClose(code, errText, resultText, resultEvent) {
       templateJobProc = null
       const durationMs = Date.now() - templateJobStartMs
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        try {
+          dbEvents.finishEvent(templateUpdateEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         broadcastTemplateJob({
           type: 'update',
           status: 'failed',
@@ -736,6 +886,10 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
       }
 
       if (code === 0) {
+        try {
+          dbEvents.finishEvent(templateUpdateEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+
         // Extract the Step 7 changes report — everything from "Updated:" to end of output
         const changesReport = (() => {
           const idx = resultText.indexOf('Updated:')
@@ -760,6 +914,9 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
 
         notifyUser('Template updated', `Profile for ${doctorName} updated.`)
       } else {
+        try {
+          dbEvents.finishEvent(templateUpdateEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         broadcastTemplateJob({
           type: 'update',
           status: 'failed',
@@ -773,6 +930,9 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     },
     onError(err) {
       templateJobProc = null
+      try {
+        dbEvents.finishEvent(templateUpdateEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
+      } catch (e) { log(`[db] finishEvent(template_update) onError failed: ${e.message}`) }
       broadcastTemplateJob({
         type: 'update',
         status: 'failed',
@@ -865,9 +1025,8 @@ function findExistingSoapNote(caseDir) {
 
 function resolveTemplateFromSoapNote(caseDir) {
   // Priority: parse **Doctor:** header from the existing soap note, match against
-  // settings.json doctors by sanitized last-name. Fall back to active doctor.
-  const settings = readSettings()
-  const doctors = settings.doctors || []
+  // DB doctors by sanitized last-name. Fall back to active doctor.
+  const doctors = getAllDoctors()
   const soapPath = findExistingSoapNote(caseDir)
 
   let parsedLastname = null
@@ -942,6 +1101,16 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   log(`[prechart][${patientLabel}] Spawning: claude -p <edit-note prompt> --model ${model}`)
   templateJobStartMs = Date.now()
 
+  // Look up the case DB id by folder path so we can bump revision + write backup_path
+  let prechartCaseId = null
+  try { prechartCaseId = dbCases.getCaseIdByDir(caseDir) } catch (_) {}
+
+  const prechartStartedAt = nowIso()
+  let prechartEventId = null
+  try {
+    prechartEventId = dbEvents.startEvent({ caseId: prechartCaseId, jobKind: 'prechart', modelUsed: model, effort: 'high', startedAt: prechartStartedAt })
+  } catch (e) { log(`[db] startEvent(prechart) failed: ${e.message}`) }
+
   const cleanupAttachment = () => {
     if (combinedAttachmentPath) {
       try {
@@ -959,12 +1128,15 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     effort: 'high',
     tag: '',
     label: `prechart][${patientLabel}`,
-    onClose(code, errText, resultText) {
+    onClose(code, errText, resultText, resultEvent) {
       templateJobProc = null
       cleanupAttachment()
       const durationMs = Date.now() - templateJobStartMs
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+        try {
+          dbEvents.finishEvent(prechartEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
         broadcastTemplateJob({
           type: 'prechart',
           status: 'failed',
@@ -984,10 +1156,31 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       }
 
       if (code === 0) {
+        // Parse BACKUP_OK: <abs-path> from skill output (Step 9 of edit-note skill)
+        let backupPath = null
+        const backupMatch = resultText.match(/BACKUP_OK:\s*(.+)/)
+        if (backupMatch) {
+          backupPath = backupMatch[1].trim()
+        } else {
+          // Defensive fallback: glob for most-recent backup file in the case dir
+          try {
+            const backups = fs.readdirSync(caseDir)
+              .filter(f => /_soap_note_backup_/.test(f) && f.endsWith('.md'))
+              .map(f => ({ f, mt: fs.statSync(path.join(caseDir, f)).mtimeMs }))
+              .sort((a, b) => b.mt - a.mt)
+            if (backups.length > 0) backupPath = path.join(caseDir, backups[0].f)
+          } catch (_) {}
+        }
+
+        try {
+          dbEvents.finishEvent(prechartEventId, { status: 'success', ...extractUsage(resultEvent), backupPath, finishedAt: nowIso() })
+          dbCases.bumpCaseRevision(prechartCaseId)
+        } catch (e) { log(`[db] prechart success update failed: ${e.message}`) }
+
         // Skill overwrites the soap note in place — refresh the .docx mirror
         const updatedNote = findExistingSoapNote(caseDir)
         if (updatedNote) {
-          spawnDocxConversion(updatedNote, null)
+          spawnDocxConversion(updatedNote, null, null, prechartCaseId)
         } else {
           log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
         }
@@ -1008,6 +1201,9 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
         })
         notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
       } else {
+        try {
+          dbEvents.finishEvent(prechartEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
+        } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
         broadcastTemplateJob({
           type: 'prechart',
           status: 'failed',
@@ -1023,6 +1219,9 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     onError(err) {
       templateJobProc = null
       cleanupAttachment()
+      try {
+        dbEvents.finishEvent(prechartEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
+      } catch (e) { log(`[db] finishEvent(prechart) onError failed: ${e.message}`) }
       broadcastTemplateJob({
         type: 'prechart',
         status: 'failed',
@@ -1245,6 +1444,27 @@ app.whenReady().then(async () => {
       })
       log('[template] Cleared stale running job state from previous run')
     }
+
+    // Open (or create) the SQLite metadata DB.
+    try {
+      const db = initDb(savedPath)
+      if (db) {
+        const s = readSettings()
+        const doctors = s.doctors || []
+        if (doctors.length > 0) {
+          migrateDoctorsFromSettings(db, doctors,
+            (patch) => writeSettings({ ...readSettings(), ...patch }),
+            savedPath, extractLastname)
+        } else {
+          tryRestoreDoctorsFromBackup(db, savedPath,
+            (patch) => writeSettings({ ...readSettings(), ...patch }),
+            extractLastname)
+        }
+        log('[db] Database ready')
+      }
+    } catch (e) {
+      log(`[db] WARNING: database init failed — running without DB: ${e.message}`)
+    }
   }
   // If no path set, the renderer will show the folder setup view
 
@@ -1396,8 +1616,7 @@ function registerIpcHandlers() {
   // ---- start-session ----
   ipcMain.handle('start-session', async () => {
     log('start-session')
-    const settings = readSettings()
-    const doctors = settings.doctors || []
+    const doctors = getAllDoctors()
 
     if (doctors.length === 0) {
       log('start-session blocked: no doctors configured')
@@ -1425,6 +1644,14 @@ function registerIpcHandlers() {
 
     activeSessionDir = createSessionFolder()
     sessionRecordings = []
+
+    try {
+      activeSessionId = dbSessions.startSession({ sessionFolder: activeSessionDir, doctorId: activeDoctorId })
+    } catch (e) {
+      log(`[db] startSession insert failed: ${e.message}`)
+      activeSessionId = null
+    }
+
     setState(STATE.SESSION_ACTIVE)
     return { ok: true }
   })
@@ -1436,7 +1663,15 @@ function registerIpcHandlers() {
       doctorPickerResolver(null)
       doctorPickerResolver = null
     }
+
+    try {
+      if (activeSessionId) dbSessions.endSession(activeSessionId)
+    } catch (e) {
+      log(`[db] endSession failed: ${e.message}`)
+    }
+
     activeDoctorId = null
+    activeSessionId = null
     activeSessionDir = null
     // If somehow recording when session is stopped, kill the process
     if (recordingProcess) {
@@ -1473,9 +1708,15 @@ function registerIpcHandlers() {
       log(`Using manual device index: ${settings.selectedDeviceIndex}`)
     }
 
+    pendingAudioDuration = null
     recordingProcess = spawn(PYTHON, recordArgs, { cwd: __dirname })
 
-    recordingProcess.stdout.on('data', d => log(`[record.py] ${d.toString().trim()}`))
+    recordingProcess.stdout.on('data', d => {
+      const msg = d.toString().trim()
+      log(`[record.py] ${msg}`)
+      const m = msg.match(/DURATION_SECONDS:\s*([\d.]+)/)
+      if (m) pendingAudioDuration = parseFloat(m[1])
+    })
     recordingProcess.stderr.on('data', d => {
       const msg = d.toString().trim()
       if (!msg) return
@@ -1546,8 +1787,7 @@ function registerIpcHandlers() {
     const transcriptDest = path.join(caseDir, 'transcript.md')
     const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
 
-    const _stopSettings = readSettings()
-    const _stopDoctor = (_stopSettings.doctors || []).find(d => d.id === activeDoctorId)
+    const _stopDoctor = dbDoctors.getDoctor(activeDoctorId) || getAllDoctors().find(d => d.id === activeDoctorId)
     const _stopTemplatePath = _stopDoctor?.templatePath || null
 
     if (fs.existsSync(tempMp3Path)) {
@@ -1565,10 +1805,36 @@ function registerIpcHandlers() {
     } else {
       log(`WARNING: temp MP3 not found at ${tempMp3Path} — recording may have failed`)
     }
+
+    // Capture audio metadata before nulling the duration var
+    const capturedDuration = pendingAudioDuration
+    pendingAudioDuration = null
     tempMp3Path = null
 
+    // Create the case DB row now that the MP3 is in its final location.
+    let caseId = null
+    try {
+      caseId = dbCases.createCase({
+        patientName:  name || null,
+        doctorId:     activeDoctorId,
+        sessionId:    activeSessionId,
+        caseDir,
+        source:       'recording',
+        mp3Path:      mp3Dest,
+        recordedAt:   nowIso()
+      })
+      if (caseId && (capturedDuration != null || fs.existsSync(mp3Dest))) {
+        dbCases.updateCaseAudio(caseId, {
+          durationSeconds: capturedDuration,
+          sizeBytes:       fs.existsSync(mp3Dest) ? fs.statSync(mp3Dest).size : null
+        })
+      }
+    } catch (e) {
+      log(`[db] createCase failed: ${e.message}`)
+    }
+
     addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
-    spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath)
+    spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath, caseId)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
     setState(STATE.SESSION_ACTIVE)
@@ -1677,16 +1943,13 @@ function registerIpcHandlers() {
     return {
       elevenLabsKeyMissing: keyMissing,
       elevenLabsKeyInvalid,
-      noDoctors: (settings.doctors || []).length === 0,
+      noDoctors: getAllDoctors().length === 0,
       notesDirMissing: !notesDirEnv || !notesDirEnv.trim()
     }
   })
 
   // ---- get-doctors ----
-  ipcMain.handle('get-doctors', () => {
-    const settings = readSettings()
-    return settings.doctors || []
-  })
+  ipcMain.handle('get-doctors', () => getAllDoctors())
 
   // ---- add-doctor ----
   ipcMain.handle('add-doctor', async (_, name) => {
@@ -1706,19 +1969,20 @@ function registerIpcHandlers() {
     const srcPath = result.filePaths[0]
     const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
     fs.copyFileSync(srcPath, destPath)
-    const doctor = { id: String(Date.now()), name: trimmed, templatePath: destPath }
-    const settings = readSettings()
-    const doctors = settings.doctors || []
-    doctors.push(doctor)
-    writeSettings({ ...settings, doctors })
+    const doctor = { id: String(Date.now()), name: trimmed, templatePath: destPath, lastname: extractLastname(trimmed) || trimmed.toLowerCase() }
+    try {
+      dbDoctors.upsertDoctor(doctor)
+      log(`Doctor added to DB: ${trimmed} (template: ${destPath})`)
+    } catch (e) {
+      log(`[db] add-doctor upsert failed: ${e.message}`)
+    }
     log(`Doctor added: ${trimmed} (template: ${destPath})`)
     return { ok: true, doctor }
   })
 
   // ---- update-doctor-template ----
   ipcMain.handle('update-doctor-template', async (_, id) => {
-    const settings = readSettings()
-    const doctor = (settings.doctors || []).find(d => d.id === id)
+    const doctor = dbDoctors.getDoctor(id) || getAllDoctors().find(d => d.id === id)
     if (!doctor) return { ok: false, error: 'Doctor not found' }
 
     const result = await dialog.showOpenDialog(win, {
@@ -1734,10 +1998,14 @@ function registerIpcHandlers() {
     const srcPath = result.filePaths[0]
     const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
     fs.copyFileSync(srcPath, destPath)
-    doctor.templatePath = destPath
-    writeSettings(settings)
+    try {
+      dbDoctors.updateDoctorTemplate(id, destPath)
+      log(`Template updated in DB for ${doctor.name}: ${destPath}`)
+    } catch (e) {
+      log(`[db] updateDoctorTemplate failed: ${e.message}`)
+    }
     log(`Template updated for ${doctor.name}: ${destPath}`)
-    return { ok: true, doctor }
+    return { ok: true, doctor: { ...doctor, templatePath: destPath } }
   })
 
   // -------------------------------------------------------------------------
@@ -1825,8 +2093,7 @@ function registerIpcHandlers() {
     }
     if (templateJobProc) return 'A template job is already running.'
 
-    const settings = readSettings()
-    const doctor = (settings.doctors || []).find(d => d.name === name)
+    const doctor = getAllDoctors().find(d => d.name === name)
     if (!doctor || !doctor.templatePath) {
       return `No template registered for "${name}". Create a template first.`
     }
@@ -1859,13 +2126,12 @@ function registerIpcHandlers() {
   })
 
   // ---- get-doctors-with-templates ----
-  ipcMain.handle('get-doctors-with-templates', () => {
-    const settings = readSettings()
-    return (settings.doctors || [])
+  ipcMain.handle('get-doctors-with-templates', () =>
+    getAllDoctors()
       .filter(d => d.templatePath && fs.existsSync(d.templatePath))
       .map(d => d.name)
       .sort()
-  })
+  )
 
   // ---- get-template-job-status ----
   ipcMain.handle('get-template-job-status', () => readTemplateJob())
@@ -1932,8 +2198,11 @@ function registerIpcHandlers() {
   ipcMain.handle('start-prechart-job', async (_, doctorId, caseDir, instructions, attachmentPaths) => {
     if (templateJobProc) return { ok: false, error: 'Another job is already running.' }
 
-    const settings = readSettings()
-    const doctor = (settings.doctors || []).find(d => d.id === doctorId)
+    const allDocs = getAllDoctors()
+    log(`[prechart] doctorId received: ${JSON.stringify(doctorId)}`)
+    log(`[prechart] getAllDoctors() returned ${allDocs.length} doctor(s): ${JSON.stringify(allDocs.map(d => ({ id: d.id, name: d.name, templatePath: d.templatePath })))}`)
+    const doctor = allDocs.find(d => d.id === doctorId)
+    log(`[prechart] doctor match: ${JSON.stringify(doctor || null)}`)
     if (!doctor || !doctor.templatePath) {
       return { ok: false, error: 'Selected doctor has no template registered.' }
     }
@@ -1964,27 +2233,29 @@ function registerIpcHandlers() {
   ipcMain.handle('update-doctor', (_, id, name) => {
     const trimmed = (name || '').trim()
     if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
-    const settings = readSettings()
-    const doctor = (settings.doctors || []).find(d => d.id === id)
+    const doctor = dbDoctors.getDoctor(id) || getAllDoctors().find(d => d.id === id)
     if (!doctor) return { ok: false, error: 'Doctor not found' }
-    doctor.name = trimmed
-    writeSettings(settings)
-    log(`Doctor name updated: ${id} -> ${trimmed}`)
+    try {
+      dbDoctors.upsertDoctor({ ...doctor, name: trimmed, lastname: extractLastname(trimmed) || doctor.lastname })
+      log(`Doctor name updated: ${id} -> ${trimmed}`)
+    } catch (e) {
+      log(`[db] update-doctor failed: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
     return { ok: true }
   })
 
   // ---- remove-doctor ----
   ipcMain.handle('remove-doctor', (_, id) => {
     try {
-      const settings = readSettings()
-      const doctor = (settings.doctors || []).find(d => d.id === id)
-      const doctors = (settings.doctors || []).filter(d => d.id !== id)
-      writeSettings({ ...settings, doctors })
+      const doctor = dbDoctors.getDoctor(id)
+      const tp = doctor?.templatePath
 
-      if (doctor?.templatePath) {
-        const tp = doctor.templatePath
-        const stillUsed = doctors.some(d => d.templatePath === tp)
-        if (!stillUsed && tp.startsWith(TEMPLATES_DIR) && fs.existsSync(tp)) {
+      dbDoctors.removeDoctor(id)
+
+      if (tp) {
+        const othersUsingTemplate = dbDoctors.listDoctors().some(d => d.id !== id && d.templatePath === tp)
+        if (!othersUsingTemplate && tp.startsWith(TEMPLATES_DIR) && fs.existsSync(tp)) {
           try {
             fs.unlinkSync(tp)
             log(`Template file removed: ${tp}`)
@@ -2110,13 +2381,31 @@ function registerIpcHandlers() {
       return false
     }
 
-    const _uploadSettings = readSettings()
-    const _uploadDoctor = (_uploadSettings.doctors || []).find(d => d.id === activeDoctorId)
+    const _uploadDoctor = dbDoctors.getDoctor(activeDoctorId) || getAllDoctors().find(d => d.id === activeDoctorId)
     const _uploadTemplatePath = _uploadDoctor?.templatePath || null
+
+    // Create the case DB row (upload = no session_id)
+    let caseId = null
+    try {
+      caseId = dbCases.createCase({
+        patientName:  name || null,
+        doctorId:     activeDoctorId,
+        sessionId:    null,
+        caseDir,
+        source:       'upload',
+        mp3Path:      audioDest,
+        recordedAt:   nowIso()
+      })
+      if (caseId && fs.existsSync(audioDest)) {
+        dbCases.updateCaseAudio(caseId, { durationSeconds: null, sizeBytes: fs.statSync(audioDest).size })
+      }
+    } catch (e) {
+      log(`[db] createCase(upload) failed: ${e.message}`)
+    }
 
     addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
     setState(STATE.PROCESSING)
-    spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath)
+    spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath, caseId)
 
     // Return to SESSION_ACTIVE immediately — pipeline runs in background
     setState(STATE.SESSION_ACTIVE)
@@ -2168,6 +2457,28 @@ function registerIpcHandlers() {
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
     hideNotesDirInternals()
     hideExistingCaseMdFiles()
+
+    // Reset DB connection to point at the new location.
+    try {
+      const db = resetDb(NOTES_DIR)
+      if (db) {
+        const s = readSettings()
+        const doctors = s.doctors || []
+        if (doctors.length > 0) {
+          migrateDoctorsFromSettings(db, doctors,
+            (patch) => writeSettings({ ...readSettings(), ...patch }),
+            NOTES_DIR, extractLastname)
+        } else {
+          tryRestoreDoctorsFromBackup(db, NOTES_DIR,
+            (patch) => writeSettings({ ...readSettings(), ...patch }),
+            extractLastname)
+        }
+        log('[db] Database ready at new notes dir')
+      }
+    } catch (e) {
+      log(`[db] WARNING: database init failed after dir change: ${e.message}`)
+    }
+
     log(`Notes directory set to: ${NOTES_DIR} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)
     return { ok: true, path: NOTES_DIR }
   })

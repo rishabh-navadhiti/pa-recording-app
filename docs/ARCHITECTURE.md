@@ -236,7 +236,10 @@ The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt use
 
 ```
 <NOTES_DIR>/                                    e.g. ~/Documents/AI Medical Notes
-├── settings.json                               app + user-editable
+├── settings.json                               app + user-editable (doctors[] migrated to app.db on first launch)
+├── app.db                                      SQLite metadata store — doctors, sessions, cases, processing_events
+├── app.db-wal / app.db-shm                     WAL journal (auto-managed; safe to delete when app is closed)
+├── settings.doctors.backup.json                one-time backup of doctors[] at migration (hand-recovery only)
 ├── .template_job.json                          live + last-finished template job
 ├── app.log                                     append-only diagnostic log
 ├── .claude/                                    synced from repo notes-claude/
@@ -367,6 +370,21 @@ Failures (no git, conflicts, network) are logged and ignored. The app never bloc
 The pull is branch-agnostic — whatever branch the clone is on. User installs (`install.ps1`) clone `main`; staging installs (`install-staging.ps1`) clone `staging` and write a local `.staging-marker` that flips the UI badge and prefixes tooltip / notification titles with `(staging)`. See CLAUDE.md → *Branching + release flow* for the promotion rules.
 
 ---
+
+## DB schema overview
+
+SQLite database at `<NOTES_DIR>/app.db`. WAL mode, `better-sqlite3` in main process. All writes are `try/catch` — a failed write never breaks the pipeline.
+
+| Table | Key columns | Written by |
+|---|---|---|
+| `doctors` | `id` (preserves settings.json ids), `name`, `lastname`, `template_path`, `enable_cdi` | `db/doctors.js` — upserted by `add-doctor`, `update-doctor`, `update-doctor-template`, `spawnTemplateCreation` |
+| `sessions` | `id` (UUID), `session_folder`, `doctor_id`, `started_at`, `ended_at`, `case_count`, `failed_count` | `db/sessions.js` — inserted by `start-session`, updated by `stop-session`; counters bumped when cases reach terminal status |
+| `cases` | `id` (UUID), `case_dir` (UNIQUE), `status`, `revision`, file paths, audio metadata | `db/cases.js` — inserted in `stop-recording`/`process-audio-file`; updated at each pipeline stage |
+| `processing_events` | `job_kind` (`transcribe`/`soap`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
+
+`cases.status` transitions: `transcribing → generating_note → converting → completed` (or `failed` at any stage). `cases.revision` starts at 1 and increments on each successful prechart. `processing_events.backup_path` is populated from the `BACKUP_OK: <path>` line printed by the edit-note skill.
+
+Module layout: `db/init.js` (singleton + migrations + doctor migration), `db/doctors.js`, `db/sessions.js`, `db/cases.js`, `db/events.js`. `python/db_helper.py` is scaffolded for future Python workers (not used in v1).
 
 ## Cross-cutting: error surfacing
 

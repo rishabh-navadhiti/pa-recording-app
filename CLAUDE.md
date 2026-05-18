@@ -150,7 +150,9 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 | File | Owned by | Purpose |
 |---|---|---|
 | `<repo>/.env` | App writes; user-editable | `ELEVENLABS_API_KEY`, `NOTES_DIR_PATH` |
-| `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `doctors[]`, `soapModel`, `templateModel`, `templateEffort` |
+| `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `soapModel`, `templateModel`, `templateEffort` — **`doctors[]` moved to `app.db` after first launch** |
+| `<NOTES_DIR>/app.db` | App writes only | SQLite metadata + index store: `doctors`, `sessions`, `cases`, `processing_events`. Canonical artifacts stay on disk; DB stores references + structured metadata. WAL mode; safe to delete (rebuilt on next launch, doctors restored from `settings.doctors.backup.json`). |
+| `<NOTES_DIR>/settings.doctors.backup.json` | App writes once | One-time backup of `settings.json doctors[]` written when doctors are migrated to `app.db`. Hand-recovery only — not read by app code. |
 | `<NOTES_DIR>/.template_job.json` | App writes only | Live + last-finished background-job state (template create/update + pre-chart share this file) |
 | `<NOTES_DIR>/.claude/` | App copies from `notes-claude/` on every startup | Skills + Claude config consumed by `claude -p` |
 | `<NOTES_DIR>/app.log` | App appends | Single log stream from main + Python children |
