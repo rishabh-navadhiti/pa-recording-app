@@ -2397,23 +2397,45 @@ function registerIpcHandlers() {
     const _uploadDoctor = dbDoctors.getDoctor(activeDoctorId) || getAllDoctors().find(d => d.id === activeDoctorId)
     const _uploadTemplatePath = _uploadDoctor?.templatePath || null
 
-    // Create the case DB row (upload = no session_id)
+    // Create the case DB row
     let caseId = null
+    const audioSizeBytes = fs.existsSync(audioDest) ? fs.statSync(audioDest).size : null
     try {
       caseId = dbCases.createCase({
         patientName:  name || null,
         doctorId:     activeDoctorId,
-        sessionId:    null,
+        sessionId:    activeSessionId,
         caseDir,
         source:       'upload',
         mp3Path:      audioDest,
         recordedAt:   nowIso()
       })
-      if (caseId && fs.existsSync(audioDest)) {
-        dbCases.updateCaseAudio(caseId, { durationSeconds: null, sizeBytes: fs.statSync(audioDest).size })
+      if (caseId) {
+        dbCases.updateCaseAudio(caseId, { durationSeconds: null, sizeBytes: audioSizeBytes })
       }
     } catch (e) {
       log(`[db] createCase(upload) failed: ${e.message}`)
+    }
+
+    // Probe audio duration via pydub (already a required dep) — non-blocking
+    if (caseId && fs.existsSync(audioDest)) {
+      const probeProc = spawn(
+        PYTHON,
+        ['-c', `from pydub import AudioSegment; a = AudioSegment.from_file(r"${audioDest}"); print(f"DURATION_SECONDS: {a.duration_seconds:.3f}")`],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+      )
+      let probeBuf = ''
+      probeProc.stdout.on('data', d => { probeBuf += d.toString() })
+      probeProc.on('close', code => {
+        if (code === 0) {
+          const m = probeBuf.match(/DURATION_SECONDS:\s*([\d.]+)/)
+          if (m) {
+            try { dbCases.updateCaseAudio(caseId, { durationSeconds: parseFloat(m[1]), sizeBytes: audioSizeBytes }) } catch (_) {}
+            log(`[upload] Duration: ${m[1]}s`)
+          }
+        }
+      })
+      probeProc.on('error', () => {})  // non-fatal — transcription continues regardless
     }
 
     addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
