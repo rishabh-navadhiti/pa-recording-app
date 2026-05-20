@@ -614,6 +614,11 @@ function spawnIcdCoding(soapNoteMdPath, caseTag, patientFolderName = null, caseI
   const modelFlag = soapModel ? ` --model ${soapModel}` : ''
   log(`${tag}[icd] Spawning: claude -p "${prompt}"${modelFlag}`)
 
+  let icdEventId = null
+  try {
+    icdEventId = dbEvents.startEvent({ caseId, jobKind: 'icd', modelUsed: soapModel || null, startedAt: nowIso() })
+  } catch (e) { log(`${tag}[db] startEvent(icd) failed: ${e.message}`) }
+
   const safePrompt = prompt.replace(/"/g, '\\"')
   const icdProc = spawn(
     `claude -p "${safePrompt}"${modelFlag} --dangerously-skip-permissions`,
@@ -643,15 +648,32 @@ function spawnIcdCoding(soapNoteMdPath, caseTag, patientFolderName = null, caseI
     log(`${tag}[icd] claude exited ${code}`)
     const output = outputChunks.join('')
 
+    const isMcpError    = /Needs authentication|unauthorized|401|MCP.*(connect|connection).*(fail|error|refused)/i.test(output)
+    const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)
+    const isSkipped     = /ICD_SKIPPED/i.test(output)
+
+    let icdStatus, eventStatus
+    if (isMcpError)          { icdStatus = 'mcp_error'; eventStatus = 'failed'       }
+    else if (isRateLimited)  { icdStatus = 'failed';    eventStatus = 'rate_limited' }
+    else if (code === 0 && isSkipped) { icdStatus = 'skipped'; eventStatus = 'success' }
+    else if (code === 0)     { icdStatus = 'success';   eventStatus = 'success'      }
+    else                     { icdStatus = 'failed';    eventStatus = 'failed'       }
+
+    try { dbCases.updateCaseIcd(caseId, { icdStatus }) } catch (e) { log(`${tag}[db] updateCaseIcd failed: ${e.message}`) }
+    if (icdEventId != null) {
+      try { dbEvents.finishEvent(icdEventId, { status: eventStatus, finishedAt: nowIso() }) } catch (e) { log(`${tag}[db] finishEvent(icd) failed: ${e.message}`) }
+      icdEventId = null
+    }
+
     // Hard MCP failures: connector unauth'd or unreachable. Warn the user — but still produce the .docx.
-    if (/Needs authentication|unauthorized|401|MCP.*(connect|connection).*(fail|error|refused)/i.test(output)) {
+    if (isMcpError) {
       if (win && !win.isDestroyed()) {
         win.webContents.send('service-warning', {
           title: 'ICD-10 connector unavailable',
           message: 'Could not look up ICD-10 codes — the note was generated without codes. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled for your account.'
         })
       }
-    } else if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(output)) {
+    } else if (isRateLimited) {
       if (win && !win.isDestroyed()) {
         win.webContents.send('service-warning', {
           title: 'Claude usage limit reached',
@@ -665,6 +687,11 @@ function spawnIcdCoding(soapNoteMdPath, caseTag, patientFolderName = null, caseI
 
   icdProc.on('error', err => {
     log(`${tag}[icd ERR] failed to spawn claude: ${err.message}`)
+    if (icdEventId != null) {
+      try { dbEvents.finishEvent(icdEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (_) {}
+      icdEventId = null
+    }
+    try { dbCases.updateCaseIcd(caseId, { icdStatus: 'failed' }) } catch (_) {}
     // Don't block the .docx conversion — coding is best-effort.
     finish()
   })

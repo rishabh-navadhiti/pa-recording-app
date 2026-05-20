@@ -90,6 +90,17 @@ function bumpCaseRevision(id) {
   }
 }
 
+function updateCaseIcd(id, { icdStatus }) {
+  const db = getDb()
+  if (!db || !id) return
+  try {
+    db.prepare('UPDATE cases SET icd_status = ?, updated_at = ? WHERE id = ?')
+      .run(icdStatus ?? null, new Date().toISOString(), id)
+  } catch (e) {
+    process.stderr.write(`[db] updateCaseIcd failed: ${e.message}\n`)
+  }
+}
+
 // Look up a case id by its absolute folder path.
 function getCaseIdByDir(caseDir) {
   const db = getDb()
@@ -122,4 +133,4 @@ function listRecentCases(limit = 30) {
   }
 }
 
-module.exports = { createCase, updateCaseAudio, updateCasePaths, setCaseStatus, bumpCaseRevision, getCaseIdByDir, listRecentCases }
+module.exports = { createCase, updateCaseAudio, updateCasePaths, setCaseStatus, bumpCaseRevision, getCaseIdByDir, listRecentCases, updateCaseIcd }
