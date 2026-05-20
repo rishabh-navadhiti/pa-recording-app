@@ -98,7 +98,7 @@ let LOG_FILE    = ''
 function loadPaths(notesDir) {
   NOTES_DIR     = notesDir
   CASES_DIR     = path.join(notesDir, 'Cases')
-  TEMPLATES_DIR = path.join(notesDir, 'templates')
+  TEMPLATES_DIR = path.join(notesDir, 'Templates')
   LOG_FILE      = path.join(notesDir, 'app.log')
 }
 
