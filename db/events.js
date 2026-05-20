@@ -28,7 +28,7 @@ function finishEvent(eventId, {
   const db = getDb()
   if (!db || eventId == null) return
   try {
-    db.prepare(`
+    const info = db.prepare(`
       UPDATE processing_events SET
         status               = ?,
         input_tokens         = ?,
@@ -56,8 +56,11 @@ function finishEvent(eventId, {
       finishedAt          || new Date().toISOString(),
       eventId
     )
+    if (info.changes === 0) {
+      process.stderr.write(`[db] finishEvent(${eventId}): UPDATE matched 0 rows — event ID may be stale\n`)
+    }
   } catch (e) {
-    console.error(`[db] finishEvent(${eventId}) failed:`, e.message)
+    process.stderr.write(`[db] finishEvent(${eventId}) failed: ${e.message}\n`)
   }
 }
 

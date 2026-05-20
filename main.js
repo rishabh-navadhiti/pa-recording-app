@@ -672,6 +672,7 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
 
 let templateJobProc = null
 let templateJobStartMs = 0
+let templateJobEventId = null
 
 function getJobStatusPath() { return path.join(NOTES_DIR, '.template_job.json') }
 
@@ -711,9 +712,9 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   templateJobStartMs = Date.now()
 
   const templateCreateStartedAt = nowIso()
-  let templateCreateEventId = null
+  templateJobEventId = null
   try {
-    templateCreateEventId = dbEvents.startEvent({ jobKind: 'template_create', modelUsed: model, effort, startedAt: templateCreateStartedAt })
+    templateJobEventId = dbEvents.startEvent({ jobKind: 'template_create', modelUsed: model, effort, startedAt: templateCreateStartedAt })
   } catch (e) { log(`[db] startEvent(template_create) failed: ${e.message}`) }
 
   templateJobProc = spawnClaude({
@@ -727,9 +728,10 @@ function spawnTemplateCreation(doctorName, stagingDir) {
       const durationMs = Date.now() - templateJobStartMs
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
-        try {
-          dbEvents.finishEvent(templateCreateEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
         broadcastTemplateJob({
           status: 'failed',
           doctorName,
@@ -759,9 +761,10 @@ function spawnTemplateCreation(doctorName, stagingDir) {
           log(`[template] WARNING: failed to register doctor in DB: ${e.message}`)
         }
 
-        try {
-          dbEvents.finishEvent(templateCreateEventId, { status: 'success', ...extractUsage(resultEvent), relatedDoctorId: doctorId, finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), relatedDoctorId: doctorId, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
 
         // Delete staging folder after success
         try {
@@ -781,13 +784,10 @@ function spawnTemplateCreation(doctorName, stagingDir) {
         })
         notifyUser('Template ready', `Profile for ${doctorName} saved.`)
       } else {
-        try {
-          dbEvents.finishEvent(templateCreateEventId, {
-            status: 'failed', ...extractUsage(resultEvent),
-            errorMessage: code === 0 ? `Template file not found at ${expectedPath}` : `Exit code ${code}`,
-            finishedAt: nowIso()
-          })
-        } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: code === 0 ? `Template file not found at ${expectedPath}` : `Exit code ${code}`, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
         broadcastTemplateJob({
           status: 'failed',
           doctorName,
@@ -802,9 +802,10 @@ function spawnTemplateCreation(doctorName, stagingDir) {
     },
     onError(err) {
       templateJobProc = null
-      try {
-        dbEvents.finishEvent(templateCreateEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
-      } catch (e) { log(`[db] finishEvent(template_create) onError failed: ${e.message}`) }
+      if (templateJobEventId != null) {
+        try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) onError failed: ${e.message}`) }
+        templateJobEventId = null
+      }
       broadcastTemplateJob({
         status: 'failed',
         doctorName,
@@ -849,9 +850,9 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
   const doctorIdForUpdate = doctorForUpdate?.id || null
 
   const templateUpdateStartedAt = nowIso()
-  let templateUpdateEventId = null
+  templateJobEventId = null
   try {
-    templateUpdateEventId = dbEvents.startEvent({ jobKind: 'template_update', relatedDoctorId: doctorIdForUpdate, modelUsed: model, effort, startedAt: templateUpdateStartedAt })
+    templateJobEventId = dbEvents.startEvent({ jobKind: 'template_update', relatedDoctorId: doctorIdForUpdate, modelUsed: model, effort, startedAt: templateUpdateStartedAt })
   } catch (e) { log(`[db] startEvent(template_update) failed: ${e.message}`) }
 
   templateJobProc = spawnClaude({
@@ -865,9 +866,10 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
       const durationMs = Date.now() - templateJobStartMs
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
-        try {
-          dbEvents.finishEvent(templateUpdateEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
         broadcastTemplateJob({
           type: 'update',
           status: 'failed',
@@ -886,9 +888,10 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
       }
 
       if (code === 0) {
-        try {
-          dbEvents.finishEvent(templateUpdateEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
 
         // Extract the Step 7 changes report — everything from "Updated:" to end of output
         const changesReport = (() => {
@@ -914,9 +917,10 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
 
         notifyUser('Template updated', `Profile for ${doctorName} updated.`)
       } else {
-        try {
-          dbEvents.finishEvent(templateUpdateEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
         broadcastTemplateJob({
           type: 'update',
           status: 'failed',
@@ -930,9 +934,10 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     },
     onError(err) {
       templateJobProc = null
-      try {
-        dbEvents.finishEvent(templateUpdateEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
-      } catch (e) { log(`[db] finishEvent(template_update) onError failed: ${e.message}`) }
+      if (templateJobEventId != null) {
+        try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) onError failed: ${e.message}`) }
+        templateJobEventId = null
+      }
       broadcastTemplateJob({
         type: 'update',
         status: 'failed',
@@ -1106,9 +1111,9 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   try { prechartCaseId = dbCases.getCaseIdByDir(caseDir) } catch (_) {}
 
   const prechartStartedAt = nowIso()
-  let prechartEventId = null
+  templateJobEventId = null
   try {
-    prechartEventId = dbEvents.startEvent({ caseId: prechartCaseId, jobKind: 'prechart', modelUsed: model, effort: 'high', startedAt: prechartStartedAt })
+    templateJobEventId = dbEvents.startEvent({ caseId: prechartCaseId, jobKind: 'prechart', modelUsed: model, effort: 'high', startedAt: prechartStartedAt })
   } catch (e) { log(`[db] startEvent(prechart) failed: ${e.message}`) }
 
   const cleanupAttachment = () => {
@@ -1134,9 +1139,10 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       const durationMs = Date.now() - templateJobStartMs
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
-        try {
-          dbEvents.finishEvent(prechartEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
         broadcastTemplateJob({
           type: 'prechart',
           status: 'failed',
@@ -1172,10 +1178,11 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
           } catch (_) {}
         }
 
-        try {
-          dbEvents.finishEvent(prechartEventId, { status: 'success', ...extractUsage(resultEvent), backupPath, finishedAt: nowIso() })
-          dbCases.bumpCaseRevision(prechartCaseId)
-        } catch (e) { log(`[db] prechart success update failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), backupPath, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
+        try { dbCases.bumpCaseRevision(prechartCaseId) } catch (e) { log(`[db] prechart bumpRevision failed: ${e.message}`) }
 
         // Skill overwrites the soap note in place — refresh the .docx mirror
         const updatedNote = findExistingSoapNote(caseDir)
@@ -1201,9 +1208,10 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
         })
         notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
       } else {
-        try {
-          dbEvents.finishEvent(prechartEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
-        } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
+        if (templateJobEventId != null) {
+          try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
+          templateJobEventId = null
+        }
         broadcastTemplateJob({
           type: 'prechart',
           status: 'failed',
@@ -1219,9 +1227,10 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     onError(err) {
       templateJobProc = null
       cleanupAttachment()
-      try {
-        dbEvents.finishEvent(prechartEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
-      } catch (e) { log(`[db] finishEvent(prechart) onError failed: ${e.message}`) }
+      if (templateJobEventId != null) {
+        try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) onError failed: ${e.message}`) }
+        templateJobEventId = null
+      }
       broadcastTemplateJob({
         type: 'prechart',
         status: 'failed',
@@ -2146,6 +2155,10 @@ function registerIpcHandlers() {
   ipcMain.handle('cancel-template-creation', () => {
     if (!templateJobProc) return { ok: false, error: 'No job running' }
     try {
+      if (templateJobEventId != null) {
+        try { dbEvents.finishEvent(templateJobEventId, { status: 'cancelled', durationMs: Date.now() - templateJobStartMs, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(cancel) failed: ${e.message}`) }
+        templateJobEventId = null  // onClose fires after kill — null ID makes finishEvent a no-op
+      }
       templateJobProc.kill()
       log('[template] Cancellation requested')
       return { ok: true }
