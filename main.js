@@ -1653,6 +1653,7 @@ function registerIpcHandlers() {
 
     activeSessionDir = createSessionFolder()
     sessionRecordings = []
+    broadcastRecordingStatus()
 
     try {
       activeSessionId = dbSessions.startSession({ sessionFolder: activeSessionDir, doctorId: activeDoctorId })
