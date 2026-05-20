@@ -2,7 +2,7 @@
 
 **Owner:** rs
 **Date:** 2026-05-13
-**Status:** In progress — skill + spawn implemented on this branch (`icd10-coding`); not yet merged into `develop`. DB integration (see below) is pending the SQLite state-store plan landing.
+**Status:** In progress — skill + spawn implemented on the `icd10-coding` branch; not yet merged into `develop`. DB integration (see below) is pending the SQLite state-store plan landing.
 
 ## Goal
 
@@ -119,7 +119,7 @@ Per user preference: warn only on MCP auth/connector errors. Silent on "no diagn
 
 ## DB integration (added 2026-05-15)
 
-Once the SQLite state store (planned in `2026-05-15-rs-sqlite-state-store.md` on `develop`) is in place, the ICD step participates the same way every other Claude job does: one `processing_events` row per spawn, bracketed by `startEvent` + `finishEvent` calls inside `spawnIcdCoding`. Nothing about the skill or its prompt contract changes — this is purely a wiring change on the main-process side.
+Once the SQLite state store ([2026-05-15-rs-sqlite-state-store.md](2026-05-15-rs-sqlite-state-store.md)) is in place, the ICD step participates the same way every other Claude job does: one `processing_events` row per spawn, bracketed by `startEvent` + `finishEvent` calls inside `spawnIcdCoding`. Nothing about the skill or its prompt contract changes — this is purely a wiring change on the main-process side.
 
 ### What `spawnIcdCoding` writes to the DB
 
@@ -173,14 +173,14 @@ recording → transcribing → generating_note → coding_icd → converting →
 
 ### Schema impact
 
-Zero schema changes. The state-store plan already lists `'icd'` as a valid `job_kind` value, with `spawnIcdCoding` named as a call site in the "every spawn site emits events" table.
+Zero schema changes. The state-store plan already lists `'icd'` as a valid `job_kind` value and explicitly notes the ambiguity around whether ICD is a discrete spawn (it is — see this plan) or runs inline inside `generate-note` (it doesn't). That open question is resolved by the design here: ICD **is** a discrete spawn between SOAP and DOCX. When the state-store implementation PR lands, it should drop the "Risk #7 — ICD step ambiguity" note from its risks section (or convert it to a back-reference to this plan).
 
 ### Sequencing
 
 1. **First:** state-store plan lands on `develop` (creates `db/`, migrations, `getDb()`, `spawnClaude` forwards `resultEvent`).
-2. **Then:** this branch merges to `develop`. The merge adds `spawnIcdCoding` *with* DB writes already wired — no follow-up PR to retrofit token logging.
+2. **Then:** ICD branch merges to `develop`. The merge adds `spawnIcdCoding` *with* DB writes already wired — no follow-up PR to retrofit token logging.
 
-If this branch needs to merge first for any reason, the spawn ships without DB writes (it still works — best-effort logging to `app.log` continues via `spawnClaude`'s usage line). The state-store PR then adds the `startEvent` / `finishEvent` bracket as part of its "every spawn site emits events" checklist — `spawnIcdCoding` is the sixth site in that list.
+If the ICD branch needs to merge first for any reason, the spawn ships without DB writes (it still works — best-effort logging to `app.log` continues via `spawnClaude`'s usage line). The state-store PR then adds the `startEvent` / `finishEvent` bracket as part of its "every spawn site emits events" checklist — `spawnIcdCoding` is the sixth site in that list.
 
 ### Verification (additions to the existing test plan)
 

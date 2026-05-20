@@ -9,7 +9,9 @@ Pipeline, processes, and file flow for AI Medical Scribe. Sister doc to [CLAUDE.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Electron main process (main.js)                                 │
-│   • Tray + popup window                                         │
+│   • Tray icon (left-click toggles main window)                  │
+│   • Main window (full taskbar entry, close-to-minimize)         │
+│   • Optional floating status window (multi-case progress)       │
 │   • State machine                                               │
 │   • IPC handlers                                                │
 │   • Spawns and supervises all child processes                   │
@@ -18,18 +20,23 @@ Pipeline, processes, and file flow for AI Medical Scribe. Sister doc to [CLAUDE.
              │ contextBridge                     │ child_process.spawn
              │ (preload.js)                      │
              ▼                                   ▼
-┌────────────────────────┐         ┌─────────────────────────────┐
-│ Renderer (BrowserWin)  │         │ Children (one per task)     │
-│   • renderer.js (UI)   │         │   • python record.py        │
-│   • Listens for state  │         │   • python transcribe.py    │
-│     + event broadcasts │         │   • python md_to_docx.py    │
-│                        │         │   • claude -p (SOAP)        │
-│                        │         │   • claude -p (template)    │
-│                        │         │   • git pull (auto-update)  │
-└────────────────────────┘         └─────────────────────────────┘
+┌────────────────────────────┐    ┌─────────────────────────────────┐
+│ Renderer (2 windows)       │    │ Children (one per task)         │
+│   • renderer.js (main UI)  │    │   • python record.py            │
+│   • status.js (mini status │    │   • python transcribe.py        │
+│      window, opt-in)       │    │   • python md_to_docx.py        │
+│   • Listens for state +    │    │   • python extract_attachments  │
+│      event broadcasts      │    │   • claude -p (SOAP)            │
+│                            │    │   • claude -p (template/update) │
+│                            │    │   • claude -p (edit-note)       │
+│                            │    │   • claude -p (add-icd-codes)   │
+│                            │    │   • git pull (auto-update)      │
+└────────────────────────────┘    └─────────────────────────────────┘
 ```
 
 The renderer cannot touch Node, fs, or `child_process` — it must go through `window.api` (`preload.js`). Children are short-lived and unsupervised after spawn except `record.py`, which is held in `recordingProcess` and stopped via stdin.
+
+Two BrowserWindows exist: the **main window** (`win`, 280×420, framed false, alwaysOnTop, full taskbar entry) and an optional **status window** (`statusWin`, 300×380, framed false, alwaysOnTop, `skipTaskbar: true`) the user can open to see per-case progress while the main window is closed/minimized. The status window receives a separate `recording-status-update` channel driven by `getSessionRecordings()`.
 
 ---
 
@@ -251,7 +258,10 @@ The skill is tolerant of either namespace. The project-scope config is the fallb
 
 ```
 <NOTES_DIR>/                                    e.g. ~/Documents/AI Medical Notes
-├── settings.json                               app + user-editable
+├── settings.json                               app + user-editable (doctors[] migrated to app.db on first launch)
+├── app.db                                      SQLite metadata store — doctors, sessions, cases, processing_events
+├── app.db-wal / app.db-shm                     WAL journal (auto-managed; safe to delete when app is closed)
+├── settings.doctors.backup.json                one-time backup of doctors[] at migration (hand-recovery only)
 ├── .template_job.json                          live + last-finished template job
 ├── app.log                                     append-only diagnostic log
 ├── .claude/                                    synced from repo notes-claude/
@@ -326,11 +336,13 @@ Renderer → main (request/response):
 - Lifecycle: `start-session`, `stop-session`, `start-recording`, `stop-recording`, `pause-recording`, `resume-recording`, `discard-recording`, `submit-patient-name`
 - Doctors: `get-doctors`, `add-doctor`, `update-doctor`, `update-doctor-template`, `remove-doctor`, `select-doctor`
 - Templates tab (create): `browse-notes-files`, `start-template-creation`, `get-template-job-status`, `cancel-template-creation`, `dismiss-template-job`
-- Templates tab (update): `start-template-update`, `get-doctors-with-templates`
+- Templates tab (update): `start-template-update` (takes typed corrections + optional corrections file + optional extra sample notes), `browse-corrections-file`, `get-doctors-with-templates`
 - Pre-chart: `browse-prechart-files`, `list-recent-patient-cases`, `browse-patient-case-folder`, `start-prechart-job` (status uses the shared `get-template-job-status` / `template-job-status` channel)
 - Audio upload: `browse-audio-file`, `process-audio-file`
-- Config: `get-state`, `get-config-status`, `save-elevenlabs-key`, `get-settings`, `save-settings`, `list-audio-devices`, `get-notes-dir`, `change-notes-dir`
-- Window: `hide-window`
+- Config: `get-state`, `get-config-status`, `get-elevenlabs-key`, `save-elevenlabs-key`, `get-settings`, `save-settings`, `list-audio-devices`, `get-notes-dir`, `change-notes-dir` (now accepts an optional mode)
+- Status window: `get-session-recordings`, `open-status-window`, `close-status-window`
+- Open output: `open-soap-note(filePath)` — opens the SOAP `.docx` in the OS default handler
+- Window: `hide-window` (minimizes the main window)
 
 Main → renderer (events):
 - `state-change` — fires on every `setState`
@@ -340,16 +352,30 @@ Main → renderer (events):
 - `auto-start-recording` — fired after `stop-recording` completes if `autoRecord` setting is on
 - `pick-doctor` — fires on `start-session` if more than one doctor configured
 - `template-job-status` — fires on every state change of a template-creation, template-update, or pre-chart job (carries `type` field)
+- `recording-status-update` — drives the optional floating status window with per-case pipeline stage (recording → transcribing → soap → icd → docx → done)
 
 ---
 
 ## Single-instance and lifecycle
 
-`app.requestSingleInstanceLock()` ([main.js:602](../main.js#L602)) — second launches focus the existing popup and exit.
+`app.requestSingleInstanceLock()` — second launches focus the existing window and exit.
 
-`before-quit` handler kills the recording process so the temp WAV doesn't linger.
+**Close-to-minimize.** Clicking the window close button minimizes the window instead of quitting. Only the tray menu's "Quit" or `before-quit` actually exits. An `isQuitting` flag gates `win.on('close', …)` to decide whether to preventDefault.
 
-`app.dock?.hide()` on macOS — no dock icon, tray-only.
+**Quit path:** tray → Quit → `before-quit` handler sets `isQuitting = true`, kills `recordingProcess` so the temp WAV doesn't linger, and lets Electron tear down.
+
+**macOS:** `app.dock?.hide()` keeps the dock icon hidden — the app still has a tray icon and a window, but it doesn't clutter the dock. (The window itself is normal — taskbar/dock behaviour differs from Windows where the window does appear in the taskbar.)
+
+---
+
+## Windows file hiding (`attrib +h`)
+
+To keep the notes folder presentable to non-technical users on Windows, the app hides files the user doesn't need to see:
+
+- **Inside `<NOTES_DIR>`** — every entry except `Cases/` is hidden (so `.claude/`, `.mcp.json`, `settings.json`, `app.log`, `.template_job.json`, and the `templates/` folder don't show by default).
+- **Inside each case folder** — every `.md` file is hidden, leaving only the `.mp3` audio and the `.docx` finals visible. The `.md` files still exist (the skills read them) — they're just hidden from the user.
+
+Helpers: `hideFileFromUser(path)`, `hideNotesDirInternals()`, `hideExistingCaseMdFiles()`. All no-op on non-Windows platforms. New `.md` files generated by the pipeline are hidden on write.
 
 ---
 
@@ -363,7 +389,24 @@ Main → renderer (events):
 
 Failures (no git, conflicts, network) are logged and ignored. The app never blocks on this.
 
+The pull is branch-agnostic — whatever branch the clone is on. User installs (`install.ps1`) clone `main`; staging installs (`install-staging.ps1`) clone `staging` and write a local `.staging-marker` that flips the UI badge and prefixes tooltip / notification titles with `(staging)`. See CLAUDE.md → *Branching + release flow* for the promotion rules.
+
 ---
+
+## DB schema overview
+
+SQLite database at `<NOTES_DIR>/app.db`. WAL mode, `better-sqlite3` in main process. All writes are `try/catch` — a failed write never breaks the pipeline.
+
+| Table | Key columns | Written by |
+|---|---|---|
+| `doctors` | `id` (preserves settings.json ids), `name`, `lastname`, `template_path`, `enable_cdi` | `db/doctors.js` — upserted by `add-doctor`, `update-doctor`, `update-doctor-template`, `spawnTemplateCreation` |
+| `sessions` | `id` (UUID), `session_folder`, `doctor_id`, `started_at`, `ended_at`, `case_count`, `failed_count` | `db/sessions.js` — inserted by `start-session`, updated by `stop-session`; counters bumped when cases reach terminal status |
+| `cases` | `id` (UUID), `case_dir` (UNIQUE), `status`, `revision`, file paths, audio metadata | `db/cases.js` — inserted in `stop-recording`/`process-audio-file`; updated at each pipeline stage |
+| `processing_events` | `job_kind` (`transcribe`/`soap`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
+
+`cases.status` transitions: `transcribing → generating_note → converting → completed` (or `failed` at any stage). `cases.revision` starts at 1 and increments on each successful prechart. `processing_events.backup_path` is populated from the `BACKUP_OK: <path>` line printed by the edit-note skill.
+
+Module layout: `db/init.js` (singleton + migrations + doctor migration), `db/doctors.js`, `db/sessions.js`, `db/cases.js`, `db/events.js`. `python/db_helper.py` is scaffolded for future Python workers (not used in v1).
 
 ## Cross-cutting: error surfacing
 
@@ -377,5 +420,6 @@ Failures (no git, conflicts, network) are logged and ignored. The app never bloc
 | Claude usage limit | regex on claude stdout/stderr | `service-warning` IPC |
 | Recording process died unexpectedly | `record.py` exit handler with non-null `recordingProcess` | state recovers to `SESSION_ACTIVE` |
 | Template job orphaned by crash | startup check on `.template_job.json` | rewritten as `failed` |
+| ICD MCP not authenticated / 401 | regex on add-icd-codes stdout/stderr | `service-warning` IPC (best-effort — pipeline still falls through to DOCX) |
 
 Adding a new failure mode? Pick `setup-warning` (config issue, fix once) vs `service-warning` (runtime issue, may recover) and route accordingly.

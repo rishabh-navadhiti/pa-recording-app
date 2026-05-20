@@ -138,6 +138,18 @@ body {
   color: #ccc;
 }
 
+/* Staging build badge — only visible when .staging-marker is present locally */
+#staging-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #1c1300;
+  background: #ffb84d;
+  border-radius: 3px;
+}
+
 /* Timer */
 #timer {
   font-family: 'SF Mono', 'Consolas', 'Courier New', monospace;

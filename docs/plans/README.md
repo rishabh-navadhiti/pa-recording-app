@@ -8,6 +8,7 @@ Plan files use the convention `YYYY-MM-DD-<initials>-<slug>.md`.
 |---|---|---|
 | [2026-05-06-sr-prechart-tab.md](2026-05-06-sr-prechart-tab.md) | sr | In progress |
 | [2026-05-13-rs-icd-coding.md](2026-05-13-rs-icd-coding.md) | rs | In progress |
+| [2026-05-14-sr-token-usage-logging.md](2026-05-14-sr-token-usage-logging.md) | sr | Planned |
 
 ---
 

@@ -18,7 +18,9 @@ Supported markdown elements:
     1. item                         — Numbered list (List Number)
     **bold**                        — Inline bold (within any paragraph type)
     ALL CAPS HEADING:               — Auto-bolded (e.g. WC section headings)
-    | col | col |                   — GFM pipe table with `|---|---|` separator row
+    | col | col |                   — GFM pipe table (styled: dark-blue header + grey-bordered body)
+    <!-- layout --> + GFM table     — Borderless 2-col layout table for label/value blocks
+                                      (no header styling, no borders, fixed label/value widths)
     blank line                      — Paragraph spacer (small vertical gap)
     anything else                   — Normal paragraph
 """
@@ -29,7 +31,7 @@ from pathlib import Path
 
 try:
     from docx import Document
-    from docx.shared import Pt, RGBColor
+    from docx.shared import Pt, RGBColor, Inches
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 except ImportError:
@@ -39,7 +41,7 @@ except ImportError:
         stdout=subprocess.DEVNULL
     )
     from docx import Document
-    from docx.shared import Pt, RGBColor
+    from docx.shared import Pt, RGBColor, Inches
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
@@ -162,6 +164,43 @@ def add_md_table(doc, header_row, body_rows):
     return table
 
 
+def add_layout_table(doc, header_row, body_rows,
+                     label_col_width=Inches(1.4),
+                     value_col_width=Inches(5.0)):
+    """
+    Borderless 2-column layout table for header blocks (label/value alignment).
+    No header styling, no borders, no cell shading — every row is plain text
+    in two aligned columns. Inline **bold** is honoured inside cells.
+
+    Used for things like the WC PR-1/PR-2 demographic header where labels
+    (TO:, Patient:, DOB:, …) need to sit in a narrow bold column with values
+    aligned to their right.
+    """
+    cols = len(header_row)
+    rows = 1 + len(body_rows)
+    table = doc.add_table(rows=rows, cols=cols)
+    table.autofit = False
+
+    all_rows = [header_row] + body_rows
+    for r_idx, row_data in enumerate(all_rows):
+        cells = table.rows[r_idx].cells
+        for c_idx in range(cols):
+            cell = cells[c_idx]
+            cell.text = ''
+            value = row_data[c_idx] if c_idx < len(row_data) else ''
+            parse_inline_bold(cell.paragraphs[0], value)
+            # Deliberately no shading, no borders — this is a plain layout grid.
+
+    # Fixed widths for 2-col label/value layout. python-docx requires setting
+    # cell widths per-row (autofit must be False, which we already set).
+    if cols == 2:
+        for row in table.rows:
+            row.cells[0].width = label_col_width
+            row.cells[1].width = value_col_width
+
+    return table
+
+
 def is_allcaps_heading(text):
     """
     Return True if the line looks like an ALL CAPS section heading.
@@ -214,6 +253,28 @@ def convert_md_to_docx(md_path: Path, docx_path: Path):
     i = 0
     while i < len(lines):
         line = lines[i]
+
+        # --- Borderless layout table: <!-- layout --> + GFM table ---
+        # Used for header blocks (e.g. WC TO/CC/Patient demographic block)
+        # where we want label/value alignment without table styling.
+        if line.strip() == '<!-- layout -->':
+            if (i + 1 < len(lines)
+                    and is_table_row(lines[i + 1])
+                    and i + 2 < len(lines)
+                    and is_table_separator(lines[i + 2])):
+                header = split_table_row(lines[i + 1])
+                body = []
+                j = i + 3
+                while j < len(lines) and is_table_row(lines[j]) and not is_table_separator(lines[j]):
+                    body.append(split_table_row(lines[j]))
+                    j += 1
+                add_layout_table(doc, header, body)
+                i = j
+                continue
+            else:
+                # Marker without a following table — skip the marker silently.
+                i += 1
+                continue
 
         # --- GFM pipe table (header + separator + body rows) ---
         if (is_table_row(line)
