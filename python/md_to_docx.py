@@ -17,6 +17,7 @@ Supported markdown elements:
       - sub-item                    — Indented bullet (List Bullet 2)
     1. item                         — Numbered list (List Number)
     **bold**                        — Inline bold (within any paragraph type)
+    <u>text</u>                     — Inline underline (combines with bold if nested)
     ALL CAPS HEADING:               — Auto-bolded (e.g. WC section headings)
     | col | col |                   — GFM pipe table (styled: dark-blue header + grey-bordered body)
     <!-- layout --> + GFM table     — Borderless 2-col layout table for label/value blocks
@@ -69,16 +70,35 @@ def add_horizontal_rule(doc):
 
 def parse_inline_bold(paragraph, text):
     """
-    Add runs to a paragraph, handling **bold** spans.
-    Supports: **Key:** value  or  plain text with **bold** words.
+    Add runs to a paragraph, handling inline formatting markers:
+        **text**     → bold
+        <u>text</u>  → underline
+
+    Bold and underline can be combined by nesting either way — `**<u>x</u>**`
+    or `<u>**x**</u>` both yield a bold-and-underlined run.
+
+    Supports patterns like: `**Key:** value`, plain prose with `<u>underlined</u>`
+    spans, or any mix. Function name kept as `parse_inline_bold` for backwards
+    compatibility with the rest of this module; it now handles both formatting
+    markers, not bold alone.
     """
-    parts = re.split(r'(\*\*.*?\*\*)', text)
-    for part in parts:
-        if part.startswith('**') and part.endswith('**'):
-            run = paragraph.add_run(part[2:-2])
-            run.bold = True
-        elif part:
-            paragraph.add_run(part)
+    # Two-pass parse: first split on bold spans, then within each piece split
+    # on underline spans. This makes nesting in either direction work cleanly.
+    for bold_chunk in re.split(r'(\*\*.*?\*\*)', text):
+        if not bold_chunk:
+            continue
+        is_bold = bold_chunk.startswith('**') and bold_chunk.endswith('**')
+        inner = bold_chunk[2:-2] if is_bold else bold_chunk
+        for u_chunk in re.split(r'(<u>.*?</u>)', inner):
+            if not u_chunk:
+                continue
+            is_u = u_chunk.startswith('<u>') and u_chunk.endswith('</u>')
+            content = u_chunk[3:-4] if is_u else u_chunk
+            run = paragraph.add_run(content)
+            if is_bold:
+                run.bold = True
+            if is_u:
+                run.underline = True
 
 
 def is_table_row(line):
