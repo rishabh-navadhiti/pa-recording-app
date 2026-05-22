@@ -41,6 +41,12 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
   - Hide `*_cdi.md` and `*_cdi.json` on Windows (canonical view shows the docx only).
 - **Test execution is not in this PR.** The implementing session documented six test scenarios in `notes-claude/skills/cdi-review/TESTS.md` as a checklist for the human to run after merge. Nested `claude -p` calls during implementation waste tokens, are slow, and don't catch the right issues — real-case verification by the user is the gate.
 
+**Known v1.1 follow-ups (logged 2026-05-22):**
+
+- **Move CDI rendering script out of `SKILL.md` into `python/cdi_render.py`.** The deterministic JSON→markdown rendering Python script in Step 8 of `cdi-review/SKILL.md` (~100 lines) is mechanical formatting, not LLM work. It belongs in a sibling Python file the same way `md_to_docx.py` lives. Result: skill drops from ~650 to ~550 lines, rendering becomes testable without spawning Claude, and the future colored-cell styling pass becomes a Python-only edit. Not blocking v1.
+- **Strip repo-internal doc references from `notes-claude/` content.** Lines like "(per the design decision in `docs/pa-planning/04-open-questions.md` Round 2)" in `SKILL.md` and `standards/README.md` reference files that aren't synced to `<NOTES_DIR>/.claude/` at runtime. The skill is a production artifact — rationale belongs in DECISIONS.md, not in the skill prompt. Behavior statements only in runtime files.
+- **Unify docx generation path.** See [plans/2026-05-22-rs-unify-docx-generation.md](plans/2026-05-22-rs-unify-docx-generation.md). The `generate-note` skill currently has inline docx generation (added during the multi-patient flow work — that hack works but breaks the convention that all docx conversion goes through `main.js` → `python/md_to_docx.py`). Reconcile by giving skills a manifest contract and letting main.js drive all docx conversion.
+
 ---
 
 ## 2026-05-18 (rs) — SQLite as a metadata + index store, not a content store
