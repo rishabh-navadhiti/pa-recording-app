@@ -35,6 +35,8 @@ notes-claude/                   Bundled Claude Code workspace — copied at runt
   skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
   skills/update-doctor-profile/   Template updater skill, invoked by `claude -p "update doctor profile. Doctor: ..."`
   skills/edit-note/               Pre-chart skill, invoked by `claude -p "edit note. Case: ..."`
+  skills/cdi-review/              CDI Co-Pilot skill (v1, ortho only), invoked by `claude -p "review cdi. Case: ..."` — produces <case>_cdi.json + .md. Standalone in v1; app pipeline integration is Plan 2.
+  standards/                      Standards packs consumed by cdi-review (and future review engines): icd10_fy2026.md, ahima_acdis_2026.md, specialties/orthopedics.md. README.md explains naming + update policy.
   scripts/, draft/, settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
@@ -182,7 +184,7 @@ These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before chang
 1. **The state machine** — values in `STATE` (main.js + renderer.js) must stay in sync.
 2. **The stdin-stop protocol** ([main.js:888](main.js#L888)) — `stop-recording` writes `stop\n` to Python's stdin. Do NOT switch to `kill()`/`SIGTERM` — TerminateProcess on Windows skips Python's WAV-flush + MP3 convert.
 3. **Skills sync** ([main.js:629](main.js#L629)) — `notes-claude/` is the source of truth, copied to `<NOTES_DIR>/.claude/` on every launch. Don't store skill state inside `<NOTES_DIR>/.claude/` directly.
-4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [python/extract_attachments.py](python/extract_attachments.py) before the skill is invoked). The skills' Step 0/1 expects these exact formats.
+4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"`; `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [python/extract_attachments.py](python/extract_attachments.py) before the skill is invoked); `cdi-review` parses `Case: <abs-case-dir>. Specialty: <name>. Mode: <balanced|compliance|aggressive>. Doctor: <name>. Standards: <abs-standards-dir>` and emits one terminal line — `CDI_OK: <path> · <N> flags · quality <X>/100`, `CDI_SKIPPED: unsupported specialty '<name>'`, or `CDI_FAIL: <reason>` (Plan 2 will grep this from main.js). The skills' Step 0/1 expects these exact formats.
 
 ---
 
@@ -277,7 +279,8 @@ If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md i
 
 - Logs: `<NOTES_DIR>/app.log`
 - ElevenLabs key + notes path: `<repo>/.env`
-- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile}/SKILL.md`
+- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile,edit-note,cdi-review}/SKILL.md`
+- Standards (consumed by cdi-review, future review engines): `notes-claude/standards/{icd10_fy2026,ahima_acdis_2026}.md` + `notes-claude/standards/specialties/<specialty>.md` (ortho only in v1)
 - Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-7` (effort=max)
 - Python entry: `record.py`, `transcribe.py`, `md_to_docx.py`
 - Run: `npm start`

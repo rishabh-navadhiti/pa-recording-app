@@ -17,7 +17,7 @@ For engines not yet under active development, only the description is filled in.
 | 🟡 | **Deferred to v1.1** — punt to a follow-up cycle once v1 is shipping |
 | 🔵 | **Deferred to Phase 2+** — important but later |
 | ❌ | **Out of scope** — deliberately not building |
-| ⚪ | **TBD** — pending decision (default for sub-features before v1 scoping is finalized) |
+| ⚪ | **TBD** — pending decision (default for sub-features before scoping is finalized) |
 | ✅ | **Shipped** — built, merged, in production |
 
 ---
@@ -36,129 +36,153 @@ For engines not yet under active development, only the description is filled in.
 
 **The defining question:** *"Is every diagnosis coded to the highest specificity supported by the documentation, and are there any documentation gaps that would put a claim at risk?"*
 
+### v1 scope summary (2026-05-19, finalised)
+
+**v1 ships:** Core gap flagging (all 9 fields) + all 10 ICD-10 specificity checks + 4 additional sub-features from PDF 2 cross-check (clinical validation, problem-to-plan linkage, medical necessity narrative, automatic-critical conditions) + Orthopedics ruleset (with framework for adding others by dropping files) + all 3 operating modes (Balanced/Compliance/Aggressive with real behavioral differences) + CDI on/off toggle + Quality scores (overall + 3 sub-scores) + 3 summary-level status fields (medical_necessity_status, claim_defense_readiness, clinician_approval_required) + Standards version metadata.
+
+**Deferred to v1.1:** HCC capture (full scoring — Aggressive mode hints at opportunities but no scoring), confidence-gated routing UI, ring-gauge visualization, provider queries + repeat-blocking log, pre-AI rules engine, Documentation Defense additions, additional specialties.
+
+**Out of scope:** DRG impact (inpatient-only — we're outpatient).
+
 ### Sub-features (deliverables)
 
-These are the individual capabilities that make up "CDI." Status markers reflect provisional v1 scoping; finalised during the v1 scoping discussion.
+These are the individual capabilities that make up "CDI." Status markers reflect the v1 scoping decision (2026-05-19).
 
 #### Core gap-flagging
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.1 | Generate flags with type (`critical` / `warning` / `suggestion`) | ⚪ | The fundamental output. Without this nothing else matters. |
-| 1.2 | Per-flag `title` (short) + `body` (1-2 sentence rationale with guideline reference) | ⚪ | |
-| 1.3 | Per-flag `evidence_found` (max 4 specific findings from note) | ⚪ | What the note already supports — lets scribe verify quickly |
-| 1.4 | Per-flag `evidence_missing` (max 4 items not yet documented) | ⚪ | What's needed to upgrade the code |
-| 1.5 | Per-flag `suggested_codes` (1+ ICD-10 codes with descriptions) | ⚪ | Anchored against an ICD-10 source (either the existing connector or a static list) |
-| 1.6 | Per-flag `confidence` score (0-100) | ⚪ | Drives confidence-gated routing (see 1.10) |
-| 1.7 | Cap on flags per analysis (e.g. 6 in balanced mode) | ⚪ | Prevents flooding the scribe |
-| 1.8 | Specialty-aware ruleset selection (doctor's specialty drives which CDI rules fire) | ⚪ | Requires `doctors.specialty` field (now planned in SQLite design) |
+| 1.1 | Generate flags with type (`critical` / `warning` / `suggestion`) | 🟢 v1 | The fundamental output. Aggressive mode adds a 4th tier `opportunity` (1.31). |
+| 1.2 | Per-flag `title` (short) + `body` (1-2 sentence rationale with guideline reference) | 🟢 v1 | |
+| 1.3 | Per-flag `evidence_found` (max 4 specific findings from note) | 🟢 v1 | What the note already supports — lets scribe verify quickly |
+| 1.4 | Per-flag `evidence_missing` (max 4 items not yet documented) | 🟢 v1 | What's needed to upgrade the code |
+| 1.5 | Per-flag `suggested_codes` (1+ ICD-10 codes with descriptions) | 🟢 v1 | Anchored against an ICD-10 source (lookup against ICD-10 MCP connector if available; static fallback otherwise) |
+| 1.6 | Per-flag `confidence` score (0-100) | 🟢 v1 | Drives mode threshold filtering (see 1.29-1.31) |
+| 1.7 | Cap on flags per analysis (e.g. 6 in balanced mode) | 🟢 v1 | Prevents flooding the scribe |
+| 1.8 | Specialty-aware ruleset selection (doctor's specialty drives which CDI rules fire) | 🟢 v1 | Requires `doctors.specialty` field — already shipped in SQLite. No fallback for NULL specialty (CDI option hidden in UI). |
+| 1.8b | Per-flag `category` (Specificity / Linkage / HCC / Completeness / Audit-defense) | 🟢 v1 | Helps with future UI grouping; minor addition to schema |
 
 #### ICD-10 specificity checks
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.9 | Laterality (left/right/bilateral) | ⚪ | Highest-volume gap type for ortho |
-| 1.10 | Severity | ⚪ | Mild/moderate/severe; relevant for many conditions |
-| 1.11 | Acuity (acute / chronic / acute-on-chronic) | ⚪ | Drives Chapter 13 vs 19 selection in ortho |
-| 1.12 | Stage | ⚪ | E.g. KDIGO stage for AKI; CMC stage II/III/IV for thumb arthritis |
-| 1.13 | Body part / anatomical specificity | ⚪ | "Trigger finger" → which finger; "shoulder" → which structure |
-| 1.14 | 7th character (encounter type: A/D/S for injuries; B/C for open fractures) | ⚪ | Required on injury codes |
-| 1.15 | Symptom vs definitive Dx logic (Sec IV.H — outpatient uncertain diagnosis rule) | ⚪ | "Probable", "rule out", "possible" should code as symptoms, not the condition |
-| 1.16 | Coexisting conditions coding (Sec IV.J — all documented conditions affecting care) | ⚪ | High-value: catches Sabbag-type "Marx has 3 EMG conditions but only 1 in Assessment" gaps |
-| 1.17 | Diagnosis-to-procedure linkage check (ICD supports CPT) | ⚪ | E.g. trigger release CPT must be supported by trigger-finger ICD |
-| 1.18 | "With" convention recognition (Sec I.A.15 — combo codes like HTN+CKD) | ⚪ | Combination codes when ICD-10 provides them |
+| 1.9 | Laterality (left/right/bilateral) | 🟢 v1 | Highest-volume gap type for ortho |
+| 1.10 | Severity | 🟢 v1 | Mild/moderate/severe; relevant for many conditions |
+| 1.11 | Acuity (acute / chronic / acute-on-chronic) | 🟢 v1 | Drives Chapter 13 vs 19 selection in ortho |
+| 1.12 | Stage | 🟢 v1 | E.g. KDIGO stage for AKI; CMC stage II/III/IV for thumb arthritis |
+| 1.13 | Body part / anatomical specificity | 🟢 v1 | "Trigger finger" → which finger; "shoulder" → which structure |
+| 1.14 | 7th character (encounter type: A/D/S for injuries; B/C for open fractures) | 🟢 v1 | Required on injury codes |
+| 1.15 | Symptom vs definitive Dx logic (Sec IV.H — outpatient uncertain diagnosis rule) | 🟢 v1 | "Probable", "rule out", "possible" should code as symptoms, not the condition |
+| 1.16 | Coexisting conditions coding (Sec IV.J — all documented conditions affecting care) | 🟢 v1 | High-value: catches Sabbag-type "Marx has 3 EMG conditions but only 1 in Assessment" gaps |
+| 1.17 | Diagnosis-to-procedure linkage check (ICD supports CPT) | 🟢 v1 | E.g. trigger release CPT must be supported by trigger-finger ICD |
+| 1.18 | "With" convention recognition (Sec I.A.15 — combo codes like HTN+CKD) | 🟢 v1 | Combination codes when ICD-10 provides them |
+
+#### Clinical validation & linkage (added 2026-05-19 from PDF 2 cross-check)
+
+These were missing from the original sub-feature list. PDF 2 Section 7 (CDI Completeness Rubric) flagged them as essential CDI dimensions. Added to v1.
+
+| # | Sub-feature | Status | Notes |
+|---|---|---|---|
+| 1.16b | Clinical validation — Dx supported by clinical indicators (symptoms, exam, labs, imaging, meds, monitoring) | 🟢 v1 | High-value: catches Dx written without the physiologic evidence to back them. Flagged as `Completeness` category. Source: PDF 2 Sec 7 criterion 1. |
+| 1.16c | Problem-to-plan linkage — every active Dx has a matching plan action OR a stated reason for inaction | 🟢 v1 | Flagged as `Linkage` category. Source: PDF 2 Sec 7 criterion 2 + PDF 1 Sec 4 (Plan checklist). |
+| 1.18b | Medical necessity narrative — note explains why THIS visit / test / procedure / therapy is reasonable and necessary | 🟢 v1 | Drives the `medical_necessity_status` summary field (enum: supported / weak / missing). High payer relevance. Source: PDF 2 Sec 7 criterion 6 + PDF 3 "Big 3 gatekeepers" #1. |
+| 1.18c | Automatic-critical conditions (7 hold-trigger conditions auto-elevate to critical regardless of confidence) | 🟢 v1 | See CDI Plan 1 for the explicit list. Source: PDF 2 Sec 9 (Automatic Hold Triggers). |
 
 #### Per-specialty rulesets
 
+v1 ships ortho only, but the file structure under `standards/specialties/<name>.md` is the "framework" — adding a new specialty is dropping a new file. No code change needed; the skill loads `specialties/{doctor.specialty.lower()}.md` at runtime.
+
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.19 | Orthopedics ruleset | ⚪ | First specialty — most doctors are ortho; Jayanth's CDI_SKILL_ORTHOPEDICS.md is a strong starting point |
-| 1.20 | Hospitalist ruleset | ⚪ | Inpatient — not relevant to current doctors |
-| 1.21 | Cardiology ruleset | ⚪ | Both Fahd and Jayanth have content |
-| 1.22 | Family Medicine ruleset | ⚪ | Jayanth has content; Fahd doesn't list it explicitly |
-| 1.23 | ENT ruleset | ⚪ | |
-| 1.24 | Oncology ruleset | ⚪ | |
-| 1.25 | Pulmonology ruleset | ⚪ | |
-| 1.26 | Emergency Medicine ruleset | ⚪ | |
-| 1.27 | Pain Management / Spine ruleset | ⚪ | |
-| 1.28 | OB-GYN ruleset | ⚪ | Park is a gynecologist — we have data here even if Fahd's PDF doesn't list it |
+| 1.19 | Orthopedics ruleset | 🟢 v1 | First specialty — most doctors are ortho; Jayanth's CDI_SKILL_ORTHOPEDICS.md is a strong starting point |
+| 1.20 | Hospitalist ruleset | 🔵 Phase 2+ | Inpatient — not relevant to current doctors |
+| 1.21 | Cardiology ruleset | 🔵 Phase 2+ | Both Fahd and Jayanth have content; drop-in when a cardio doctor onboards |
+| 1.22 | Family Medicine ruleset | 🔵 Phase 2+ | Jayanth has content; Fahd doesn't list it explicitly |
+| 1.23 | ENT ruleset | 🔵 Phase 2+ | |
+| 1.24 | Oncology ruleset | 🔵 Phase 2+ | |
+| 1.25 | Pulmonology ruleset | 🔵 Phase 2+ | |
+| 1.26 | Emergency Medicine ruleset | 🔵 Phase 2+ | |
+| 1.27 | Pain Management / Spine ruleset | 🔵 Phase 2+ | |
+| 1.28 | OB-GYN ruleset | 🔵 Phase 2+ | Park is a gynecologist — we have data when needed |
 
 #### Operating modes
 
+Our implementation extends Fahd's "one sentence appended" pattern — modes affect three things (filtering, threshold, prompt instruction), not just the prompt label. Same skill, three real behavior profiles.
+
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.29 | Balanced mode (default — flags both under-documentation and over-coding) | ⚪ | The sane default |
-| 1.30 | Compliance mode (audit-defense — flags over-coding only, conservative) | ⚪ | Lower priority — useful after a bad audit |
-| 1.31 | Aggressive mode (revenue-capture — flags every legitimate upcoding opportunity) | ⚪ | Lower priority — useful for revenue-lift initiatives |
-| 1.32 | Per-doctor or per-encounter mode toggle in UI | ⚪ | UI feature — separate from the mode logic itself |
+| 1.29 | Balanced mode (default) | 🟢 v1 | All severities. Threshold confidence ≥50. Prompt: "Flag both under-documentation and over-coding." |
+| 1.30 | Compliance mode (audit-defense) | 🟢 v1 | Severity filter: critical + warning only (no suggestions). Threshold ≥70. Prompt: "Flag only confirmed risks supported by note evidence. Do not surface opportunities." |
+| 1.31 | Aggressive mode (revenue-capture) | 🟢 v1 | All severities + 4th tier `opportunity` (HCC hints, MDM upgrades, missed specificity). Threshold ≥30. Prompt: "Find every legitimate revenue-lift documented enough to query." |
+| 1.32 | CDI on/off toggle (per-doctor) + mode selector in UI | 🟢 v1 | Toggle reads from `doctors.enable_cdi`. Mode is a per-doctor setting (or per-encounter override later). When CDI is disabled, the skill doesn't fire. When specialty is NULL, the option is hidden. |
 
 #### HCC capture (Medicare Advantage risk adjustment)
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.33 | HCC detection from chronic conditions in note | ⚪ | CMS-HCC model v28 per Fahd's PDF |
-| 1.34 | Per-flag HCC opportunity label | ⚪ | "This flag captures an HCC: F32.0 (depressed mood)" |
-| 1.35 | Per-specialty HCC opportunity scan | ⚪ | Different specialties have different HCC-relevant conditions |
+| 1.33 | HCC detection from chronic conditions in note | 🟡 v1.1 | Aggressive mode (1.31) may *hint* at HCC opportunities even in v1, but no full HCC scoring |
+| 1.34 | Per-flag HCC opportunity label | 🟡 v1.1 | "This flag captures an HCC: F32.0 (depressed mood)" |
+| 1.35 | Per-specialty HCC opportunity scan | 🟡 v1.1 | Different specialties have different HCC-relevant conditions |
 
 #### DRG impact (inpatient billing)
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.36 | Per-flag DRG impact label (MCC / CC / no impact) | ⚪ | Inpatient-only — not relevant to our current outpatient-focused doctors. May never matter. |
+| 1.36 | Per-flag DRG impact label (MCC / CC / no impact) | ❌ Out of scope | Inpatient-only — not relevant to our outpatient-focused doctors. Revisit only if we onboard an inpatient practice. |
 
 #### Quality scoring
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.37 | Overall documentation quality score (0-100) | ⚪ | Single number for at-a-glance |
-| 1.38 | Sub-scores: Specificity / Evidence support / Completeness | ⚪ | Breakdown of the overall |
-| 1.39 | "Ring gauge" UI visualization | ⚪ | UI presentation — separate from the score itself |
+| 1.37 | Overall documentation quality score (0-100) | 🟢 v1 | Single number for at-a-glance. Computed from flag list. |
+| 1.38 | Sub-scores: Specificity / Evidence support / Completeness | 🟢 v1 | Breakdown of the overall |
+| 1.39 | "Ring gauge" UI visualization | 🟡 v1.1 | Needs the new CDI UI screen — visualization is separate from score computation |
 
 #### Confidence-gated routing
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.40 | Auto-approve flags with confidence ≥80% | ⚪ | Routing logic — needs UI |
-| 1.41 | Review flagged sections for 50–79% confidence | ⚪ | |
-| 1.42 | Full review for <50% confidence | ⚪ | |
+| 1.40 | Auto-approve flags with confidence ≥80% | 🟡 v1.1 | UI routing logic |
+| 1.41 | Review flagged sections for 50–79% confidence | 🟡 v1.1 | |
+| 1.42 | Full review for <50% confidence | 🟡 v1.1 | |
 
 #### Provider Query Generator
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.43 | Generate AHIMA-compliant queries from CDI flags | ⚪ | Non-leading, multi-choice, "clinically undetermined" always included |
-| 1.44 | Query type selection: Concurrent / Retrospective / Verbal | ⚪ | |
-| 1.45 | Indicator warning if fewer than 2 clinical indicators support the query | ⚪ | AHIMA 2026 requirement |
-| 1.46 | Per-patient repeat-query blocking log (AHIMA 2026 compliance) | ⚪ | Needs persistent storage → ties into SQLite design |
-| 1.47 | Query format: Subject / Clinical context / Question / Response options / Provider signature line | ⚪ | |
+| 1.43 | Generate AHIMA-compliant queries from CDI flags | 🟡 v1.1 | Non-leading, multi-choice, "clinically undetermined" always included |
+| 1.44 | Query type selection: Concurrent / Retrospective / Verbal | 🟡 v1.1 | |
+| 1.45 | Indicator warning if fewer than 2 clinical indicators support the query | 🟡 v1.1 | AHIMA 2026 requirement |
+| 1.46 | Per-patient repeat-query blocking log (AHIMA 2026 compliance) | 🟡 v1.1 | Needs persistent storage → uses SQLite schema |
+| 1.47 | Query format: Subject / Clinical context / Question / Response options / Provider signature line | 🟡 v1.1 | |
 
 #### Rules engine (pre-AI pattern matching)
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.48 | Pattern-matched rules fire before AI (zero API tokens for detection) | ⚪ | Fahd's approach — fast preliminary detection |
-| 1.49 | 32 structured rules across specialties (JSON schema) | ⚪ | |
-| 1.50 | Rule definitions versioned (FY2026 → FY2027 swap) | ⚪ | |
+| 1.48 | Pattern-matched rules fire before AI (zero API tokens for detection) | 🟡 v1.1 | Optimization — v1 is LLM-only |
+| 1.49 | 32 structured rules across specialties (JSON schema) | 🟡 v1.1 | |
+| 1.50 | Rule definitions versioned (FY2026 → FY2027 swap) | 🟡 v1.1 | |
 
 #### Standards source / versioning
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.51 | Bound to FY2026 ICD-10-CM Official Guidelines (CMS/NCHS Oct 1, 2025) | ⚪ | The legal source of truth |
-| 1.52 | AHIMA/ACDIS 2026 query compliance rules | ⚪ | |
-| 1.53 | Version + effective date metadata in CDI output (audit trail) | ⚪ | |
+| 1.51 | Bound to FY2026 ICD-10-CM Official Guidelines (CMS/NCHS Oct 1, 2025) | 🟢 v1 | Cited in source standards files |
+| 1.52 | AHIMA/ACDIS 2026 query compliance rules | 🟢 v1 | Loaded as a standards file, referenced by the skill |
+| 1.53 | Version + effective date metadata in CDI output (audit trail) | 🟢 v1 | Each output file includes the standards version it was generated against |
 
 #### Documentation Defense additions (from Fahd's WhatsApp 15/5/2026)
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.54 | Conservative therapy documented before surgical authorization | ⚪ | Prior auth defense |
-| 1.55 | Imaging support / clinical rationale for orders | ⚪ | |
-| 1.56 | Surgical decision rationale explicit | ⚪ | |
-| 1.57 | CPT modifier support (-24, -25, -57, -59) — Ortho-specific | ⚪ | |
-| 1.58 | Surgery scheduling readiness check | ⚪ | |
-| 1.59 | Procedure prior auth readiness check | ⚪ | |
-| 1.60 | ICD-CPT pairing for medical necessity | ⚪ | Overlaps with 1.17 — may consolidate |
+| 1.54 | Conservative therapy documented before surgical authorization | 🟡 v1.1 | Partially covered by 1.16/1.17 in v1; explicit "Documentation Defense Engine" handling later |
+| 1.55 | Imaging support / clinical rationale for orders | 🟡 v1.1 | |
+| 1.56 | Surgical decision rationale explicit | 🟡 v1.1 | |
+| 1.57 | CPT modifier support (-24, -25, -57, -59) — Ortho-specific | 🟡 v1.1 | |
+| 1.58 | Surgery scheduling readiness check | 🟡 v1.1 | |
+| 1.59 | Procedure prior auth readiness check | 🟡 v1.1 | |
+| 1.60 | ICD-CPT pairing for medical necessity | 🟡 v1.1 | Overlaps with 1.17 — may consolidate |
 
 ### What CDI catches — concrete examples
 
