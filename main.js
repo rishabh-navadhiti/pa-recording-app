@@ -13,7 +13,7 @@ const { spawn, execSync } = require('child_process')
 // shows a recovery dialog instead of silently crashing. checkForUpdates() handles
 // auto-rebuild after a git pull; install.ps1/reinstall.ps1 handle fresh installs.
 let initDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup
-let dbDoctors, dbSessions, dbCases, dbEvents
+let dbDoctors, dbSessions, dbCases, dbEvents, dbCdiFlags
 let _dbStartupError = null
 try {
   ;({ initDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup } = require('./db/init'))
@@ -21,6 +21,7 @@ try {
   dbSessions = require('./db/sessions')
   dbCases    = require('./db/cases')
   dbEvents   = require('./db/events')
+  dbCdiFlags = require('./db/cdi_flags')
 } catch (e) {
   _dbStartupError = e
 }
@@ -74,6 +75,7 @@ const STATUS_LABELS = {
   generating_note: 'Generating note...',
   queued:          'Queued',
   coding_icd:      'Adding ICD codes...',
+  running_cdi:     'Running CDI review...',
   converting:      'Converting...',
   completed:       'Completed',
   failed:          'Failed'
@@ -348,7 +350,7 @@ function hideExistingCaseMdFiles() {
           const caseDir = path.join(sessionPath, c.name)
           try {
             fs.readdirSync(caseDir)
-              .filter(f => f.endsWith('.md'))
+              .filter(f => f.endsWith('.md') || f.endsWith('_cdi.json'))
               .forEach(f => hideFileFromUser(path.join(caseDir, f)))
           } catch {}
         }
@@ -676,10 +678,21 @@ function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPat
     dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapPath })
   } catch (e) { log(`[db] soap path update failed: ${e.message}`) }
 
-  // ICD coding (best-effort, sequential before docx so the .docx contains the appended codes).
-  // spawnIcdCoding never rejects — failures resolve cleanly and we fall through to docx.
+  // Per-case post-processing chain: ICD → CDI → docx(soap) + docx(cdi).
+  // Each step is best-effort; failures resolve cleanly and the chain continues.
+  // The SOAP docx transition flips the row to 'completed' (primary deliverable);
+  // the CDI docx populates cdi_docx_path so the Open CDI Review button can appear.
+  const soapDoctor = dbDoctors?.getDoctor(activeDoctorId) || null
+  const caseDir = path.dirname(soapPath)
   spawnIcdCoding({ soapNoteMdPath: soapPath, caseId, caseTag, doctorId: activeDoctorId })
-    .then(() => spawnDocxConversion(soapPath, caseTag, null, caseId))
+    .then(() => spawnCdiReview({ caseDir, caseId, caseTag, doctor: soapDoctor }))
+    .then(cdiResult => {
+      if (caseTag) updateRecordingStatus(caseTag, 'converting')
+      spawnDocxConversion(soapPath, caseTag, null, caseId)
+      if (cdiResult && cdiResult.ok && cdiResult.mdPath) {
+        spawnDocxConversion(cdiResult.mdPath, caseTag, null, caseId)
+      }
+    })
 }
 
 // Multi-patient manifest: for each ok/partial case the skill wrote into the recording
@@ -720,6 +733,12 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
       if (found) parentMp3Path = path.join(recordingFolder, found)
     } catch {}
   }
+
+  // Look up the doctor record once — all children in this run share the same
+  // doctor (same recording, same session). Used by spawnCdiReview to build the
+  // skill prompt's Specialty + Doctor fields.
+  let childDoctor = null
+  try { childDoctor = parentDoctorId ? (dbDoctors.getDoctor(parentDoctorId) || null) : null } catch {}
 
   const parentTranscript     = path.join(recordingFolder, 'transcript.md')
   const parentTranscriptDocx = path.join(recordingFolder, 'transcript.docx')
@@ -857,17 +876,21 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
       })
     } catch (e) { log(`[db] createChildCase failed: ${e.message}`) }
 
-    // ICD per child (sequential across children so the MCP connector + Anthropic
-    // quota aren't hit in parallel and the per-case log block stays readable).
-    // ICD modifies childSoapMd in place — must complete before docx so the .docx
-    // contains the appended codes. spawnIcdCoding flips this patient's status
-    // from 'queued' to 'coding_icd' on entry.
+    // Per-child post-processing chain: ICD → CDI → docx(soap) + docx(cdi).
+    // Sequential across children so the MCP connector + Anthropic quota aren't
+    // hit in parallel and the per-case log block stays readable. ICD modifies
+    // childSoapMd in place — must complete before docx so the .docx contains
+    // the appended codes. CDI runs after ICD so it sees codes in the note
+    // (drives the ICD-aware validation behavior in cdi-review/SKILL.md §A).
+    // spawnIcdCoding flips this patient's status from 'queued' to 'coding_icd';
+    // spawnCdiReview flips to 'running_cdi' (no-op if CDI is globally off).
     await spawnIcdCoding({ soapNoteMdPath: childSoapMd, caseId: childCaseId, caseTag, patientFolderName: folderName, doctorId: parentDoctorId })
-    // Once ICD is done, transition to 'converting' for the docx step (otherwise
-    // the popup stays on 'coding_icd' through the brief docx window — fine, but
-    // 'converting' matches the single-patient state machine).
+    const cdiResult = await spawnCdiReview({ caseDir: targetDir, caseId: childCaseId, caseTag, patientFolderName: folderName, doctor: childDoctor })
     if (caseTag) updatePatientStatus(caseTag, folderName, 'converting')
     spawnDocxConversion(childSoapMd, caseTag, folderName, childCaseId)
+    if (cdiResult && cdiResult.ok && cdiResult.mdPath) {
+      spawnDocxConversion(cdiResult.mdPath, caseTag, folderName, childCaseId)
+    }
     childrenCreated++
   }
 
@@ -996,10 +1019,251 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
   })
 }
 
+// ---------------------------------------------------------------------------
+// CDI review — runs after ICD-10 coding has appended codes to the SOAP .md
+// (or skipped/failed), and BEFORE the .docx conversion. Invokes the
+// cdi-review skill which produces <case_stem>_cdi.json + <case_stem>_cdi.md
+// in the same case folder. Best-effort: any failure logs + emits a
+// service-warning IPC + records a processing_events row, but the pipeline
+// always continues to spawnDocxConversion — a SOAP note without a CDI review
+// is still useful.
+//
+// Returns a Promise that resolves with { ok, jsonPath, mdPath } once the
+// skill exits. On failure or skip, jsonPath/mdPath are populated only if
+// the skill wrote a stub file (which it always tries to). The promise never
+// rejects — the caller stays linear.
+//
+// Gating: the global enableCdi setting (in <NOTES_DIR>/settings.json) gates
+// whether the skill is spawned at all. The per-doctor specialty is NOT
+// checked here — the skill's own Step 0b handles missing/unsupported
+// specialty cleanly and emits CDI_SKIPPED.
+// ---------------------------------------------------------------------------
+function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor }) {
+  return new Promise(resolve => {
+    const tag = caseTag ? `[${caseTag}] ` : ''
+    const settings = readSettings()
+
+    // Global gate — when CDI is disabled, skip the spawn entirely. No DB
+    // writes, no status transitions, no UI elements.
+    if (!settings.enableCdi) {
+      resolve({ ok: false, jsonPath: null, mdPath: null, skipped: 'disabled' })
+      return
+    }
+
+    if (!caseDir || !fs.existsSync(caseDir)) {
+      log(`${tag}[cdi] SKIPPED: case dir not found at ${caseDir}`)
+      try {
+        const evId = dbEvents.startEvent({ caseId, jobKind: 'cdi', relatedDoctorId: doctor?.id || null, startedAt: nowIso() })
+        if (evId != null) dbEvents.finishEvent(evId, { status: 'failed', errorMessage: 'case_dir missing before cdi', finishedAt: nowIso() })
+      } catch (e) { log(`${tag}[db] cdi missing-case-dir event failed: ${e.message}`) }
+      resolve({ ok: false, jsonPath: null, mdPath: null })
+      return
+    }
+
+    const mode = settings.cdiMode || 'balanced'
+    const specialty = (doctor?.specialty || '').toLowerCase()
+    const doctorName = doctor?.name || ''
+    const standardsAbs = path.join(NOTES_DIR, '.claude', 'standards')
+
+    // Prompt signature matches notes-claude/skills/cdi-review/SKILL.md Step 0a.
+    // The skill parses by ordered markers (`Case:` `Specialty:` `Mode:`
+    // `Doctor:` `Standards:`) — keep the field order stable.
+    const prompt = [
+      'review cdi.',
+      `Case: ${caseDir}.`,
+      `Specialty: ${specialty}.`,
+      `Mode: ${mode}.`,
+      `Doctor: ${doctorName}.`,
+      `Standards: ${standardsAbs}`
+    ].join(' ')
+
+    const soapModel = settings.soapModel
+    log(`${tag}[cdi] Spawning: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''} (effort=high)`)
+
+    // Surface the running stage in the popup. Mirror spawnIcdCoding's pattern.
+    if (patientFolderName) {
+      updatePatientStatus(caseTag, patientFolderName, 'running_cdi')
+    } else if (caseTag) {
+      updateRecordingStatus(caseTag, 'running_cdi')
+    }
+
+    // Mark the case row as running CDI; record the mode + transition to 'running'.
+    try { dbCases.updateCaseCdi(caseId, { cdi_status: 'running', cdi_mode: mode }) } catch (e) {
+      log(`${tag}[db] updateCaseCdi(running) failed: ${e.message}`)
+    }
+
+    const startedAt = nowIso()
+    const wallStart = Date.now()
+    let eventId = null
+    try {
+      eventId = dbEvents.startEvent({ caseId, jobKind: 'cdi', relatedDoctorId: doctor?.id || null, modelUsed: soapModel, effort: 'high', startedAt })
+    } catch (e) { log(`${tag}[db] startEvent(cdi) failed: ${e.message}`) }
+
+    spawnClaude({
+      prompt,
+      model: soapModel,
+      effort: 'high',
+      tag,
+      label: 'cdi',
+      onClose(code, errText, resultText, resultEvent) {
+        const durationMs = Date.now() - wallStart
+        const combined = (resultText || '') + '\n' + (errText || '')
+        const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(combined)
+
+        // Parse the terminal contract line from the skill (Step 9):
+        //   CDI_OK: <abs path> · <N> flags · quality <X>/100 [· ICD validated]
+        //   CDI_SKIPPED: unsupported specialty '<specialty>'
+        //   CDI_FAIL: <reason>
+        const okMatch      = /CDI_OK:\s*(\S+)\s*·\s*(\d+)\s*flags\s*·\s*quality\s*(\d+)\/100(.*)/i.exec(resultText)
+        const skippedMatch = /CDI_SKIPPED:\s*(.*)$/im.exec(resultText)
+        const failMatch    = /CDI_FAIL:\s*(.*)$/im.exec(resultText)
+
+        let outcome
+        if (okMatch)             outcome = 'ok'
+        else if (skippedMatch)   outcome = 'skipped'
+        else if (failMatch)      outcome = 'failed'
+        else if (code === 0)     outcome = 'failed_silent'  // exit 0 but no terminal line
+        else                     outcome = 'failed'
+
+        let cdiStatusDb     = 'failed'
+        let eventStatus     = 'failed'
+        let jsonPathResult  = null
+        let mdPathResult    = null
+
+        if (outcome === 'ok') {
+          cdiStatusDb = 'completed'
+          eventStatus = isRateLimited ? 'rate_limited' : 'success'
+          jsonPathResult = okMatch[1]
+          // .md sits next to .json with the same stem.
+          if (jsonPathResult && jsonPathResult.endsWith('_cdi.json')) {
+            mdPathResult = jsonPathResult.replace(/_cdi\.json$/, '_cdi.md')
+          }
+
+          // Parse the JSON, persist summary fields + flags.
+          try {
+            if (jsonPathResult && fs.existsSync(jsonPathResult)) {
+              const cdi = JSON.parse(fs.readFileSync(jsonPathResult, 'utf8'))
+              const summary = cdi.summary || {}
+              const flagCount = Array.isArray(cdi.flags) ? cdi.flags.length : 0
+              const qScore = (summary.overall_quality_score != null) ? Number(summary.overall_quality_score) : null
+              const approval = !!summary.clinician_approval_required
+
+              try {
+                dbCases.updateCaseCdi(caseId, {
+                  cdi_status:                       'completed',
+                  cdi_json_path:                    jsonPathResult,
+                  cdi_md_path:                      mdPathResult,
+                  cdi_quality_score:                qScore,
+                  cdi_medical_necessity:            summary.medical_necessity_status || null,
+                  cdi_claim_defense_readiness:      summary.claim_defense_readiness || null,
+                  cdi_clinician_approval_required:  approval ? 1 : 0
+                })
+              } catch (e) { log(`${tag}[db] updateCaseCdi(ok) failed: ${e.message}`) }
+
+              if (Array.isArray(cdi.flags) && cdi.flags.length > 0) {
+                try { dbCdiFlags.insertFlags(caseId, eventId, cdi.flags) } catch (e) {
+                  log(`${tag}[db] insertFlags failed: ${e.message}`)
+                }
+              }
+
+              // Surface to the popup so the Open CDI Review button can appear
+              // (once the cdi docx is generated) and the badge can show.
+              const cdiUi = {
+                cdiStatus:                       'completed',
+                cdiFlagCount:                    flagCount,
+                cdiQualityScore:                 qScore,
+                cdiClinicianApprovalRequired:    approval
+              }
+              if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
+              else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
+
+              // Hide the _cdi.json on Windows — the user opens the .docx.
+              hideFileFromUser(jsonPathResult)
+
+              log(`${tag}[cdi] CDI_OK: ${flagCount} flags, quality ${qScore}/100${approval ? ' (approval required)' : ''}`)
+            } else {
+              log(`${tag}[cdi] WARNING: CDI_OK terminal line but JSON not on disk: ${jsonPathResult}`)
+            }
+          } catch (e) {
+            log(`${tag}[cdi] WARNING: failed to read/parse cdi JSON: ${e.message}`)
+            // Still record success at the event level — the file just had a parse issue.
+          }
+        } else if (outcome === 'skipped') {
+          cdiStatusDb = 'skipped'
+          eventStatus = 'success'
+          const reason = (skippedMatch[1] || '').trim()
+          log(`${tag}[cdi] CDI_SKIPPED: ${reason}`)
+          try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped' }) } catch (e) {
+            log(`${tag}[db] updateCaseCdi(skipped) failed: ${e.message}`)
+          }
+          const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: reason }
+          if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
+          else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
+        } else {
+          // failed or failed_silent
+          eventStatus = isRateLimited ? 'rate_limited' : 'failed'
+          const reason = failMatch ? (failMatch[1] || '').trim() : (outcome === 'failed_silent' ? 'no terminal line' : 'exit non-zero')
+          log(`${tag}[cdi] CDI_FAIL: ${reason}`)
+          try { dbCases.updateCaseCdi(caseId, { cdi_status: 'failed' }) } catch (e) {
+            log(`${tag}[db] updateCaseCdi(failed) failed: ${e.message}`)
+          }
+          const cdiUi = { cdiStatus: 'failed' }
+          if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
+          else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
+
+          if (isRateLimited && win && !win.isDestroyed()) {
+            win.webContents.send('service-warning', {
+              title: 'Claude usage limit reached',
+              message: 'CDI review could not be completed — try again once the limit resets. The SOAP note has been saved.'
+            })
+          } else if (win && !win.isDestroyed()) {
+            win.webContents.send('service-warning', {
+              title: 'CDI review failed',
+              message: 'The CDI review skill exited with an error. The SOAP note is unaffected — check app.log for details.'
+            })
+          }
+        }
+
+        if (eventId != null) {
+          try {
+            dbEvents.finishEvent(eventId, {
+              status: eventStatus,
+              ...extractUsage(resultEvent),
+              durationMs,
+              errorMessage: eventStatus === 'success' ? null : (errText || '').slice(0, 1024) || null,
+              finishedAt: nowIso()
+            })
+          } catch (e) { log(`${tag}[db] finishEvent(cdi) failed: ${e.message}`) }
+        }
+
+        resolve({ ok: outcome === 'ok', jsonPath: jsonPathResult, mdPath: mdPathResult, status: cdiStatusDb })
+      },
+      onError(err) {
+        log(`${tag}[cdi ERR] failed to spawn claude: ${err.message}`)
+        if (eventId != null) {
+          try { dbEvents.finishEvent(eventId, { status: 'failed', durationMs: Date.now() - wallStart, errorMessage: err.message, finishedAt: nowIso() }) } catch {}
+        }
+        try { dbCases.updateCaseCdi(caseId, { cdi_status: 'failed' }) } catch {}
+        resolve({ ok: false, jsonPath: null, mdPath: null, status: 'failed' })
+      }
+    })
+  })
+}
+
 function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   log(`${tag}[docx] Converting: ${mdPath}`)
-  const isSoapDocx = path.basename(mdPath) !== 'transcript.md'
+  // Classify the .md by filename so the success path knows which case column
+  // to populate: 'transcript' updates transcript_docx_path, 'cdi' updates
+  // cdi_docx_path (and never touches case status), 'soap' updates
+  // soap_docx_path AND transitions the row to 'completed' (the SOAP docx is
+  // the primary deliverable; CDI docx is supplementary).
+  const base = path.basename(mdPath)
+  const docxKind = base === 'transcript.md'
+    ? 'transcript'
+    : base.endsWith('_cdi.md')
+      ? 'cdi'
+      : 'soap'
   const wallStart = Date.now()
 
   let eventId = null
@@ -1020,7 +1284,7 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
     const docxPath = mdPath.replace(/\.md$/, '.docx')
     if (code === 0) hideFileFromUser(mdPath)
 
-    if (isSoapDocx) {
+    if (docxKind === 'soap') {
       if (code === 0) {
         try {
           dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: nowIso() })
@@ -1049,6 +1313,20 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
           updatePatientStatus(caseTag, patientFolderName, 'failed')
         } else if (caseTag) {
           updateRecordingStatus(caseTag, 'failed')
+        }
+      }
+    } else if (docxKind === 'cdi') {
+      // CDI docx — populate cdi_docx_path, surface Open CDI Review button in
+      // status popup, but do NOT change case status (the soap docx owns that).
+      try {
+        dbEvents.finishEvent(eventId, { status: code === 0 ? 'success' : 'failed', durationMs, finishedAt: nowIso() })
+        if (code === 0) dbCases.updateCaseCdi(caseId, { cdi_docx_path: docxPath })
+      } catch (e) { log(`[db] docx cdi update failed: ${e.message}`) }
+      if (code === 0) {
+        if (patientFolderName) {
+          setPatientCdi(caseTag, patientFolderName, { cdiDocxPath: docxPath })
+        } else if (caseTag) {
+          setRecordingCdi(caseTag, { cdiDocxPath: docxPath })
         }
       }
     } else {
@@ -1847,6 +2125,27 @@ function updatePatientStatus(caseTag, patientFolderName, status) {
     }
     broadcastRecordingStatus()
   }
+}
+
+// Merge a CDI field update onto the single-patient recording entry and rebroadcast.
+// The CDI fields are decorative on top of the main status state machine — they
+// drive the Open CDI Review button + the approval-required badge in the popup
+// without affecting the recording's primary status transitions.
+function setRecordingCdi(caseTag, cdiUpdate) {
+  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+  if (!entry || !cdiUpdate) return
+  Object.assign(entry, cdiUpdate)
+  broadcastRecordingStatus()
+}
+
+// Same, but for one child in a multi-patient recording.
+function setPatientCdi(caseTag, patientFolderName, cdiUpdate) {
+  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+  if (!entry || !entry.patients || !cdiUpdate) return
+  const patient = entry.patients.find(p => p.folderName === patientFolderName)
+  if (!patient) return
+  Object.assign(patient, cdiUpdate)
+  broadcastRecordingStatus()
 }
 
 function broadcastRecordingStatus() {
