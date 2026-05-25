@@ -8,11 +8,22 @@ const fs = require('fs')
 const os = require('os')
 const https = require('https')
 const { spawn, execSync } = require('child_process')
-const { initDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup } = require('./db/init')
-const dbDoctors  = require('./db/doctors')
-const dbSessions = require('./db/sessions')
-const dbCases    = require('./db/cases')
-const dbEvents   = require('./db/events')
+// DB modules use better-sqlite3, a native addon that must be compiled for the
+// running Electron version. Wrap in try-catch so a missing/mis-built binary
+// shows a recovery dialog instead of silently crashing. checkForUpdates() handles
+// auto-rebuild after a git pull; install.ps1/reinstall.ps1 handle fresh installs.
+let initDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup
+let dbDoctors, dbSessions, dbCases, dbEvents
+let _dbStartupError = null
+try {
+  ;({ initDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup } = require('./db/init'))
+  dbDoctors  = require('./db/doctors')
+  dbSessions = require('./db/sessions')
+  dbCases    = require('./db/cases')
+  dbEvents   = require('./db/events')
+} catch (e) {
+  _dbStartupError = e
+}
 const { parseSkillManifest } = require('./parseSkillManifest')
 
 // ---------------------------------------------------------------------------
@@ -1497,6 +1508,60 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   })
 }
 
+// After a git pull that brought new commits: run npm install (picks up new/changed
+// deps) then electron-rebuild (recompiles better-sqlite3 for this Electron ABI).
+// Always calls onDone() — failure is logged but non-fatal; the safety net in
+// app.whenReady() will show a recovery dialog if the user restarts too early.
+function runPostUpdateSetup(onDone) {
+  const isWin = process.platform === 'win32'
+
+  log('[update] Running npm install...')
+  const npmProc = spawn('npm', ['install', '--no-audit', '--silent'], {
+    cwd: __dirname,
+    stdio: 'pipe',
+    shell: isWin
+  })
+  let npmStderr = ''
+  npmProc.stderr.on('data', d => { npmStderr += d.toString() })
+  npmProc.on('error', err => {
+    log(`[update] npm install error: ${err.message}`)
+    onDone()
+  })
+  npmProc.on('close', code => {
+    if (code !== 0) {
+      log(`[update] npm install failed (exit ${code}): ${npmStderr.trim()}`)
+      onDone()
+      return
+    }
+    log('[update] npm install OK — rebuilding native modules for Electron...')
+
+    const rebuildBin = path.join(
+      __dirname, 'node_modules', '.bin',
+      isWin ? 'electron-rebuild.cmd' : 'electron-rebuild'
+    )
+    const rebuildProc = spawn(rebuildBin, ['-f', '-w', 'better-sqlite3'], {
+      cwd: __dirname,
+      stdio: 'pipe',
+      shell: isWin
+    })
+    let rebuildLog = ''
+    rebuildProc.stdout.on('data', d => { rebuildLog += d.toString() })
+    rebuildProc.stderr.on('data', d => { rebuildLog += d.toString() })
+    rebuildProc.on('error', err => {
+      log(`[update] electron-rebuild not found or failed to start: ${err.message}`)
+      onDone()
+    })
+    rebuildProc.on('close', rCode => {
+      if (rCode !== 0) {
+        log(`[update] electron-rebuild failed (exit ${rCode}): ${rebuildLog.trim()}`)
+      } else {
+        log('[update] Native modules rebuilt OK')
+      }
+      onDone()
+    })
+  })
+}
+
 function checkForUpdates() {
   // Run git pull --ff-only in background — no blocking, no crash on failure
   const gitPull = spawn('git', ['pull', '--ff-only'], {
@@ -1527,19 +1592,23 @@ function checkForUpdates() {
       log('[update] Skills re-synced from updated code')
     }
 
-    // Notify the user via tray tooltip and OS notification
-    log('[update] New version pulled — notifying user')
-    const stagingTag = isStagingBuild() ? ' (staging)' : ''
-    if (tray) tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
-
-    const { Notification } = require('electron')
-    if (Notification.isSupported()) {
-      new Notification({
-        title: `AI Medical Scribe${stagingTag} updated`,
-        body: 'A new version was downloaded. Restart the app to apply it.',
-        silent: true
-      }).show()
-    }
+    // Run npm install + electron-rebuild before telling the user to restart,
+    // so the native modules are ready when they do. Notification fires after
+    // both steps complete (or if either fails — the safety net dialog handles
+    // the restart-too-early case).
+    runPostUpdateSetup(() => {
+      const stagingTag = isStagingBuild() ? ' (staging)' : ''
+      if (tray) tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
+      log('[update] Notifying user to restart')
+      const { Notification } = require('electron')
+      if (Notification.isSupported()) {
+        new Notification({
+          title: `AI Medical Scribe${stagingTag} updated`,
+          body: 'A new version was downloaded. Restart the app to apply it.',
+          silent: true
+        }).show()
+      }
+    })
   })
 
   gitPull.on('error', err => log(`[update] git not found or failed: ${err.message}`))
@@ -1639,6 +1708,21 @@ if (!gotTheLock) {
 app.whenReady().then(async () => {
   // No dock icon on macOS
   app.dock?.hide()
+
+  // better-sqlite3 is a native addon — if it didn't load, show a recovery dialog
+  // and quit. The user needs to run reinstall.ps1 to rebuild the binary for this
+  // Electron version. checkForUpdates() does this automatically going forward.
+  if (_dbStartupError) {
+    dialog.showErrorBox(
+      'AI Medical Scribe — reinstall required',
+      'A required component (database module) could not load.\n\n' +
+      'This usually means the app updated but the native module was not yet rebuilt.\n\n' +
+      'Fix: run "reinstall.ps1" from the app folder (or re-run the original installer), then restart.\n\n' +
+      `Detail: ${_dbStartupError.message}`
+    )
+    app.quit()
+    return
+  }
 
   // Load notes directory from .env if already configured
   const env = readEnv()
