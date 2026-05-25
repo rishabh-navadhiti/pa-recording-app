@@ -1033,18 +1033,79 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
 // the skill wrote a stub file (which it always tries to). The promise never
 // rejects — the caller stays linear.
 //
-// Gating: the global enableCdi setting (in <NOTES_DIR>/settings.json) gates
-// whether the skill is spawned at all. The per-doctor specialty is NOT
-// checked here — the skill's own Step 0b handles missing/unsupported
-// specialty cleanly and emits CDI_SKIPPED.
+// Gating: three gates BEFORE we spawn Claude (saves tokens + latency):
+//   1. Global `enableCdi` setting must be on.
+//   2. `doctor.specialty` must be non-empty.
+//   3. The standards file `<NOTES_DIR>/.claude/standards/specialties/
+//      <specialty>.md` must exist.
+// All three are simple JS checks — no need to round-trip through Claude
+// to discover the same outcome. The skill's own Step 0b stays as a
+// defensive backstop for direct `claude -p` invocations (testing, etc.).
 // ---------------------------------------------------------------------------
+
+// Helper: write the same stub _cdi.json + _cdi.md the skill's Step 0b would,
+// so downstream code (DB cdi_* columns, status popup) sees a consistent shape
+// whether the gate fired in main.js or in the skill.
+function writeCdiStub({ caseDir, doctor, mode, reason }) {
+  // Resolve the case stem the way the skill does — anchor on the existing
+  // *_soap_note.md if present, otherwise fall back to the folder name.
+  let fileStem = path.basename(caseDir)
+  try {
+    const soapMd = fs.readdirSync(caseDir).find(f => f.endsWith('_soap_note.md'))
+    if (soapMd) fileStem = soapMd.replace(/_soap_note\.md$/, '')
+  } catch {}
+  const jsonPath = path.join(caseDir, `${fileStem}_cdi.json`)
+  const mdPath   = path.join(caseDir, `${fileStem}_cdi.md`)
+
+  const stub = {
+    meta: {
+      case_dir: caseDir,
+      patient: fileStem,
+      doctor: doctor?.name || '',
+      specialty: doctor?.specialty || '',
+      mode: mode || '',
+      generated_at: new Date().toISOString(),
+      standards_versions: { icd10_cm: null, ahima_acdis: null, specialty_pack: null }
+    },
+    summary: {
+      overall_quality_score: null,
+      specificity_subscore: null,
+      evidence_subscore: null,
+      completeness_subscore: null,
+      flag_counts: { critical: 0, warning: 0, suggestion: 0, opportunity: 0 },
+      medical_necessity_status: null,
+      claim_defense_readiness: null,
+      clinician_approval_required: false
+    },
+    flags: [],
+    error: reason
+  }
+  try { fs.writeFileSync(jsonPath, JSON.stringify(stub, null, 2)) } catch (e) {
+    log(`[cdi] WARNING: failed to write stub JSON: ${e.message}`)
+    return { jsonPath: null, mdPath: null }
+  }
+  const md = [
+    `# CDI Review — ${fileStem}`,
+    '',
+    'CDI review was not performed for this case.',
+    '',
+    `**Reason:** ${reason}`,
+    ''
+  ].join('\n')
+  try { fs.writeFileSync(mdPath, md) } catch (e) {
+    log(`[cdi] WARNING: failed to write stub MD: ${e.message}`)
+    return { jsonPath, mdPath: null }
+  }
+  return { jsonPath, mdPath }
+}
+
 function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor }) {
   return new Promise(resolve => {
     const tag = caseTag ? `[${caseTag}] ` : ''
     const settings = readSettings()
 
-    // Global gate — when CDI is disabled, skip the spawn entirely. No DB
-    // writes, no status transitions, no UI elements.
+    // Gate 1 — global enableCdi off. No spawn, no DB writes, no UI. CDI
+    // simply doesn't exist for this run.
     if (!settings.enableCdi) {
       resolve({ ok: false, jsonPath: null, mdPath: null, skipped: 'disabled' })
       return
@@ -1064,6 +1125,42 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
     const specialty = (doctor?.specialty || '').toLowerCase()
     const doctorName = doctor?.name || ''
     const standardsAbs = path.join(NOTES_DIR, '.claude', 'standards')
+
+    // Gate 2 — no specialty set on the doctor. Skip the spawn; write the same
+    // stub the skill's Step 0b would have, mark cdi_status='skipped'.
+    if (!specialty) {
+      const reason = `specialty not set for ${doctorName || 'this doctor'}`
+      log(`${tag}[cdi] SKIPPED: ${reason}`)
+      const { jsonPath, mdPath } = writeCdiStub({ caseDir, doctor, mode, reason: 'specialty not yet supported for CDI v1: (none)' })
+      try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped', cdi_mode: mode, cdi_json_path: jsonPath, cdi_md_path: mdPath }) } catch (e) {
+        log(`${tag}[db] updateCaseCdi(skipped:no-specialty) failed: ${e.message}`)
+      }
+      const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: reason }
+      if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
+      else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
+      if (jsonPath) hideFileFromUser(jsonPath)
+      resolve({ ok: false, jsonPath, mdPath, status: 'skipped', skipped: 'no_specialty' })
+      return
+    }
+
+    // Gate 3 — specialty is set but the standards file doesn't exist (e.g.,
+    // user picked 'cardiology' but only orthopedics.md ships in v1). Same
+    // shape as gate 2.
+    const specialtyFile = path.join(standardsAbs, 'specialties', `${specialty}.md`)
+    if (!fs.existsSync(specialtyFile)) {
+      const reason = `unsupported specialty '${specialty}' — no standards file at specialties/${specialty}.md`
+      log(`${tag}[cdi] SKIPPED: ${reason}`)
+      const { jsonPath, mdPath } = writeCdiStub({ caseDir, doctor, mode, reason: `specialty not yet supported for CDI v1: ${specialty}` })
+      try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped', cdi_mode: mode, cdi_json_path: jsonPath, cdi_md_path: mdPath }) } catch (e) {
+        log(`${tag}[db] updateCaseCdi(skipped:unsupported-specialty) failed: ${e.message}`)
+      }
+      const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: `unsupported specialty '${specialty}'` }
+      if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
+      else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
+      if (jsonPath) hideFileFromUser(jsonPath)
+      resolve({ ok: false, jsonPath, mdPath, status: 'skipped', skipped: 'unsupported_specialty' })
+      return
+    }
 
     // Prompt signature matches notes-claude/skills/cdi-review/SKILL.md Step 0a.
     // The skill parses by ordered markers (`Case:` `Specialty:` `Mode:`
@@ -1253,17 +1350,42 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
 function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   log(`${tag}[docx] Converting: ${mdPath}`)
-  // Classify the .md by filename so the success path knows which case column
-  // to populate: 'transcript' updates transcript_docx_path, 'cdi' updates
-  // cdi_docx_path (and never touches case status), 'soap' updates
-  // soap_docx_path AND transitions the row to 'completed' (the SOAP docx is
-  // the primary deliverable; CDI docx is supplementary).
+  // Classify the .md so the success path knows which case column to populate:
+  //   'soap'       — updates soap_docx_path AND transitions the row to
+  //                  'completed' (primary deliverable).
+  //   'cdi'        — updates cdi_docx_path; never touches case status.
+  //   'transcript' — updates transcript_docx_path; never touches case status.
+  //
+  // Source of truth: the case row's *_path columns. By the time this function
+  // runs, the relevant column is always populated (transcript_path during
+  // spawnTranscription's onSuccess; soap_note_path in apply*Manifest before
+  // the docx call; cdi_md_path in spawnCdiReview's CDI_OK branch before docx
+  // fires on the cdi .md). Falls back to filename-suffix matching when the
+  // case row isn't available (e.g., DB unavailable or caseId not passed).
   const base = path.basename(mdPath)
-  const docxKind = base === 'transcript.md'
-    ? 'transcript'
-    : base.endsWith('_cdi.md')
-      ? 'cdi'
-      : 'soap'
+  let docxKind = null
+  if (caseId && dbCases) {
+    try {
+      const row = dbCases.getCaseRow(caseId)
+      if (row) {
+        if (mdPath === row.cdi_md_path)            docxKind = 'cdi'
+        else if (mdPath === row.transcript_path)   docxKind = 'transcript'
+        else if (mdPath === row.soap_note_path)    docxKind = 'soap'
+      }
+    } catch (e) { log(`${tag}[docx] getCaseRow lookup failed: ${e.message}`) }
+  }
+  if (!docxKind) {
+    // Filename fallback — same heuristic as before. Only used when the DB row
+    // wasn't decisive (no caseId, no row, or mdPath didn't match any column —
+    // e.g., the row was inserted with a different absolute-path normalisation).
+    const fallback = base === 'transcript.md'
+      ? 'transcript'
+      : base.endsWith('_cdi.md')
+        ? 'cdi'
+        : 'soap'
+    if (caseId) log(`${tag}[docx] WARNING: case row didn't disambiguate ${mdPath}; falling back to filename heuristic → ${fallback}`)
+    docxKind = fallback
+  }
   const wallStart = Date.now()
 
   let eventId = null
