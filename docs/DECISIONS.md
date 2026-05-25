@@ -171,3 +171,36 @@ Updated in: `notes-claude/skills/cdi-review/SKILL.md` (Step 3 mode table + Step 
 - `create a doctor profile for "<name>" from source folder "<rel>"`
 
 **Implications:** Don't change the spawn-side string in main.js without updating Step 0/1 of the corresponding SKILL.md, and vice versa. They're a contract.
+
+---
+
+## 2026-05-25 (rs) — `generate-note` emits a structured JSON manifest; app owns multi-patient folder splits + all DOCX
+
+**Context:** The `generate-note` skill historically owned three responsibilities in addition to writing the SOAP note:
+
+1. Detecting multi-patient transcripts and creating per-patient sub-folders next to the recording folder.
+2. Copying the MP3 and full transcript into each per-patient sub-folder.
+3. Generating `.docx` inline via pandoc / `python-docx`.
+
+Every other skill writes `.md` only and lets `main.js → spawnDocxConversion → python/md_to_docx.py` handle conversion. The split here meant two docx code paths (the skill's and the app's) and made multi-patient runs opaque to `main.js` — the app had to scan the filesystem after the fact to discover what sub-folders the skill had created, which broke down for child DB rows, file hiding, and any downstream skill chaining.
+
+**Decision:** Skill writes all `.md` outputs into the recording folder it was given and ends its final assistant response with a single-line JSON manifest (`schema_version: 1`) declaring patient name(s), per-case file paths, `multi_patient` flag, and per-case status. `main.js` parses the manifest via `parseSkillManifest()` (layered defensive parser: direct → strip fences → brace-balance scan) and does everything else:
+
+- **Single-patient:** verify the declared `.md` is on disk, run docx, hide, update existing `cases` row to `completed`.
+- **Multi-patient:** for each `ok`/`partial` case, create a child folder matching the single-patient on-disk convention (`<slug>_<YYYY-MM-DD>/`), copy in the MP3 + transcript + transcript.docx with single-patient naming, copy in the SOAP `.md` renamed to match, hide the audit `.md` in the recording folder (Windows), insert a child `cases` row (`createChildCase` in `db/cases.js`, status `converting` → flips to `completed` via the docx success path), and spawn docx on the copied `.md`. After the loop the parent row is marked `completed` with `soap_note_path=NULL` — an audit row. The recording folder retains all SOAP `.md` files the skill wrote, alongside the MP3 and transcript.
+
+**Rejected:**
+
+- **Skill keeps inline docx** — leaves two divergent docx paths and any future styling change (CDI severity-coloured cells, etc.) has to be applied twice.
+- **Skill keeps multi-patient folder creation** — moves file shuffling, copy semantics, and folder collision handling into a Claude invocation; loses structured visibility for the app's DB writes, status window, and file hiding.
+- **Adding manifest columns to `cases`** — `visit_type`, `chief_complaint`, `placeholders`, `warnings`, `summary` all live in the parsed manifest object and are logged to `app.log` only. Adding columns later is a one-line migration; preallocating is not. The DB stores only what existing queries need.
+- **Persisting the manifest to a file** — `app.log` is sufficient for v1. A future "resume failed split" feature would need a durable manifest; that's deferred.
+
+**Implications:**
+
+- `notes-claude/skills/generate-note/SKILL.md` Steps 4, 6, 7 rewritten — no sub-folders, no copies, no inline docx; ends with manifest line. Schema + 3 worked examples embedded in the skill.
+- `main.js` close handler in `spawnSoapGeneration` rewritten to manifest-driven; the old `detectPatientFolders` filesystem-probe helper is removed.
+- `parseSkillManifest()` extracted into [parseSkillManifest.js](../parseSkillManifest.js) so it is unit-testable in isolation. [tests/parseSkillManifest.test.js](../tests/parseSkillManifest.test.js) covers the four parse layers + failure modes.
+- `db/cases.js` gains `createChildCase` (inserts a child case with all paths populated, `status='converting'`) and `getCaseRow` (read-back for inheriting `recorded_at`/`doctor_id` onto child rows). **No schema changes.**
+- Multi-patient child folders are on-disk indistinguishable from single-patient cases — pre-chart, recent-cases listings, DB queries, and file hiding all work unmodified.
+- The skill is now schema-version-gated. Future format changes bump the version; the app fails closed (treats unknown versions as failed) until it catches up. Adopting the same JSON manifest format across the other skills (`cdi-review`, `edit-note`, `create-doctor-profile`, `update-doctor-profile`, future `icd`) is queued as follow-up work — out of scope for this PR.

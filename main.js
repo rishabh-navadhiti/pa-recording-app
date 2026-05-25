@@ -13,6 +13,7 @@ const dbDoctors  = require('./db/doctors')
 const dbSessions = require('./db/sessions')
 const dbCases    = require('./db/cases')
 const dbEvents   = require('./db/events')
+const { parseSkillManifest } = require('./parseSkillManifest')
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -535,49 +536,75 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
         return
       }
-      if (code === 0 && soapNoteMdPath) {
-        if (fs.existsSync(soapNoteMdPath)) {
-          log(`${tag}[soap] SOAP note confirmed: ${soapNoteMdPath}`)
-          try {
-            dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
-            dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapNoteMdPath })
-          } catch (e) { log(`[db] soap success update failed: ${e.message}`) }
-          spawnDocxConversion(soapNoteMdPath, caseTag, null, caseId)
-        } else {
-          // Top-level soap note missing — Claude may have created per-patient subfolders
-          const caseDir = path.dirname(soapNoteMdPath)
-          const patientFolders = detectPatientFolders(caseDir)
-          if (patientFolders.length > 0) {
-            log(`${tag}[soap] Multi-patient: ${patientFolders.length} patient(s) detected`)
-            try {
-              dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
-            } catch (e) { log(`[db] soap multi-patient finish failed: ${e.message}`) }
-            const patients = patientFolders.map(pf => ({
-              name: pf.folderName.replace(/_\d{4}-\d{2}-\d{2}$/, '').replace(/_/g, ' '),
-              folderName: pf.folderName,
-              status: 'converting'
-            }))
-            if (caseTag) setRecordingPatients(caseTag, patients)
-            for (const pf of patientFolders) {
-              spawnDocxConversion(pf.soapNotePath, caseTag, pf.folderName, caseId)
-            }
-          } else {
-            log(`${tag}[soap] WARNING: claude exited 0 but no SOAP note found at ${soapNoteMdPath}`)
-            try {
-              dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'SOAP note file missing after exit 0', finishedAt: nowIso() })
-              dbCases.setCaseStatus(caseId, 'failed')
-              dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
-            } catch (e) { log(`[db] soap missing-file update failed: ${e.message}`) }
-            if (caseTag) updateRecordingStatus(caseTag, 'failed')
-          }
-        }
-      } else if (code !== 0) {
+      if (code !== 0) {
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
           dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
         } catch (e) { log(`[db] soap failure update failed: ${e.message}`) }
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
+      }
+
+      // Claude exited 0 — parse the JSON manifest from the skill's final assistant text.
+      const manifest = parseSkillManifest(resultText)
+      if (!manifest) {
+        log(`${tag}[soap] ERROR: could not parse JSON manifest from skill output`)
+        if (resultText && resultText.trim()) {
+          log(`${tag}[soap][response]\n${resultText.trim()}`)
+        } else {
+          log(`${tag}[soap] (resultText was empty)`)
+        }
+        try {
+          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'manifest parse failed', finishedAt: nowIso() })
+          dbCases.setCaseStatus(caseId, 'failed')
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        } catch (e) { log(`[db] soap manifest-parse update failed: ${e.message}`) }
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
+      }
+
+      // Log Claude's full final response (chief-complaint prose + manifest line) as-is,
+      // then log the parsed manifest separately on one line for grep. Non-DB manifest
+      // fields (visit_type, chief_complaint, placeholders, warnings, summary) all live
+      // in the manifest log entry below; the response above also preserves any
+      // narrative prose the skill emitted before the manifest line.
+      if (resultText && resultText.trim()) {
+        log(`${tag}[soap][response]\n${resultText.trim()}`)
+      }
+      try { log(`${tag}[soap][manifest] ${JSON.stringify(manifest)}`) } catch {}
+
+      if (manifest.schema_version !== 1) {
+        log(`${tag}[soap] ERROR: unsupported manifest schema_version=${manifest.schema_version}; this app only knows v1`)
+        try {
+          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `unsupported manifest schema_version=${manifest.schema_version}`, finishedAt: nowIso() })
+          dbCases.setCaseStatus(caseId, 'failed')
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        } catch {}
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
+      }
+
+      if (manifest.status === 'failed' || !Array.isArray(manifest.cases) || manifest.cases.length === 0) {
+        log(`${tag}[soap] manifest status=${manifest.status || '?'} cases=${(manifest.cases || []).length} — marking case failed`)
+        try {
+          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `manifest status=${manifest.status || '?'}`, finishedAt: nowIso() })
+          dbCases.setCaseStatus(caseId, 'failed')
+          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        } catch {}
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
+      }
+
+      // Manifest is usable — record SOAP event success now; per-case file work happens below.
+      try {
+        dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
+      } catch (e) { log(`[db] soap success finishEvent failed: ${e.message}`) }
+
+      if (!manifest.multi_patient) {
+        applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPath: soapNoteMdPath })
+      } else {
+        applyMultiPatientManifest({ manifest, parentCaseId: caseId, caseTag, expectedSoapPath: soapNoteMdPath })
       }
     },
     onError(err) {
@@ -591,6 +618,220 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       }
     }
   })
+}
+
+// Single-patient manifest: verify the declared .md exists, update the existing case row,
+// hand off to docx. Behaviour-equivalent to the pre-manifest single-patient flow.
+function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPath }) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
+  const c = manifest.cases[0] || {}
+
+  if (c.status === 'failed' || !c.soap_note_md) {
+    log(`${tag}[soap] single-patient case status=${c.status || '?'} or no soap_note_md — marking failed`)
+    try {
+      dbCases.setCaseStatus(caseId, 'failed')
+      dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+    } catch {}
+    if (caseTag) updateRecordingStatus(caseTag, 'failed')
+    return
+  }
+
+  const soapPath = c.soap_note_md
+  if (!fs.existsSync(soapPath)) {
+    log(`${tag}[soap] WARNING: manifest declared ${soapPath} but file is not on disk`)
+    try {
+      dbCases.setCaseStatus(caseId, 'failed')
+      dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+    } catch {}
+    if (caseTag) updateRecordingStatus(caseTag, 'failed')
+    return
+  }
+
+  if (soapPath !== expectedSoapPath) {
+    log(`${tag}[soap] note: manifest path ${soapPath} differs from expected ${expectedSoapPath}; using manifest path`)
+  }
+
+  log(`${tag}[soap] SOAP note confirmed: ${soapPath}`)
+  try {
+    dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapPath })
+  } catch (e) { log(`[db] soap path update failed: ${e.message}`) }
+  spawnDocxConversion(soapPath, caseTag, null, caseId)
+}
+
+// Multi-patient manifest: for each ok/partial case the skill wrote into the recording
+// folder, create a per-patient child folder next to it (matching the single-patient
+// folder convention), copy the MP3 + transcript + transcript.docx in with single-patient
+// naming, copy the .md in with the single-patient naming, hide the audit .md on Windows,
+// insert a child cases row, and spawn docx on the copied .md. Finally mark the parent
+// (recording) row as a completed audit row with soap_note_path=NULL.
+function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expectedSoapPath }) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
+  log(`${tag}[soap] Multi-patient manifest: ${manifest.cases.length} cases declared`)
+
+  const recordingFolder = path.dirname(expectedSoapPath)
+  if (manifest.recording_folder && manifest.recording_folder !== recordingFolder) {
+    log(`${tag}[soap] note: manifest recording_folder=${manifest.recording_folder} differs from expected=${recordingFolder}`)
+  }
+
+  const sessionDir = path.dirname(recordingFolder)
+
+  // Pull the parent's recorded_at + doctor_id from DB so children inherit them
+  // (same audio source ⇒ same recording timestamp; same doctor as the session).
+  let parentRecordedAt = nowIso()
+  let parentDoctorId = activeDoctorId
+  let parentMp3Path = null
+  try {
+    const row = dbCases.getCaseRow(parentCaseId)
+    if (row) {
+      parentRecordedAt = row.recorded_at || parentRecordedAt
+      parentDoctorId   = row.doctor_id   || parentDoctorId
+      parentMp3Path    = row.mp3_path    || null
+    }
+  } catch (e) { log(`[db] getCaseRow(parent) failed: ${e.message}`) }
+
+  // Fall back to a filesystem probe if the DB didn't carry the mp3 path.
+  if (!parentMp3Path) {
+    try {
+      const found = fs.readdirSync(recordingFolder).find(f => f.toLowerCase().endsWith('.mp3'))
+      if (found) parentMp3Path = path.join(recordingFolder, found)
+    } catch {}
+  }
+
+  const parentTranscript     = path.join(recordingFolder, 'transcript.md')
+  const parentTranscriptDocx = path.join(recordingFolder, 'transcript.docx')
+  const datestamp = new Date().toISOString().slice(0, 10)
+
+  const patientsUi = []
+  const slugsUsed  = new Set()
+  let childrenCreated = 0
+
+  for (let i = 0; i < manifest.cases.length; i++) {
+    const c = manifest.cases[i]
+    const labelName = c.patient_name || `unknown_${i + 1}`
+
+    if (c.status === 'failed' || !c.soap_note_md) {
+      log(`${tag}[soap] case ${i + 1} (${labelName}) status=${c.status || '?'} — skipping post-process; .md stays in recording folder for debugging`)
+      continue
+    }
+    if (!fs.existsSync(c.soap_note_md)) {
+      log(`${tag}[soap] case ${i + 1} (${labelName}) declared ${c.soap_note_md} but file is not on disk — skipping`)
+      continue
+    }
+
+    // Slug + collision handling against earlier patients in this same run.
+    let baseSlug = sanitizeName(c.patient_name) || `unknown_${i + 1}`
+    let slug = baseSlug
+    let n = 2
+    while (slugsUsed.has(slug)) {
+      slug = `${baseSlug}_${n}`
+      n++
+    }
+    slugsUsed.add(slug)
+
+    // Target folder: <sessionDir>/<slug>_<YYYY-MM-DD>/ with suffix on filesystem collision.
+    let folderName = `${slug}_${datestamp}`
+    let targetDir  = path.join(sessionDir, folderName)
+    let suffix = 2
+    while (fs.existsSync(targetDir)) {
+      folderName = `${slug}_${datestamp}_${suffix}`
+      targetDir  = path.join(sessionDir, folderName)
+      suffix++
+    }
+
+    try {
+      fs.mkdirSync(targetDir, { recursive: true })
+    } catch (e) {
+      log(`${tag}[soap] case ${i + 1} (${labelName}): mkdir ${targetDir} failed: ${e.message}`)
+      continue
+    }
+
+    // MP3: copy parent's into the child folder, renamed <slug>.mp3 to match single-patient layout.
+    let childMp3 = null
+    if (parentMp3Path && fs.existsSync(parentMp3Path)) {
+      childMp3 = path.join(targetDir, `${slug}.mp3`)
+      try {
+        fs.copyFileSync(parentMp3Path, childMp3)
+      } catch (e) {
+        log(`${tag}[soap] case ${i + 1}: mp3 copy failed: ${e.message}`)
+        childMp3 = null
+      }
+    }
+
+    // transcript.md and transcript.docx: same filenames in child folder.
+    const childTranscript = path.join(targetDir, 'transcript.md')
+    try {
+      if (fs.existsSync(parentTranscript)) fs.copyFileSync(parentTranscript, childTranscript)
+    } catch (e) { log(`${tag}[soap] case ${i + 1}: transcript.md copy failed: ${e.message}`) }
+
+    const childTranscriptDocx = path.join(targetDir, 'transcript.docx')
+    let transcriptDocxOk = false
+    try {
+      if (fs.existsSync(parentTranscriptDocx)) {
+        fs.copyFileSync(parentTranscriptDocx, childTranscriptDocx)
+        transcriptDocxOk = true
+      }
+    } catch (e) { log(`${tag}[soap] case ${i + 1}: transcript.docx copy failed: ${e.message}`) }
+
+    // SOAP .md: copy the audit file from the recording folder into the child folder, renamed
+    // to <folderName>_soap_note.md to match the single-patient on-disk convention.
+    const childSoapMd = path.join(targetDir, `${folderName}_soap_note.md`)
+    try {
+      fs.copyFileSync(c.soap_note_md, childSoapMd)
+    } catch (e) {
+      log(`${tag}[soap] case ${i + 1}: SOAP .md copy failed: ${e.message}`)
+      continue
+    }
+
+    // Hide the audit .md in the recording folder (Windows). The copy in the child folder
+    // will get hidden by spawnDocxConversion's success path after conversion runs.
+    hideFileFromUser(c.soap_note_md)
+
+    // Insert child DB row with status='converting' — docx success path flips to 'completed'
+    // + soap_docx_path + completed_at, mirroring the single-patient progression.
+    let childCaseId = null
+    try {
+      childCaseId = dbCases.createChildCase({
+        patientName:        slug,
+        doctorId:           parentDoctorId,
+        sessionId:          activeSessionId,
+        caseDir:            targetDir,
+        source:             'recording',
+        mp3Path:            childMp3,
+        transcriptPath:     fs.existsSync(childTranscript) ? childTranscript : null,
+        transcriptDocxPath: transcriptDocxOk ? childTranscriptDocx : null,
+        soapNotePath:       childSoapMd,
+        recordedAt:         parentRecordedAt
+      })
+    } catch (e) { log(`[db] createChildCase failed: ${e.message}`) }
+
+    patientsUi.push({
+      name: c.patient_name || slug.replace(/_/g, ' '),
+      folderName,
+      status: 'converting'
+    })
+
+    spawnDocxConversion(childSoapMd, caseTag, folderName, childCaseId)
+    childrenCreated++
+  }
+
+  if (caseTag && patientsUi.length > 0) {
+    setRecordingPatients(caseTag, patientsUi)
+  }
+
+  if (childrenCreated === 0) {
+    log(`${tag}[soap] WARNING: no child cases created from manifest — marking parent failed`)
+    try {
+      dbCases.setCaseStatus(parentCaseId, 'failed')
+      dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+    } catch {}
+    if (caseTag) updateRecordingStatus(caseTag, 'failed')
+    return
+  }
+
+  // Parent is now an audit row: soap_note_path stays NULL by design.
+  try {
+    dbCases.updateCasePaths(parentCaseId, { status: 'completed', completed_at: nowIso() })
+  } catch (e) { log(`[db] parent multi-patient status update failed: ${e.message}`) }
 }
 
 function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
@@ -1359,35 +1600,6 @@ function updatePatientStatus(caseTag, patientFolderName, status) {
     }
     broadcastRecordingStatus()
   }
-}
-
-function detectPatientFolders(caseDir) {
-  // Patient folders are siblings of caseDir inside the session folder, not children of it
-  const sessionDir = path.dirname(caseDir)
-
-  // Exclude known recording case folders and patient folders already attributed to prior recordings
-  const knownCaseTags = new Set(sessionRecordings.map(r => r.caseTag))
-  const claimedPatients = new Set()
-  sessionRecordings.forEach(r => {
-    if (r.patients) r.patients.forEach(p => claimedPatients.add(p.folderName))
-  })
-
-  const results = []
-  try {
-    for (const entry of fs.readdirSync(sessionDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
-      if (knownCaseTags.has(entry.name)) continue   // skip recording case folders
-      if (claimedPatients.has(entry.name)) continue  // skip patients of earlier recordings
-      const subDir = path.join(sessionDir, entry.name)
-      const soapNote = fs.readdirSync(subDir).find(f => f.endsWith('_soap_note.md'))
-      if (soapNote) {
-        results.push({ folderName: entry.name, soapNotePath: path.join(subDir, soapNote) })
-      }
-    }
-  } catch (e) {
-    log(`ERROR scanning patient folders in ${sessionDir}: ${e.message}`)
-  }
-  return results
 }
 
 function broadcastRecordingStatus() {

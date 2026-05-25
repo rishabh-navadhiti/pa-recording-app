@@ -90,6 +90,19 @@ function bumpCaseRevision(id) {
   }
 }
 
+// Look up the full case row by id. Used by the multi-patient split to read
+// the parent's recorded_at + doctor_id when inserting child rows.
+function getCaseRow(id) {
+  const db = getDb()
+  if (!db || !id) return null
+  try {
+    return db.prepare('SELECT * FROM cases WHERE id = ?').get(id) || null
+  } catch (e) {
+    console.error('[db] getCaseRow failed:', e.message)
+    return null
+  }
+}
+
 // Look up a case id by its absolute folder path.
 function getCaseIdByDir(caseDir) {
   const db = getDb()
@@ -122,4 +135,56 @@ function listRecentCases(limit = 30) {
   }
 }
 
-module.exports = { createCase, updateCaseAudio, updateCasePaths, setCaseStatus, bumpCaseRevision, getCaseIdByDir, listRecentCases }
+// Insert a child case row for a multi-patient split. Used when the app's multi-patient
+// branch creates a per-patient folder from the parent recording folder: transcript + MP3
+// are already copied in, the SOAP .md is already copied in, and docx is about to be
+// generated. The child row is inserted with status='converting' so the existing
+// spawnDocxConversion success path flips it to 'completed' + soap_docx_path + completed_at
+// just like a single-patient case.
+function createChildCase({
+  patientName,
+  doctorId,
+  sessionId,
+  caseDir,
+  source,
+  mp3Path,
+  transcriptPath,
+  transcriptDocxPath,
+  soapNotePath,
+  recordedAt
+}) {
+  const db = getDb()
+  if (!db) return null
+  try {
+    const id = randomUUID()
+    const ts = new Date().toISOString()
+    db.prepare(`
+      INSERT INTO cases
+        (id, patient_name, doctor_id, session_id, case_dir, source, mp3_path,
+         transcript_path, transcript_docx_path, soap_note_path,
+         status, revision, recorded_at, created_at, updated_at)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'converting', 1, ?, ?, ?)
+    `).run(
+      id,
+      patientName || null,
+      doctorId || null,
+      sessionId || null,
+      caseDir,
+      source,
+      mp3Path || null,
+      transcriptPath || null,
+      transcriptDocxPath || null,
+      soapNotePath || null,
+      recordedAt || ts,
+      ts,
+      ts
+    )
+    return id
+  } catch (e) {
+    console.error('[db] createChildCase failed:', e.message)
+    return null
+  }
+}
+
+module.exports = { createCase, createChildCase, updateCaseAudio, updateCasePaths, setCaseStatus, bumpCaseRevision, getCaseRow, getCaseIdByDir, listRecentCases }
