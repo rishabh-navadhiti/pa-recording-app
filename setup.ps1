@@ -57,6 +57,10 @@ Write-Host "Python packages OK" -ForegroundColor Green
 Write-Host ""
 Write-Host "Installing Node packages..." -ForegroundColor Yellow
 npm install
+# Rebuild better-sqlite3 for the bundled Electron runtime (native addon — the
+# npm install above builds it for system Node.js, which has a different ABI).
+Write-Host "Rebuilding native modules for Electron..." -ForegroundColor Yellow
+npx electron-rebuild -f -w better-sqlite3
 Write-Host "Node packages OK" -ForegroundColor Green
 
 # 7. Create config file
