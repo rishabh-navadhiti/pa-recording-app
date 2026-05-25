@@ -72,6 +72,7 @@ const STATE = {
 const STATUS_LABELS = {
   transcribing:    'Transcribing...',
   generating_note: 'Generating note...',
+  queued:          'Queued',
   coding_icd:      'Adding ICD codes...',
   converting:      'Converting...',
   completed:       'Completed',
@@ -717,9 +718,12 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
   const parentTranscriptDocx = path.join(recordingFolder, 'transcript.docx')
   const datestamp = new Date().toISOString().slice(0, 10)
 
-  const patientsUi = []
-  const slugsUsed  = new Set()
-  let childrenCreated = 0
+  // --- Pass 1: plan all children up-front so the status popup can show every
+  // patient immediately, before the (sequential) per-child ICD coding starts.
+  // Skips failed-by-manifest and missing-on-disk cases. Slug + folder collision
+  // handling happens here so each planned child has a stable target identity.
+  const slugsUsed = new Set()
+  const planned   = []
 
   for (let i = 0; i < manifest.cases.length; i++) {
     const c = manifest.cases[i]
@@ -754,10 +758,35 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
       suffix++
     }
 
+    planned.push({ i, c, slug, folderName, targetDir })
+  }
+
+  // Publish the full patient list to the status UI BEFORE any per-child await
+  // so every patient appears immediately when SOAP closes. Each entry starts
+  // as 'queued'; spawnIcdCoding will flip the current child to 'coding_icd'
+  // when its turn comes, then spawnDocxConversion flips to 'converting' →
+  // 'completed' (or 'failed').
+  const patientsUi = planned.map(p => ({
+    name: p.c.patient_name || p.slug.replace(/_/g, ' '),
+    folderName: p.folderName,
+    status: 'queued'
+  }))
+  if (caseTag) setRecordingPatients(caseTag, patientsUi)
+
+  // --- Pass 2: per child, do the on-disk work and run the post-processing
+  // chain (ICD → docx). ICD runs sequentially across children so the MCP
+  // connector + Anthropic quota aren't hit in parallel; docx is fire-and-forget.
+  let childrenCreated = 0
+
+  for (const p of planned) {
+    const { i, c, slug, folderName, targetDir } = p
+    const labelName = c.patient_name || `unknown_${i + 1}`
+
     try {
       fs.mkdirSync(targetDir, { recursive: true })
     } catch (e) {
       log(`${tag}[soap] case ${i + 1} (${labelName}): mkdir ${targetDir} failed: ${e.message}`)
+      updatePatientStatus(caseTag, folderName, 'failed')
       continue
     }
 
@@ -795,6 +824,7 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
       fs.copyFileSync(c.soap_note_md, childSoapMd)
     } catch (e) {
       log(`${tag}[soap] case ${i + 1}: SOAP .md copy failed: ${e.message}`)
+      updatePatientStatus(caseTag, folderName, 'failed')
       continue
     }
 
@@ -820,23 +850,16 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
       })
     } catch (e) { log(`[db] createChildCase failed: ${e.message}`) }
 
-    patientsUi.push({
-      name: c.patient_name || slug.replace(/_/g, ' '),
-      folderName,
-      status: 'coding_icd'
-    })
-
-    // Publish the patient list to the status UI BEFORE the per-child await so
-    // the ICD step's updatePatientStatus(..., 'coding_icd') call has an entry
-    // to update. Each new child appends to the recording's patients array
-    // and triggers a broadcast.
-    if (caseTag) setRecordingPatients(caseTag, patientsUi.slice())
-
     // ICD per child (sequential across children so the MCP connector + Anthropic
     // quota aren't hit in parallel and the per-case log block stays readable).
     // ICD modifies childSoapMd in place — must complete before docx so the .docx
-    // contains the appended codes.
+    // contains the appended codes. spawnIcdCoding flips this patient's status
+    // from 'queued' to 'coding_icd' on entry.
     await spawnIcdCoding({ soapNoteMdPath: childSoapMd, caseId: childCaseId, caseTag, patientFolderName: folderName, doctorId: parentDoctorId })
+    // Once ICD is done, transition to 'converting' for the docx step (otherwise
+    // the popup stays on 'coding_icd' through the brief docx window — fine, but
+    // 'converting' matches the single-patient state machine).
+    if (caseTag) updatePatientStatus(caseTag, folderName, 'converting')
     spawnDocxConversion(childSoapMd, caseTag, folderName, childCaseId)
     childrenCreated++
   }

@@ -148,6 +148,9 @@ Properties:
 - **DB shape: 1 parent row + N child rows, all sharing `session_id` and `doctor_id`.** Parent has `soap_note_path=NULL`, `status='completed'`. Each child has all paths populated and progresses `converting → completed` via the existing docx success path. Children are inserted by `db/cases.js → createChildCase` (a separate helper from `createCase` since children skip the `transcribing` → `generating_note` stages).
 - **`processing_events` for the SOAP step stays attached to the parent's `case_id`.** Only one Claude invocation, only one usage event. Each child docx run gets its own `docx` event row with `case_id` pointing to the child.
 - **`processing_events` for the ICD step is per child.** Each child's ICD invocation gets its own `icd` event row with `case_id` pointing to the child — never the parent. The audit folder is not ICD-coded, so the parent gets zero `icd` events.
+- **`session.case_count` counts children, not recordings.** A 5-patient recording bumps `case_count` by 5 because `bumpSessionCounters` fires per docx-success and docx runs once per child. Parent (audit) rows never docx so they never bump the counter. Pre-existing develop behavior.
+- **`audio_duration` and `audio_size_bytes` live only on the parent row.** Children inherit nothing audio-specific — one audio file is shared across all patients in the recording. The child's `mp3_path` points to the per-child *copy* of that audio.
+- **Per-patient cost attribution for SOAP is intrinsically not separable.** One Claude invocation generates content for all patients, so SOAP cost lives on the audit row only. Per-child queries see ICD + docx costs only. Per-session totals (joining through `case_id` → `cases.session_id`) include the SOAP cost via the parent row.
 - **No cleanup or "resume" logic in v1.** If the app crashes between skill exit and split completion, the recording folder is durable; the user can re-process manually. A future "resume split" feature could re-read the manifest from `app.log`.
 
 ### Per-case post-processing chain (ICD → docx)
@@ -163,6 +166,7 @@ Properties:
 - **ICD is per case folder, never on audit folders.** Single-patient runs ICD once on the parent's `.md`. Multi-patient runs it once per child folder's `.md`. The recording (audit) folder retains the SOAP `.md` files the skill wrote — never appended to, never converted to docx.
 - **Sequential across children.** In multi-patient runs the per-child loop awaits each child's `spawnIcdCoding` before continuing to the next. This keeps MCP connector load + Anthropic rate-limit pressure + log-block readability sensible. Across-child parallelism is a future optimization.
 - **Pre-chart re-runs ICD.** When `edit-note` rewrites a SOAP `.md`, the diagnoses may have changed — `spawnIcdCoding` re-runs before the docx refresh. The skill strips any prior `## ICD-10-CM Codes` block before appending the new one (idempotent).
+- **All children visible in the status UI upfront.** `applyMultiPatientManifest` does a planning pass to compute every child's slug + folder + UI entry, calls `setRecordingPatients` once, then runs the processing pass. Each child starts in state `queued` (muted, static dot in the popup); the active one transitions to `coding_icd` → `converting` → `completed` (or `failed`) while siblings sit on `queued`. This decouples "show all patients" from "process them one at a time" — the per-child sequencing only affects work, not visibility.
 
 ---
 

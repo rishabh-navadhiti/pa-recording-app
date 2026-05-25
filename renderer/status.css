@@ -136,6 +136,12 @@ body {
 .status-generating_note span:last-child,
 .status-coding_icd span:last-child    { color: #9b7ec7; }
 
+/* Queued: child case waiting for the per-child sequential post-processing
+   (ICD → docx) to reach it. Static muted dot — distinguishable from the
+   pulsing in-flight stages above. */
+.status-queued .status-dot           { background: #555; }
+.status-queued span:last-child        { color: #888; }
+
 .status-converting .status-dot       { background: #c07a00; animation: pulse 1.4s ease-in-out infinite; }
 .status-converting span:last-child    { color: #e09030; }
 
