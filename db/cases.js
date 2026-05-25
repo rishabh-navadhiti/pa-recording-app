@@ -90,6 +90,43 @@ function bumpCaseRevision(id) {
   }
 }
 
+// Update the CDI columns on a case row. Used by spawnCdiReview at three points:
+//   1. on start  → { cdi_status: 'running', cdi_mode }
+//   2. on success → { cdi_status: 'completed', cdi_*_path, cdi_quality_score, ... }
+//   3. on failure → { cdi_status: 'failed' | 'skipped', plus any partial paths }
+// Allowed columns are the cdi_* columns added in migration 003. Pass any
+// combination — only provided fields are updated. Multi-patient parent (audit)
+// rows should never get CDI updates; only single-patient parents and
+// multi-patient children own real CDI data.
+function updateCaseCdi(id, fields) {
+  const db = getDb()
+  if (!db || !id) return
+  try {
+    const allowed = [
+      'cdi_status',
+      'cdi_mode',
+      'cdi_json_path',
+      'cdi_md_path',
+      'cdi_docx_path',
+      'cdi_quality_score',
+      'cdi_medical_necessity',
+      'cdi_claim_defense_readiness',
+      'cdi_clinician_approval_required'
+    ]
+    const sets = []
+    const vals = []
+    for (const [k, v] of Object.entries(fields)) {
+      if (allowed.includes(k)) { sets.push(`${k} = ?`); vals.push(v) }
+    }
+    if (sets.length === 0) return
+    sets.push('updated_at = ?')
+    vals.push(new Date().toISOString(), id)
+    db.prepare(`UPDATE cases SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  } catch (e) {
+    console.error('[db] updateCaseCdi failed:', e.message)
+  }
+}
+
 // Look up the full case row by id. Used by the multi-patient split to read
 // the parent's recorded_at + doctor_id when inserting child rows.
 function getCaseRow(id) {
@@ -187,4 +224,4 @@ function createChildCase({
   }
 }
 
-module.exports = { createCase, createChildCase, updateCaseAudio, updateCasePaths, setCaseStatus, bumpCaseRevision, getCaseRow, getCaseIdByDir, listRecentCases }
+module.exports = { createCase, createChildCase, updateCaseAudio, updateCasePaths, setCaseStatus, bumpCaseRevision, updateCaseCdi, getCaseRow, getCaseIdByDir, listRecentCases }
