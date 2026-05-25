@@ -48,6 +48,23 @@
         <div class="setting-hint">Next recording begins immediately when you save a case</div>
       </div>
 
+      <div class="settings-group">
+        <label class="setting-row">
+          <input type="checkbox" id="chk-enable-cdi" />
+          <span>Enable CDI review</span>
+        </label>
+        <div class="setting-hint">Runs a clinical documentation integrity review on every new case (requires a specialty set per doctor in the Templates tab).</div>
+        <div id="cdi-mode-row" class="advanced-settings-inner hidden" style="margin-top:8px">
+          <label class="setting-label">CDI mode</label>
+          <select id="cdi-mode-select">
+            <option value="balanced">Balanced (recommended) — flag under- and over-documentation</option>
+            <option value="compliance">Compliance — conservative audit-defense stance</option>
+            <option value="aggressive">Aggressive — surface every revenue-lift opportunity</option>
+          </select>
+          <div class="setting-hint">Applies globally. Per-encounter override is a future option.</div>
+        </div>
+      </div>
+
       <div class="settings-group advanced-settings-group">
         <button id="btn-advanced-toggle" class="advanced-toggle">
           <span>Advanced Settings</span>

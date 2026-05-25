@@ -12,6 +12,30 @@ const STATE = {
   PROCESSING:     'PROCESSING'
 }
 
+// Closed enum of specialties for the per-doctor CDI specialty dropdown.
+// The value is what gets persisted to doctors.specialty in app.db and what
+// the cdi-review skill receives in its prompt. The skill loads
+// notes-claude/standards/specialties/<value>.md at runtime — in v1 only
+// `orthopedics.md` exists; selecting any other specialty makes the skill
+// emit CDI_SKIPPED until the file is added.
+const DOCTOR_SPECIALTIES = [
+  { value: 'cardiology',          label: 'Cardiology' },
+  { value: 'emergency_medicine',  label: 'Emergency Medicine' },
+  { value: 'ent',                 label: 'ENT' },
+  { value: 'hospitalist',         label: 'Hospitalist' },
+  { value: 'obgyn',               label: 'OB-GYN' },
+  { value: 'oncology',            label: 'Oncology' },
+  { value: 'orthopedics',         label: 'Orthopedics' },
+  { value: 'pain_management',     label: 'Pain Management / Spine' },
+  { value: 'pulmonology',         label: 'Pulmonology' }
+]
+
+function specialtyLabel(value) {
+  if (!value) return null
+  const entry = DOCTOR_SPECIALTIES.find(s => s.value === value)
+  return entry ? entry.label : value
+}
+
 // ---------------------------------------------------------------------------
 // DOM refs
 // ---------------------------------------------------------------------------
@@ -30,6 +54,9 @@ const btnSettings        = document.getElementById('btn-settings')
 const settingsView       = document.getElementById('settings-view')
 const btnSettingsClose   = document.getElementById('btn-settings-close')
 const chkAutoRecord          = document.getElementById('chk-auto-record')
+const chkEnableCdi           = document.getElementById('chk-enable-cdi')
+const cdiModeRow             = document.getElementById('cdi-mode-row')
+const cdiModeSelect          = document.getElementById('cdi-mode-select')
 const deviceSelect           = document.getElementById('device-select')
 const soapModelSelect        = document.getElementById('soap-model-select')
 const templateModelSelect    = document.getElementById('template-model-select')
@@ -695,6 +722,10 @@ function maskApiKey(key) {
 async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
+  // CDI toggle + mode — mode row is only visible when CDI is on.
+  if (chkEnableCdi) chkEnableCdi.checked = !!s.enableCdi
+  if (cdiModeSelect) cdiModeSelect.value = s.cdiMode || 'balanced'
+  if (cdiModeRow) cdiModeRow.classList.toggle('hidden', !s.enableCdi)
   const dir = await api.getNotesDir()
   notesDirPath.textContent = dir
   notesDirPath.title = dir
@@ -797,6 +828,13 @@ async function renderDoctorList(containerEl) {
 
       row.appendChild(nameSpan)
       row.appendChild(templateEl)
+      if (doc.specialty) {
+        const specSpan = document.createElement('span')
+        specSpan.className = 'doctor-specialty'
+        specSpan.textContent = specialtyLabel(doc.specialty)
+        specSpan.title = `Specialty: ${specialtyLabel(doc.specialty)}`
+        row.appendChild(specSpan)
+      }
       row.appendChild(editBtn)
       row.appendChild(removeBtn)
     }
@@ -825,14 +863,39 @@ async function renderDoctorList(containerEl) {
         }
       })
 
+      // Specialty dropdown — closed enum from CDI v1 plan §E. Lowercase value
+      // is what gets persisted; the skill loads
+      // standards/specialties/<value>.md and emits CDI_SKIPPED when the file
+      // is missing (only orthopedics.md exists in v1).
+      const specialtySelect = document.createElement('select')
+      specialtySelect.className = 'doctor-edit-specialty'
+      const blankOpt = document.createElement('option')
+      blankOpt.value = ''
+      blankOpt.textContent = 'Specialty…'
+      specialtySelect.appendChild(blankOpt)
+      for (const sp of DOCTOR_SPECIALTIES) {
+        const opt = document.createElement('option')
+        opt.value = sp.value
+        opt.textContent = sp.label
+        specialtySelect.appendChild(opt)
+      }
+      specialtySelect.value = doc.specialty || ''
+
       const saveBtn = document.createElement('button')
       saveBtn.className = 'doctor-edit-save small'
       saveBtn.textContent = 'Save'
       saveBtn.addEventListener('click', async () => {
         const newName = nameInput.value.trim()
         if (!newName) return
+        const newSpecialty = specialtySelect.value || null
         const res = await api.updateDoctor(doc.id, newName)
-        if (res.ok) { doc.name = newName; renderViewMode() }
+        if (!res.ok) return
+        doc.name = newName
+        if (newSpecialty !== (doc.specialty || null)) {
+          const r2 = await api.updateDoctorSpecialty(doc.id, newSpecialty)
+          if (r2 && r2.ok) doc.specialty = newSpecialty
+        }
+        renderViewMode()
       })
 
       nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click() })
@@ -845,6 +908,7 @@ async function renderDoctorList(containerEl) {
       row.appendChild(nameInput)
       row.appendChild(templateLabel)
       row.appendChild(changeTemplateBtn)
+      row.appendChild(specialtySelect)
       row.appendChild(saveBtn)
       row.appendChild(cancelBtn)
     }
@@ -880,6 +944,19 @@ btnSettingsClose.addEventListener('click', hideSettings)
 chkAutoRecord.addEventListener('change', () => {
   api.saveSettings({ autoRecord: chkAutoRecord.checked })
 })
+
+if (chkEnableCdi) {
+  chkEnableCdi.addEventListener('change', () => {
+    api.saveSettings({ enableCdi: chkEnableCdi.checked })
+    if (cdiModeRow) cdiModeRow.classList.toggle('hidden', !chkEnableCdi.checked)
+  })
+}
+
+if (cdiModeSelect) {
+  cdiModeSelect.addEventListener('change', () => {
+    api.saveSettings({ cdiMode: cdiModeSelect.value })
+  })
+}
 
 btnAdvancedToggle.addEventListener('click', async () => {
   const isOpen = !advancedSettingsContent.classList.contains('hidden')

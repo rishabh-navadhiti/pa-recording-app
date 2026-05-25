@@ -160,7 +160,14 @@ const DEFAULT_SETTINGS = {
   // overridden by editing settings.json directly.
   soapModel:      'claude-sonnet-4-6',
   templateModel:  'claude-opus-4-7',
-  templateEffort: 'max'
+  templateEffort: 'max',
+  // CDI Co-Pilot — global on/off + mode. Per-doctor specialty is in app.db
+  // (doctors.specialty). When enableCdi is false, the CDI pipeline step is
+  // skipped entirely for every case — no claude spawn, no DB writes, no UI.
+  // When true, the CDI skill runs per case folder and emits CDI_SKIPPED for
+  // doctors whose specialty is unset or unsupported.
+  enableCdi: false,
+  cdiMode:   'balanced'
 }
 
 function readSettings() {
@@ -2751,6 +2758,23 @@ function registerIpcHandlers() {
       return { ok: true }
     } catch (e) {
       log(`ERROR removing doctor: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // ---- update-doctor-specialty (per-doctor CDI specialty assignment) ----
+  // Pass a value from the closed enum or empty/null to clear. The skill loads
+  // notes-claude/standards/specialties/<value>.md at runtime — values that
+  // don't have a corresponding standards file produce CDI_SKIPPED.
+  ipcMain.handle('update-doctor-specialty', (_, id, specialty) => {
+    const doctor = dbDoctors.getDoctor(id)
+    if (!doctor) return { ok: false, error: 'Doctor not found' }
+    try {
+      dbDoctors.updateDoctorSpecialty(id, specialty)
+      log(`Doctor specialty updated: ${id} -> ${specialty || '(cleared)'}`)
+      return { ok: true }
+    } catch (e) {
+      log(`[db] update-doctor-specialty failed: ${e.message}`)
       return { ok: false, error: e.message }
     }
   })

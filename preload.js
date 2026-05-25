@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   addDoctor:              (name) => ipcRenderer.invoke('add-doctor', name),
   updateDoctor:          (id, name) => ipcRenderer.invoke('update-doctor', id, name),
   updateDoctorTemplate:  (id)   => ipcRenderer.invoke('update-doctor-template', id),
+  updateDoctorSpecialty: (id, specialty) => ipcRenderer.invoke('update-doctor-specialty', id, specialty),
   removeDoctor:           (id)   => ipcRenderer.invoke('remove-doctor', id),
   selectDoctor:       (id)   => ipcRenderer.invoke('select-doctor', id),
 

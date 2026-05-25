@@ -656,6 +656,33 @@ button.outline:hover { opacity: 0.85; }
   white-space: nowrap;
 }
 
+/* Per-doctor specialty badge (shown in view mode when set). Compact, muted,
+   doesn't push other elements around. */
+.doctor-specialty {
+  font-size: 10px;
+  color: #8aa9c4;
+  background: rgba(125, 158, 192, 0.12);
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex: 0 0 auto;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Specialty dropdown in edit mode — same compact size as the other inputs. */
+.doctor-edit-specialty {
+  font-size: 11px;
+  padding: 2px 4px;
+  background: #2a2a2a;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 3px;
+  flex: 0 0 auto;
+  max-width: 130px;
+}
+
 .doctor-select-template {
   flex: 1;
   width: auto;
