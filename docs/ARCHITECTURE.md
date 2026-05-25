@@ -77,14 +77,20 @@ User           Renderer            Main                Python              Eleve
  │               │                  │                   │                       │  JSON manifest line
  │               │                  │ on claude close:                                          │
  │               │                  │   parseSkillManifest(resultText)                          │
- │               │                  │   if !multi_patient: spawn md_to_docx.py on the declared .md
+ │               │                  │   per case folder (single=parent; multi=each child):      │
+ │               │                  │     spawn claude -p "add ICD codes..." (add-icd-codes)    │
+ │               │                  │       → appends ## ICD-10-CM Codes table to <case>.md     │
+ │               │                  │       → best-effort; failure falls through to docx        │
+ │               │                  │     spawn md_to_docx.py on the now-coded .md              │
  │               │                  │   if  multi_patient: per cases[] entry —                  │
  │               │                  │     mkdir <slug>_<YYYY-MM-DD>/,                           │
  │               │                  │     copy mp3 + transcript + transcript.docx + soap.md in, │
  │               │                  │     insert child cases row,                               │
- │               │                  │     spawn md_to_docx.py on the copied .md,                │
+ │               │                  │     await ICD on child .md (sequential across children),  │
+ │               │                  │     spawn md_to_docx.py on the now-coded child .md,       │
  │               │                  │     hide audit .md in recording folder (Windows)          │
  │               │                  │   mark parent row completed (soap_note_path=NULL on multi)│
+ │               │                  │   (audit folder is never ICD-coded, never docx-converted) │
 ```
 
 Key properties:
@@ -141,7 +147,22 @@ Properties:
 - **Recording folder retains everything the skill wrote.** No files are moved out, only copied. The audit `.md` files stay in the recording folder (hidden on Windows) alongside the original MP3 and transcript.
 - **DB shape: 1 parent row + N child rows, all sharing `session_id` and `doctor_id`.** Parent has `soap_note_path=NULL`, `status='completed'`. Each child has all paths populated and progresses `converting → completed` via the existing docx success path. Children are inserted by `db/cases.js → createChildCase` (a separate helper from `createCase` since children skip the `transcribing` → `generating_note` stages).
 - **`processing_events` for the SOAP step stays attached to the parent's `case_id`.** Only one Claude invocation, only one usage event. Each child docx run gets its own `docx` event row with `case_id` pointing to the child.
+- **`processing_events` for the ICD step is per child.** Each child's ICD invocation gets its own `icd` event row with `case_id` pointing to the child — never the parent. The audit folder is not ICD-coded, so the parent gets zero `icd` events.
 - **No cleanup or "resume" logic in v1.** If the app crashes between skill exit and split completion, the recording folder is durable; the user can re-process manually. A future "resume split" feature could re-read the manifest from `app.log`.
+
+### Per-case post-processing chain (ICD → docx)
+
+Both single-patient and multi-patient cases run the same per-case post-processing chain after the SOAP `.md` is in its final on-disk location:
+
+1. **`spawnIcdCoding(soapNoteMdPath, …)`** invokes the `add-icd-codes` skill (`claude -p "add ICD codes. Soap note: <rel-path>."`). The skill reads the SOAP `.md`, extracts diagnoses, looks them up via the claude.ai ICD-10 MCP connector, and appends an `## ICD-10-CM Codes` table at the end of the file. The function returns a Promise that resolves on completion (success OR failure — it never rejects). A `processing_events` row with `job_kind='icd'` is recorded with token usage, cost, duration, and status (`success` / `failed` / `rate_limited`). Status-popup label transitions through `coding_icd` while it runs.
+
+2. **`spawnDocxConversion(soapNoteMdPath, …)`** runs after the ICD promise resolves, generating the `.docx` from the now-coded `.md`.
+
+Properties:
+- **ICD is best-effort.** Failure (MCP unreachable, model error, rate limit, network) logs + emits a `service-warning` IPC + records the failure status on `processing_events`, but the chain falls through to docx. A note without codes is still useful.
+- **ICD is per case folder, never on audit folders.** Single-patient runs ICD once on the parent's `.md`. Multi-patient runs it once per child folder's `.md`. The recording (audit) folder retains the SOAP `.md` files the skill wrote — never appended to, never converted to docx.
+- **Sequential across children.** In multi-patient runs the per-child loop awaits each child's `spawnIcdCoding` before continuing to the next. This keeps MCP connector load + Anthropic rate-limit pressure + log-block readability sensible. Across-child parallelism is a future optimization.
+- **Pre-chart re-runs ICD.** When `edit-note` rewrites a SOAP `.md`, the diagnoses may have changed — `spawnIcdCoding` re-runs before the docx refresh. The skill strips any prior `## ICD-10-CM Codes` block before appending the new one (idempotent).
 
 ---
 
@@ -444,7 +465,7 @@ SQLite database at `<NOTES_DIR>/app.db`. WAL mode, `better-sqlite3` in main proc
 | `doctors` | `id` (preserves settings.json ids), `name`, `lastname`, `template_path`, `enable_cdi` | `db/doctors.js` — upserted by `add-doctor`, `update-doctor`, `update-doctor-template`, `spawnTemplateCreation` |
 | `sessions` | `id` (UUID), `session_folder`, `doctor_id`, `started_at`, `ended_at`, `case_count`, `failed_count` | `db/sessions.js` — inserted by `start-session`, updated by `stop-session`; counters bumped when cases reach terminal status |
 | `cases` | `id` (UUID), `case_dir` (UNIQUE), `status`, `revision`, file paths, audio metadata | `db/cases.js` — inserted in `stop-recording`/`process-audio-file`; updated at each pipeline stage |
-| `processing_events` | `job_kind` (`transcribe`/`soap`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
+| `processing_events` | `job_kind` (`transcribe`/`soap`/`icd`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
 
 `cases.status` transitions: `transcribing → generating_note → converting → completed` (or `failed` at any stage). `cases.revision` starts at 1 and increments on each successful prechart. `processing_events.backup_path` is populated from the `BACKUP_OK: <path>` line printed by the edit-note skill.
 

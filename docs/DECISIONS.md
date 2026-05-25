@@ -12,6 +12,28 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-05-22 (rs) — ICD-10 coding step re-implemented natively on develop's architecture
+
+**Context:** The original ICD-10 coding step (claude.ai ICD-10 MCP connector + `spawnIcdCoding` + the `add-icd-codes` skill) was implemented on the `icd10-coding` branch in May 2026, before `develop` landed the SQLite metadata store, the staging-branch infrastructure, the token logging via `spawnClaude`, Plan 1's CDI skill + standards files, and the docx-unification rewrite (which introduced JSON manifests for `generate-note` and per-child execution for multi-patient runs). `icd10-coding` and `develop` had diverged by ~1100 lines in `main.js` and the ICD step was wired for the old single-case pipeline that no longer exists on `develop`.
+
+**Decision:** Rather than merge `icd10-coding` into `develop` (large unresolvable conflicts in `main.js`, plus the ICD step would still need rewriting for per-child execution after the merge), the ICD step is re-implemented from scratch on a new `cdi-v1` branch off `develop`. `icd10-coding` is kept as a read-only reference branch. The skill content (`notes-claude/skills/add-icd-codes/SKILL.md`) and the MCP config (`notes-claude/.mcp.json`) transfer verbatim via `git show` — those files are pipeline-agnostic. The `spawnIcdCoding` function in `main.js` is rewritten natively against develop's manifest-driven, per-child architecture and uses the shared `spawnClaude` wrapper for token logging (the original bypassed `spawnClaude` and missed token capture).
+
+**Rejected:**
+- Merging `icd10-coding` into the post-unification `develop`: produces large conflicts in `main.js`; even if resolved, the ICD step would still need rewriting for per-child execution. Less work to start fresh.
+- Copying `spawnIcdCoding` verbatim from `icd10-coding`: the original used a raw `spawn()` call that skipped `spawnClaude`'s token-usage parsing and lacked `processing_events` integration. Rewriting natively was strictly cheaper than retrofitting.
+- Adding an `icd_status` column to `cases` (as `icd10-coding` did): superseded by `processing_events.status` + the `recording-status-update` IPC. Schema additions in this branch are scoped to Phase 2 (the `cdi_*` columns + `cdi_flags` table).
+- Deleting `icd10-coding` immediately: kept as a read-only reference until `cdi-v1` ships on develop and is verified stable on a staging install. Optional tag + delete post-merge.
+
+**Implications:**
+- ICD runs **per case folder, not per recording**. Single-patient: once on the parent case folder's `soap_note.md`. Multi-patient: once per child case folder's `soap_note.md`. The recording (audit) folder in multi-patient runs retains the SOAP `.md` files the skill wrote — never ICD-coded, never docx-converted.
+- ICD failure is **non-blocking** — the pipeline always falls through to docx. `processing_events.status` captures the failure (`failed` / `rate_limited`) and a `service-warning` IPC fires on MCP-auth or rate-limit errors; the case still completes.
+- Multi-patient runs execute ICD **sequentially across children** — `applyMultiPatientManifest` is now async and awaits each child's `spawnIcdCoding` before kicking off that child's docx. Parallel children would share the MCP connector and Anthropic quota and would interleave per-case log blocks; not worth it for the modest wall-clock savings.
+- Pre-chart **re-runs ICD** after `edit-note` rewrites a SOAP `.md`. The skill strips any prior `## ICD-10-CM Codes` section before appending the new one (idempotent).
+- `notes-claude/.mcp.json` is bundled in the repo and written to `<NOTES_DIR>/.mcp.json` by `ensureMcpConfig()` on every skills sync (initial whenReady, after-git-pull update, and change-notes-dir). This means the `claude.ai ICD-10` connector is wired even on installs whose user-level `~/.claude.json` doesn't already have it.
+- After `cdi-v1` ships to develop and is verified stable, `icd10-coding` is archived (locally `git branch -D icd10-coding`; remote tip optionally tagged for posterity).
+
+---
+
 ## 2026-05-19 (rs) — CDI v1 ships as a standalone skill + markdown standards files
 
 **Context:** Engine 1 (CDI Co-Pilot) is the next-week deliverable per Jayanth. Plan [docs/plans/2026-05-19-rs-cdi-v1-skill.md](plans/2026-05-19-rs-cdi-v1-skill.md) splits delivery into two PRs: Plan 1 = the skill + standards files (this entry), Plan 2 = app integration (`spawnCdiReview` in main.js, UI, DB writes — written *after* the skill is verified manually).

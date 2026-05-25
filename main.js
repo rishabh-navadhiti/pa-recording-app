@@ -61,6 +61,7 @@ const STATE = {
 const STATUS_LABELS = {
   transcribing:    'Transcribing...',
   generating_note: 'Generating note...',
+  coding_icd:      'Adding ICD codes...',
   converting:      'Converting...',
   completed:       'Completed',
   failed:          'Failed'
@@ -655,7 +656,11 @@ function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPat
   try {
     dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapPath })
   } catch (e) { log(`[db] soap path update failed: ${e.message}`) }
-  spawnDocxConversion(soapPath, caseTag, null, caseId)
+
+  // ICD coding (best-effort, sequential before docx so the .docx contains the appended codes).
+  // spawnIcdCoding never rejects — failures resolve cleanly and we fall through to docx.
+  spawnIcdCoding({ soapNoteMdPath: soapPath, caseId, caseTag, doctorId: activeDoctorId })
+    .then(() => spawnDocxConversion(soapPath, caseTag, null, caseId))
 }
 
 // Multi-patient manifest: for each ok/partial case the skill wrote into the recording
@@ -664,7 +669,7 @@ function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPat
 // naming, copy the .md in with the single-patient naming, hide the audit .md on Windows,
 // insert a child cases row, and spawn docx on the copied .md. Finally mark the parent
 // (recording) row as a completed audit row with soap_note_path=NULL.
-function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expectedSoapPath }) {
+async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expectedSoapPath }) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   log(`${tag}[soap] Multi-patient manifest: ${manifest.cases.length} cases declared`)
 
@@ -807,15 +812,22 @@ function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expectedSo
     patientsUi.push({
       name: c.patient_name || slug.replace(/_/g, ' '),
       folderName,
-      status: 'converting'
+      status: 'coding_icd'
     })
 
+    // Publish the patient list to the status UI BEFORE the per-child await so
+    // the ICD step's updatePatientStatus(..., 'coding_icd') call has an entry
+    // to update. Each new child appends to the recording's patients array
+    // and triggers a broadcast.
+    if (caseTag) setRecordingPatients(caseTag, patientsUi.slice())
+
+    // ICD per child (sequential across children so the MCP connector + Anthropic
+    // quota aren't hit in parallel and the per-case log block stays readable).
+    // ICD modifies childSoapMd in place — must complete before docx so the .docx
+    // contains the appended codes.
+    await spawnIcdCoding({ soapNoteMdPath: childSoapMd, caseId: childCaseId, caseTag, patientFolderName: folderName, doctorId: parentDoctorId })
     spawnDocxConversion(childSoapMd, caseTag, folderName, childCaseId)
     childrenCreated++
-  }
-
-  if (caseTag && patientsUi.length > 0) {
-    setRecordingPatients(caseTag, patientsUi)
   }
 
   if (childrenCreated === 0) {
@@ -832,6 +844,115 @@ function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expectedSo
   try {
     dbCases.updateCasePaths(parentCaseId, { status: 'completed', completed_at: nowIso() })
   } catch (e) { log(`[db] parent multi-patient status update failed: ${e.message}`) }
+}
+
+// ---------------------------------------------------------------------------
+// ICD-10 coding — runs after the SOAP .md is in its final on-disk location
+// (single-patient: parent case folder; multi-patient: each child folder), and
+// BEFORE the .docx conversion. Appends an "## ICD-10-CM Codes" table to the
+// SOAP .md in-place via the add-icd-codes skill (which uses the claude.ai
+// ICD-10 MCP connector). Best-effort: any failure logs + emits a
+// service-warning IPC + records a processing_events row, but the pipeline
+// always continues to spawnDocxConversion — a note without codes is still
+// useful.
+//
+// Calls go through the shared spawnClaude wrapper so token usage, cost,
+// and duration are captured for free.
+//
+// Returns a Promise that resolves once the ICD step completes (success OR
+// failure). The caller is expected to `await` this promise before kicking
+// off the per-case spawnDocxConversion, so the docx sees the appended codes.
+// The promise never rejects — failures resolve cleanly so callers stay
+// linear.
+// ---------------------------------------------------------------------------
+function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patientFolderName = null, doctorId = null }) {
+  return new Promise(resolve => {
+    const tag = caseTag ? `[${caseTag}] ` : ''
+    if (patientFolderName) {
+      updatePatientStatus(caseTag, patientFolderName, 'coding_icd')
+    } else if (caseTag) {
+      updateRecordingStatus(caseTag, 'coding_icd')
+    }
+
+    if (!soapNoteMdPath || !fs.existsSync(soapNoteMdPath)) {
+      log(`${tag}[icd] SKIPPED: soap note not found at ${soapNoteMdPath}`)
+      try {
+        const evId = dbEvents.startEvent({ caseId, jobKind: 'icd', relatedDoctorId: doctorId, startedAt: nowIso() })
+        if (evId != null) dbEvents.finishEvent(evId, { status: 'failed', errorMessage: 'soap note missing before icd', finishedAt: nowIso() })
+      } catch (e) { log(`${tag}[db] icd missing-soap event failed: ${e.message}`) }
+      resolve()
+      return
+    }
+
+    const relSoap = path.relative(NOTES_DIR, soapNoteMdPath).replace(/\\/g, '/')
+    const prompt = `add ICD codes. Soap note: "${relSoap}".`
+    const soapModel = readSettings().soapModel
+    log(`${tag}[icd] Spawning: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''}`)
+
+    const startedAt = nowIso()
+    const wallStart = Date.now()
+    let eventId = null
+    try {
+      eventId = dbEvents.startEvent({ caseId, jobKind: 'icd', relatedDoctorId: doctorId, modelUsed: soapModel, startedAt })
+    } catch (e) { log(`${tag}[db] startEvent(icd) failed: ${e.message}`) }
+
+    spawnClaude({
+      prompt,
+      model: soapModel,
+      tag,
+      label: 'icd',
+      onClose(code, errText, resultText, resultEvent) {
+        const durationMs = Date.now() - wallStart
+        const combined = (resultText || '') + '\n' + (errText || '')
+        const isMcpError    = /Needs authentication|unauthorized|\b401\b|MCP.*(connect|connection).*(fail|error|refused)/i.test(combined)
+        const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(combined)
+        const isSkipped     = /ICD_SKIPPED/i.test(combined)
+
+        // Map exit + signals to a processing_events status. Skipped (no diagnoses
+        // found) is still recorded as 'success' — the skill ran to completion and
+        // exited 0 by design.
+        let eventStatus
+        if (isMcpError)        eventStatus = 'failed'
+        else if (isRateLimited) eventStatus = 'rate_limited'
+        else if (code === 0)    eventStatus = 'success'
+        else                    eventStatus = 'failed'
+
+        if (eventId != null) {
+          try {
+            dbEvents.finishEvent(eventId, {
+              status: eventStatus,
+              ...extractUsage(resultEvent),
+              durationMs,
+              errorMessage: code === 0 ? null : (errText || '').slice(0, 1024),
+              finishedAt: nowIso()
+            })
+          } catch (e) { log(`${tag}[db] finishEvent(icd) failed: ${e.message}`) }
+        }
+
+        if (isMcpError && win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'ICD-10 connector unavailable',
+            message: 'Could not look up ICD-10 codes — the note was generated without codes. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled.'
+          })
+        } else if (isRateLimited && win && !win.isDestroyed()) {
+          win.webContents.send('service-warning', {
+            title: 'Claude usage limit reached',
+            message: 'ICD codes could not be added — try again once the limit resets. The note has been saved without codes.'
+          })
+        }
+
+        if (isSkipped) log(`${tag}[icd] No diagnoses found in note — proceeding without codes`)
+        resolve()
+      },
+      onError(err) {
+        log(`${tag}[icd ERR] failed to spawn claude: ${err.message}`)
+        if (eventId != null) {
+          try { dbEvents.finishEvent(eventId, { status: 'failed', durationMs: Date.now() - wallStart, errorMessage: err.message, finishedAt: nowIso() }) } catch {}
+        }
+        resolve()
+      }
+    })
+  })
 }
 
 function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
@@ -1425,10 +1546,13 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
         }
         try { dbCases.bumpCaseRevision(prechartCaseId) } catch (e) { log(`[db] prechart bumpRevision failed: ${e.message}`) }
 
-        // Skill overwrites the soap note in place — refresh the .docx mirror
+        // Skill overwrites the soap note in place. Diagnoses may have changed,
+        // so re-run ICD coding before refreshing the .docx mirror. ICD is
+        // best-effort — failures fall through to docx.
         const updatedNote = findExistingSoapNote(caseDir)
         if (updatedNote) {
-          spawnDocxConversion(updatedNote, null, null, prechartCaseId)
+          spawnIcdCoding({ soapNoteMdPath: updatedNote, caseId: prechartCaseId, caseTag: null })
+            .then(() => spawnDocxConversion(updatedNote, null, null, prechartCaseId))
         } else {
           log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
         }
@@ -1524,6 +1648,7 @@ function checkForUpdates() {
     // New commits were pulled — re-sync skills immediately from updated code
     if (NOTES_DIR) {
       copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+      ensureMcpConfig(NOTES_DIR)
       log('[update] Skills re-synced from updated code')
     }
 
@@ -1555,6 +1680,29 @@ function copyDirSync(src, dest) {
     } else {
       fs.copyFileSync(srcPath, destPath)
     }
+  }
+}
+
+// Project-scope MCP config — written to <NOTES_DIR>/.mcp.json so the `claude -p`
+// invocations (cwd: NOTES_DIR) always have the ICD-10 connector available,
+// even if the user's personal ~/.claude.json doesn't already have it. Re-written
+// on every sync alongside the .claude/ skills copy so an upstream tweak to the
+// connector URL propagates without a manual fix.
+const MCP_CONFIG = {
+  mcpServers: {
+    icd10: {
+      type: 'http',
+      url: 'https://hcls.mcp.claude.com/icd10_codes/mcp'
+    }
+  }
+}
+
+function ensureMcpConfig(notesDir) {
+  if (!notesDir) return
+  try {
+    fs.writeFileSync(path.join(notesDir, '.mcp.json'), JSON.stringify(MCP_CONFIG, null, 2) + '\n')
+  } catch (err) {
+    log(`[mcp] failed to write .mcp.json: ${err.message}`)
   }
 }
 
@@ -1648,6 +1796,7 @@ app.whenReady().then(async () => {
     fs.mkdirSync(CASES_DIR, { recursive: true })
     fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    ensureMcpConfig(NOTES_DIR)
     log('.claude config synced to AI Medical Notes')
     hideNotesDirInternals()
     hideExistingCaseMdFiles()
@@ -2703,6 +2852,7 @@ function registerIpcHandlers() {
 
     writeSettings(migratedSettings)
     copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
+    ensureMcpConfig(NOTES_DIR)
     hideNotesDirInternals()
     hideExistingCaseMdFiles()
 
