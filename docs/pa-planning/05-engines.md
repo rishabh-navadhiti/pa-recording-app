@@ -58,7 +58,7 @@ These are the individual capabilities that make up "CDI." Status markers reflect
 | 1.4 | Per-flag `evidence_missing` (max 4 items not yet documented) | 🟢 v1 | What's needed to upgrade the code |
 | 1.5 | Per-flag `suggested_codes` (1+ ICD-10 codes with descriptions) | 🟢 v1 | Anchored against an ICD-10 source (lookup against ICD-10 MCP connector if available; static fallback otherwise) |
 | 1.6 | Per-flag `confidence` score (0-100) | 🟢 v1 | Drives mode threshold filtering (see 1.29-1.31) |
-| 1.7 | Cap on flags per analysis (e.g. 6 in balanced mode) | 🟢 v1 | Prevents flooding the scribe |
+| 1.7 | Soft-target flag counts per mode (compliance ~4 / balanced ~6 / aggressive ~8) | 🟢 v1 | Guideline numbers only — not hard caps. Severity filter + confidence threshold do the real filtering; the target exists to set scribe expectations and encourage consolidation, not to drop legitimate flags. Notes with genuinely more gaps produce more flags. |
 | 1.8 | Specialty-aware ruleset selection (doctor's specialty drives which CDI rules fire) | 🟢 v1 | Requires `doctors.specialty` field — already shipped in SQLite. No fallback for NULL specialty (CDI option hidden in UI). |
 | 1.8b | Per-flag `category` (Specificity / Linkage / HCC / Completeness / Audit-defense) | 🟢 v1 | Helps with future UI grouping; minor addition to schema |
 
@@ -464,6 +464,20 @@ Three sub-features bundled into one engine.
 - **Review engines** (1, 2, 3a, 3b, 8a) — read the note, flag issues
 - **Generation engines** (4, 5, 6, 7) — produce new artifacts
 - **Meta engines** (8b, 8c, Auto-Pilot) — workflow/learning/dispatch
+
+---
+
+## Source material cross-reference (Fahd's audit framework PDFs)
+
+Fahd shared three PDFs (May 2026) that supplement the original pa-feature-overview. Where each engine should pull from when implemented:
+
+| PDF | Pages | Primary engine relevance | Status |
+|---|---|---|---|
+| `physician_assist_soap_cdi_icd10_audit_framework.pdf` | 22 | **Engine 1 (CDI)** — Sec 6 (ICD-10 Specificity Rubric, 10 pts) + Sec 7 (CDI Completeness Rubric, 10 pts) + Sec 9 (Automatic Hold Triggers) + Sec 13 (Implementation Data Fields) all incorporated into CDI v1 | ✅ Incorporated |
+| `physician_assist_soap_only_audit_framework.pdf` | 18 | **Future Eval engine** — 100-point SOAP rubric (Subjective 20 / Objective 20 / Assessment 25 / Plan 25 / Safety 10) is the primary scoring rubric. Sec 6 Clinical Accuracy Verification (Fact Accuracy Score) is the faithfulness-against-transcript check. | 🔵 Referenced when Eval engine is planned |
+| `What Insurers Actually Grade Your SOAP Notes On.pdf` | 3 | **Engine 1 (CDI) — ortho add-ons incorporated.** Future cardio/ENT/hospitalist specialty packs should pull from the "Specialty-Specific Add-Ons" section (cardiac+respiratory exam always required for cardio; head/neck exam for ENT; active problem list updated each note for hospitalists). **Future Engine 3b (E/M Scorer)** — the CMS 2021 E/M shift (MDM-only) details. | ✅ Ortho add-ons incorporated; others 🔵 deferred |
+
+The PDF 2 § 10 "Ambient AI Workflow" 10-step pipeline (Capture → Generate draft → SOAP Audit → Fact Accuracy → ICD Specificity → CDI Completeness → E/M / Claim Defense → Clinician feedback → Approval → Audit trail) is a useful roadmap reference — our pipeline implements steps 1, 2, 5 (via the ICD step), 6 (CDI Completeness via CDI engine) today; steps 3, 4, 7 are future engine territory.
 
 ---
 

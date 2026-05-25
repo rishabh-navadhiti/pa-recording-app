@@ -47,6 +47,16 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 - **Strip repo-internal doc references from `notes-claude/` content.** Lines like "(per the design decision in `docs/pa-planning/04-open-questions.md` Round 2)" in `SKILL.md` and `standards/README.md` reference files that aren't synced to `<NOTES_DIR>/.claude/` at runtime. The skill is a production artifact — rationale belongs in DECISIONS.md, not in the skill prompt. Behavior statements only in runtime files.
 - **Unify docx generation path.** See [plans/2026-05-22-rs-unify-docx-generation.md](plans/2026-05-22-rs-unify-docx-generation.md). The `generate-note` skill currently has inline docx generation (added during the multi-patient flow work — that hack works but breaks the convention that all docx conversion goes through `main.js` → `python/md_to_docx.py`). Reconcile by giving skills a manifest contract and letting main.js drive all docx conversion.
 
+**Follow-up amendment (2026-05-22) — soft-target flag counts, no hard caps:**
+
+The original mode table specified hard caps (compliance: 4, balanced: 6, aggressive: 8) drawn from Fahd's PDF + `pa_agents.py`'s "Max 6 flags. Prioritize by revenue impact." On the first two real-case test runs (Tsai mark_freund, Sabbag cupp_carol_lee, both balanced mode), the engine produced exactly 6 flags in each case — strongly suggesting the cap was biting and the model was selecting "top 6" rather than reporting all genuine gaps.
+
+Hard caps were the wrong shape of filter — the severity filter (no `opportunity` in compliance/balanced) and confidence threshold (≥70/50/30) already do the right job. A count cap is an arbitrary third filter that pressures the model to drop legitimate clinical-safety or over-coding-defense flags when many genuine issues coexist (e.g., Sabbag's Marx note has ~10 real gaps).
+
+**Amendment:** the numbers stay in the mode table as **soft targets** — guidance for the scribe's expectations and an encouragement to consolidate truly redundant findings. The model is explicitly told these are not caps and may exceed them when warranted. The hard rules remain the severity filter and confidence threshold.
+
+Updated in: `notes-claude/skills/cdi-review/SKILL.md` (Step 3 mode table + Step 4 constraints + Step 6 mode reference), `notes-claude/skills/cdi-review/TESTS.md` (Scenario 3 assertions), `docs/pa-planning/05-engines.md` (sub-feature 1.7).
+
 ---
 
 ## 2026-05-18 (rs) — SQLite as a metadata + index store, not a content store

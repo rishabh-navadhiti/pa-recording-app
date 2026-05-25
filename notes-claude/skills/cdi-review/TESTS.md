@@ -21,7 +21,7 @@ Where:
 After the run, three files should appear in the case folder:
 - `<stem>_cdi.json` — canonical structured output
 - `<stem>_cdi.md`   — human-readable rendering
-- `<stem>_cdi.docx` — produced later by the existing `python/md_to_docx.py`; not part of this skill's responsibility
+- `<stem>_cdi.docx` — produced later by the app's existing md→docx conversion step; not part of this skill's responsibility
 
 The terminal output's **last line** should match one of:
 - `CDI_OK: <path> · <N> flags · quality <X>/100`
@@ -103,27 +103,29 @@ mv "<case>/<stem>_cdi.json" "<case>/<stem>_cdi_balanced.json"
 
 **Expected behavior:**
 
+Flag counts are **soft targets**, not hard caps — exceed them when the note has genuine gaps. The hard rules are severity filter + confidence threshold.
+
 **Compliance mode** (`Mode: compliance`):
-- [ ] Total flags ≤ 4
-- [ ] **No** `type: "suggestion"` flags
-- [ ] **No** `type: "opportunity"` flags
-- [ ] All flag confidences ≥ 70
+- [ ] **No** `type: "suggestion"` flags (hard rule)
+- [ ] **No** `type: "opportunity"` flags (hard rule)
+- [ ] All flag confidences ≥ 70 (hard rule)
+- [ ] Total flags typically around 4, but more is acceptable if the note genuinely has more critical / warning gaps
 - [ ] Tone is conservative / audit-defense-focused
 
 **Balanced mode** (`Mode: balanced`):
-- [ ] Total flags ≤ 6
-- [ ] **No** `type: "opportunity"` flags
-- [ ] Flag confidences ≥ 50
+- [ ] **No** `type: "opportunity"` flags (hard rule)
+- [ ] Flag confidences ≥ 50 (hard rule)
+- [ ] Total flags typically around 6, but more is acceptable for notes with genuine additional gaps
 - [ ] Includes both under-doc and over-doc risks
 
 **Aggressive mode** (`Mode: aggressive`):
-- [ ] Total flags ≤ 8
-- [ ] **Includes** at least one `type: "opportunity"` flag (HCC hint, MDM upgrade path, or missed specificity)
-- [ ] Flag confidences ≥ 30
+- [ ] **Includes** at least one `type: "opportunity"` flag when the note supports it (HCC hint, MDM upgrade path, or missed specificity)
+- [ ] Flag confidences ≥ 30 (hard rule)
+- [ ] Total flags typically around 8, but more is acceptable for notes with abundant gaps
 - [ ] Surfaces revenue-lift / HCC-capture hints
 
 **Cross-mode validation:**
-- [ ] Compliance flag count ≤ Balanced flag count ≤ Aggressive flag count (monotonic)
+- [ ] Compliance flag count ≤ Balanced flag count ≤ Aggressive flag count (monotonic — by construction, stricter mode = stricter filter = fewer flags)
 - [ ] Compliance is a strict subset behavior-wise (no flag types missing from balanced)
 - [ ] Aggressive surfaces categories balanced doesn't
 
@@ -220,7 +222,7 @@ python3 -m json.tool <case>_cdi.json > /dev/null && echo OK || echo FAIL
 - [ ] Summary block contains `**Medical necessity:**`, `**Claim defense readiness:**`, `**Clinician approval required:**`
 - [ ] Footer line includes standards versions
 
-**DOCX conversion (manual, until Plan 2 wires it):**
+**DOCX conversion (manual, run from the repo root):**
 
 ```bash
 python3 python/md_to_docx.py <case>/<stem>_cdi.md

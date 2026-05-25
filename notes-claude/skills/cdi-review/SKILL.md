@@ -92,7 +92,7 @@ CDI_FAIL: case_dir_not_found: <value>
 
 ### 0b. Specialty gate
 
-The CDI engine is specialty-driven. If the specialty isn't supported by this v1, write a stub JSON and exit cleanly — **never** fall back to a generic universal-only review (per the design decision in `docs/pa-planning/04-open-questions.md` Round 2).
+The CDI engine is specialty-driven. If the specialty isn't supported by this v1, write a stub JSON and exit cleanly. **Never** fall back to a generic universal-only review.
 
 ```bash
 # Compute case stem from the case folder
@@ -231,11 +231,13 @@ You are reviewing an outpatient `${SPECIALTY}` encounter for documentation integ
 
 ### Operating mode — `${MODE}`
 
-| Mode | Severity filter | Confidence threshold | Max flags | Stance |
+| Mode | Severity filter | Confidence threshold | Soft target | Stance |
 |---|---|---|---|---|
-| `balanced` | All severities; no `opportunity` tier | ≥ 50 | 6 | Flag both under-documentation risks and over-coding risks equally. Surface evidence-based concerns the scribe can act on. |
-| `compliance` | `critical` + `warning` only — drop `suggestion`, drop `opportunity` | ≥ 70 | 4 | Flag only confirmed documentation risks supported by note evidence. Do not surface revenue opportunities or speculative gaps. Conservative audit-defense stance. |
-| `aggressive` | All severities + `opportunity` tier | ≥ 30 | 8 | Find every legitimate revenue-lift documented enough to query — including HCC capture hints, MDM-upgrade paths, and missed specificity opportunities. Include speculative-but-supported flags as `opportunity` type. |
+| `balanced` | All severities; no `opportunity` tier | ≥ 50 | ~6 | Flag both under-documentation risks and over-coding risks equally. Surface evidence-based concerns the scribe can act on. |
+| `compliance` | `critical` + `warning` only — drop `suggestion`, drop `opportunity` | ≥ 70 | ~4 | Flag only confirmed documentation risks supported by note evidence. Do not surface revenue opportunities or speculative gaps. Conservative audit-defense stance. |
+| `aggressive` | All severities + `opportunity` tier | ≥ 30 | ~8 | Find every legitimate revenue-lift documented enough to query — including HCC capture hints, MDM-upgrade paths, and missed specificity opportunities. Include speculative-but-supported flags as `opportunity` type. |
+
+**On the "soft target" column:** these are guideline numbers, **not hard caps**. If the note genuinely has more documentation gaps that meet the severity + confidence thresholds, raise more flags. Do **not** drop a legitimate clinical-safety or over-coding-defense flag just to stay near the target. The numbers exist to help you consolidate truly redundant findings into single flags (per the "don't repeat the same gap" rule below) and to set scribe expectations — not to filter out real gaps. A note with 10 genuine issues should produce 10 flags; a note with 3 should produce 3.
 
 Use the mode the prompt specified — do not invent a hybrid.
 
@@ -278,9 +280,9 @@ If **any** of these conditions is true, the corresponding flag MUST be `type: "c
 
 Beyond the specificity checks in the specialty pack, the engine also evaluates:
 
-- **Clinical validation** — every Dx must be supported by ≥ 1 clinical indicator (symptom, exam finding, lab, imaging, medication, monitoring). Missing → `category: "Completeness"` flag. (Source: PDF 2 Sec 7 criterion 1.)
-- **Problem-to-plan linkage** — every active Dx must have a corresponding Plan item OR a stated reason no action is needed (e.g., "patient declines"). Missing → `category: "Linkage"` flag. (Source: PDF 2 Sec 7 criterion 2.)
-- **Medical necessity narrative** — the note must explain why **this** visit / test / procedure / therapy is reasonable and necessary. Missing or weak → drives `summary.medical_necessity_status`; entirely absent → raise an `Audit-defense` flag. (Source: PDF 2 Sec 7 criterion 6 + PDF 3 "Big 3 gatekeepers" #1.)
+- **Clinical validation** — every Dx must be supported by ≥ 1 clinical indicator (symptom, exam finding, lab, imaging, medication, monitoring). Missing → `category: "Completeness"` flag.
+- **Problem-to-plan linkage** — every active Dx must have a corresponding Plan item OR a stated reason no action is needed (e.g., "patient declines"). Missing → `category: "Linkage"` flag.
+- **Medical necessity narrative** — the note must explain why **this** visit / test / procedure / therapy is reasonable and necessary. Missing or weak → drives `summary.medical_necessity_status`; entirely absent → raise an `Audit-defense` flag.
 
 ### Summary-field determination rules
 
@@ -372,8 +374,9 @@ Apply the framework from Step 3 to the loaded SOAP note + transcript + standards
 
 **Constraints on this step:**
 - Produce JSON only — no markdown fences, no preamble, no trailing prose.
-- Maximum flag counts per mode (compliance: 4, balanced: 6, aggressive: 8) — drop the lowest-confidence flags first if you exceed.
-- The `flag_counts` in `summary` must reflect the **filtered** list (after mode and confidence threshold filtering applied per Step 3's mode table).
+- Apply the **severity filter** and **confidence threshold** from Step 3's mode table — these are the real filters. Honor them strictly.
+- Soft-target flag counts (compliance: ~4, balanced: ~6, aggressive: ~8) are **guidelines, not caps**. If the note genuinely warrants more flags (e.g. multiple distinct over-coding risks plus several specificity gaps), raise them all. Only consolidate when two flags would describe the same underlying gap.
+- The `flag_counts` in `summary` must reflect the **filtered** list (after severity + confidence filtering applied per Step 3's mode table).
 - Quality scores (formulas in Step 7) are computed during this step and embedded in `summary` — Steps 6 and 7 below specify the rules; the LLM applies them here.
 
 Write the JSON to `${JSON_PATH}` using the Write tool.
@@ -434,11 +437,13 @@ Mode filtering is **already enforced during Step 4** per the mode table in Step 
 
 Restating for reference:
 
-- **`balanced`** — all severities except `opportunity`. Confidence ≥ 50. Hard cap 6 flags.
-- **`compliance`** — `critical` + `warning` only. Drop `suggestion`. Drop `opportunity`. Confidence ≥ 70. Hard cap 4 flags.
-- **`aggressive`** — all four severities, including `opportunity`. Confidence ≥ 30. Hard cap 8 flags.
+- **`balanced`** — all severities except `opportunity`. Confidence ≥ 50. Soft target ~6 flags (exceed if the note genuinely has more gaps).
+- **`compliance`** — `critical` + `warning` only. Drop `suggestion`. Drop `opportunity`. Confidence ≥ 70. Soft target ~4 flags.
+- **`aggressive`** — all four severities, including `opportunity`. Confidence ≥ 30. Soft target ~8 flags.
 
-If, at this point, the JSON contains flag types or counts that violate the mode rules, regenerate the JSON correcting the violation. Do not silently strip flags from a written file — the integrity check belongs upstream in the LLM's production of the JSON.
+**Severity filter and confidence threshold are hard rules** — they must not be violated (a `suggestion`-type flag in compliance mode is a real error). **The soft target is not a hard rule** — exceeding it because the note has genuine gaps is correct behavior.
+
+If, at this point, the JSON contains flag *types* outside the mode's allowed set or *confidences* below the mode's threshold, regenerate the JSON correcting the violation. Do not silently strip flags from a written file — the integrity check belongs upstream in the LLM's production of the JSON.
 
 ---
 
@@ -621,7 +626,7 @@ Set `JSON_PATH` and `MD_PATH` as env vars before running, or substitute the path
 
 ## Step 9: Confirm Completion
 
-Print exactly one terminal status line that main.js (and other callers) can grep for:
+Print exactly one terminal status line that the calling pipeline can grep for:
 
 **On success:**
 ```
@@ -644,7 +649,7 @@ That's the contract. The app's downstream pipeline parses one of these three lin
 
 ## What this skill does NOT do
 
-- Does **not** call `python/md_to_docx.py`. DOCX conversion is handled by a separate pipeline step (Plan 2 wires it).
+- Does **not** produce or convert to DOCX. DOCX conversion is handled by a separate pipeline step outside this skill.
 - Does **not** call external tools (no ICD-10 MCP connector in v1).
 - Does **not** write outside `${CASE_DIR}` (no log files, no scratch dirs, no caches).
 - Does **not** modify the SOAP note. It is read-only against the case folder except for its own three output files.

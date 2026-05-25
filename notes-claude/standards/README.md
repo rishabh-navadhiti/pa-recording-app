@@ -20,7 +20,7 @@ standards/
 
 **Top-level files** = universal rules that apply to every encounter, regardless of doctor specialty. The CDI skill always loads these.
 
-**`specialties/<name>.md`** = specialty-specific layered rules. The CDI skill loads the file matching the doctor's specialty (`<doctor.specialty>.lower() + ".md"`). If the file is missing, the skill bails with a "specialty not yet supported" stub output — no generic universal-only fallback (see [docs/pa-planning/04-open-questions.md](../../docs/pa-planning/04-open-questions.md), Round 2 question A).
+**`specialties/<name>.md`** = specialty-specific layered rules. The CDI skill loads the file matching the doctor's specialty (`<doctor.specialty>.lower() + ".md"`). If the file is missing, the skill bails with a "specialty not yet supported" stub output — no generic universal-only fallback.
 
 ---
 
