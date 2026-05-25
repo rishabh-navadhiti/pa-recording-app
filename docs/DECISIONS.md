@@ -12,6 +12,45 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-05-22 (rs) — CDI v1 wired into the recording-app pipeline
+
+**Context:** Plan 1 ([docs/archive/plans/2026-05-19-rs-cdi-v1-skill.md] when archived) shipped the `cdi-review` skill in isolation. Plan 2 ([docs/plans/2026-05-22-rs-cdi-v1-app-integration.md]) Phase 2 ships it as a real product feature with persistence, UI, status reporting, and ICD-aware behavior. Phase 1 of the same plan (ICD step re-implementation) is documented in the entry below; this entry covers Phase 2.
+
+**Decision:** CDI runs sequentially after the ICD coding step and before docx export, per case folder (parent in single-patient runs; each child in multi-patient runs). CDI failure is non-blocking — docx still ships, the case still completes. New `cdi_flags` table plus 8 `cdi_*` cache columns on `cases` (migration 003) are populated per row; multi-patient parent (audit) rows stay NULL on all `cdi_*` and have zero `cdi_flags` entries. **CDI on/off and mode are global app settings** (`enableCdi` + `cdiMode` in `<NOTES_DIR>/settings.json`), not per-doctor — the Settings page exposes both. **Specialty is per-doctor** (`doctors.specialty` in `app.db`) and is set via the Templates tab. The skill emits `CDI_SKIPPED` when a per-doctor specialty isn't set; the global on/off gates spawning entirely (no Claude invocation when disabled).
+
+**Skill update:** the `cdi-review` skill becomes ICD-aware — when the SOAP note already contains appended ICD codes (the production case after Phase 1), the skill validates them against the documentation and adds a `code_validation` block to the output JSON + a "Code validation summary" section in the markdown rendering. The skill keeps its existing `CDI_OK: / CDI_FAIL: / CDI_SKIPPED:` terminal-line contract in v1, with the addition of an optional ` · ICD validated` suffix on the `CDI_OK:` line signaling that `code_validation` was populated. Upgrading the skill to the full JSON manifest format established for `generate-note` is a v1.1 follow-up.
+
+**Rejected:**
+- Running CDI in parallel with ICD coding: would make the ICD-aware validation behavior non-deterministic (CDI would sometimes see codes, sometimes not). Sequential is correct.
+- Upgrading the CDI skill to the JSON manifest format in v1: the terminal-line contract works, the change would add risk for no v1 benefit. Tracked as a v1.1 follow-up.
+- Per-doctor CDI on/off and mode: the practice toggles the feature; per-doctor specialty drives which ruleset applies. Cleaner separation.
+- A separate CDI-specific docx converter: we use the existing `python/md_to_docx.py` for all docx generation including CDI. `spawnDocxConversion` classifies the `.md` by filename (`*_cdi.md` → 'cdi') and branches the close handler accordingly. Styling extensions (severity-coloured cells, etc.) belong in the existing script in-place if needed; not in this PR.
+- Re-running CDI when pre-chart rewrites a SOAP note: the old `_cdi.{json,md,docx}` artifacts remain as stale. Tracked as a v1.1 follow-up. The ICD step DOES re-run in pre-chart (since diagnoses may have changed).
+- Adding a CDI-specific IPC channel: extending the existing `recording-status-update` payload with `cdi*` fields on each recording/patient entry is simpler. `broadcastRecordingStatus` and `get-session-recordings` already spread the entry, so the fields flow through automatically.
+
+**Implications:**
+- All ICD-aware behavior in the skill assumes the appended-codes format Phase 1 produces (markdown table: *Diagnosis | Code | Description*). Doctor-template-driven inline placement is handled automatically since detection is prompt-driven, not format-driven.
+- The 8 `cdi_*` cache columns on `cases` denormalize what's in `cdi_flags` so the floating status window renders at-a-glance without a JOIN. Keep them honest on every CDI completion. In multi-patient runs the parent (audit) row's `cdi_*` columns stay NULL — the parent row is an audit anchor.
+- The CDI configuration split (global on/off + mode in Settings; per-doctor specialty in Templates) is intentional. Future per-encounter or per-doctor mode overrides can be added in v1.1 without changing the v1 schema.
+- The existing `python/md_to_docx.py` handles all docx generation including CDI. Extend it in-place if styling improvements are needed; do not create a parallel CDI-specific converter.
+- Pre-chart on a CDI-enabled case re-runs ICD but not CDI. The stale `_cdi.{json,md,docx}` artifacts can be manually deleted by the user; auto re-run is a v1.1 follow-up.
+- `processing_events` gains `job_kind='cdi'` rows. `SELECT SUM(cost_usd) FROM processing_events WHERE job_kind='cdi'` gives per-engine cost for free.
+- Windows file hiding extends to `<case>_cdi.json` (hidden inline by `spawnCdiReview` on `CDI_OK`; older cases get hidden on startup by `hideExistingCaseMdFiles` which now filters `.md` OR `*_cdi.json`). `<case>_cdi.md` is hidden by `spawnDocxConversion`'s existing `hideFileFromUser(mdPath)` on its success branch. `<case>_cdi.docx` stays visible.
+
+**Known v1.1 follow-ups (logged 2026-05-22):**
+
+- Upgrade `cdi-review` to emit the JSON manifest format established for `generate-note`. Use `parseSkillManifest.js`.
+- Upgrade `add-icd-codes` to emit the JSON manifest format. Same.
+- Move the CDI rendering Python script from SKILL.md into a sibling `python/cdi_render.py`.
+- Add `python/md_to_docx.py` styling extensions for severity-coloured cells in the CDI docx.
+- Provider query generation (Engine 1 sub-features 1.43–1.47).
+- HCC capture full scoring (1.33–1.35).
+- Pre-AI rules-engine prefilter (1.48–1.50).
+- Documentation Defense additions (1.54–1.60).
+- Re-run CDI automatically when a SOAP note is edited via pre-chart (today it's left as a stale artifact; the ICD step DOES re-run on pre-chart, so this asymmetry is a small wart).
+
+---
+
 ## 2026-05-22 (rs) — ICD-10 coding step re-implemented natively on develop's architecture
 
 **Context:** The original ICD-10 coding step (claude.ai ICD-10 MCP connector + `spawnIcdCoding` + the `add-icd-codes` skill) was implemented on the `icd10-coding` branch in May 2026, before `develop` landed the SQLite metadata store, the staging-branch infrastructure, the token logging via `spawnClaude`, Plan 1's CDI skill + standards files, and the docx-unification rewrite (which introduced JSON manifests for `generate-note` and per-child execution for multi-patient runs). `icd10-coding` and `develop` had diverged by ~1100 lines in `main.js` and the ICD step was wired for the old single-case pipeline that no longer exists on `develop`.

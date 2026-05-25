@@ -284,6 +284,22 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
 - **Problem-to-plan linkage** — every active Dx must have a corresponding Plan item OR a stated reason no action is needed (e.g., "patient declines"). Missing → `category: "Linkage"` flag.
 - **Medical necessity narrative** — the note must explain why **this** visit / test / procedure / therapy is reasonable and necessary. Missing or weak → drives `summary.medical_necessity_status`; entirely absent → raise an `Audit-defense` flag.
 
+### ICD code validation (when codes are present in the SOAP note)
+
+In production, the SOAP note often already contains ICD-10 codes appended by an earlier pipeline step. The codes typically live in a markdown table at the end of the note (default format: *Diagnosis | Code | Description*), but doctor-template variants may place them inline within sections, in the Assessment list, or in prose. **You don't need a separate detection step** — you're already reading the entire note in Step 1, so you'll see any codes naturally.
+
+**If you find ICD codes already in the note:** validate them as part of your analysis.
+
+1. For each existing code, verify it's supported by the documentation (clinical indicators, laterality, acuity, etc.).
+2. Flag any code that's NOT supported by the documentation (over-coding risk) as a `critical` flag of category `Audit-defense` with `current_code` populated. This is one of the auto-critical conditions from the table above (#6 — "Suggested ICD-10 code doesn't match the documented Dx language").
+3. Flag any documented diagnosis that *should* have a code but isn't in the existing list (under-coding risk) as a `warning` of category `Specificity`.
+4. Flag any code that doesn't reflect the documented specificity (e.g., G56.00 unspecified when laterality is documented) as a `warning` of category `Specificity` with `current_code` populated and `suggested_codes` showing the more specific alternative.
+5. Populate the optional `code_validation` block in the output JSON (schema below) summarising what you found.
+
+**If you find no ICD codes in the note:** omit the `code_validation` field entirely from the output JSON. Proceed with the standard CDI analysis. Your `suggested_codes` arrays on individual flags still propose codes that *should* be assigned — that's the existing behavior for code-less notes and stays the same.
+
+The presence vs. absence of the `code_validation` field is the signal to downstream code (rendering, app integration) that validation happened.
+
 ### Summary-field determination rules
 
 `summary.medical_necessity_status`:
@@ -344,7 +360,25 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
       "evidence_found": ["<verbatim or near-verbatim from the note>", "..."],
       "evidence_missing": ["<what would be needed to upgrade or defend>", "..."]
     }
-  ]
+  ],
+  "code_validation": {
+    "codes_in_note": ["<ICD-10 code>", "..."],
+    "supported":     ["<ICD-10 code>", "..."],
+    "flagged": [
+      {
+        "code":           "<ICD-10 code>",
+        "issue":          "<one-sentence explanation of why the code is unsupported / mismatched / under-specific>",
+        "linked_flag_id": "<flag-XXX or null>"
+      }
+    ],
+    "missing_codes": [
+      {
+        "documented_dx":  "<verbatim or near-verbatim diagnosis statement from the note>",
+        "suggested_code": "<ICD-10 code that should have been assigned>",
+        "linked_flag_id": "<flag-XXX or null>"
+      }
+    ]
+  }
 }
 ```
 
@@ -356,6 +390,8 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
 - `suggested_codes` has 0–N entries; each has both `code` and `description`.
 - `drg_impact` is always `null` in v1 (we're outpatient).
 - `current_code` is the code currently in the note that this flag would replace; `null` if none.
+- `code_validation` is **optional** — include it ONLY when codes were found in the note. Omit the field entirely when the note contained no codes (downstream code uses presence/absence of the field as the validation signal).
+- Within `code_validation`: `linked_flag_id` should reference an `id` from the `flags[]` array when a code-validation entry has a corresponding flag, or `null` if standalone. Downstream code tolerates dangling references (UI shows the entry as standalone if the linked flag isn't found).
 
 ### Behavior rules
 
@@ -550,6 +586,44 @@ lines.append("")
 lines.append("---")
 lines.append("")
 
+# Code validation summary — rendered ONLY when the JSON has a code_validation
+# block (i.e. the SOAP note already had ICD codes that the model validated).
+code_val = data.get("code_validation")
+if isinstance(code_val, dict):
+    lines.append("## Code validation summary")
+    lines.append("")
+    in_note   = code_val.get("codes_in_note") or []
+    supported = code_val.get("supported") or []
+    flagged   = code_val.get("flagged") or []
+    missing   = code_val.get("missing_codes") or []
+
+    if in_note:
+        lines.append(f"**Codes in note ({len(in_note)}):** " + ", ".join(f"`{c}`" for c in in_note))
+        lines.append("")
+    if supported:
+        lines.append(f"**Supported ({len(supported)}):** " + ", ".join(f"`{c}`" for c in supported))
+        lines.append("")
+    if flagged:
+        lines.append(f"**Flagged ({len(flagged)}):**")
+        for entry in flagged:
+            code = entry.get("code", "")
+            issue = entry.get("issue", "")
+            link = entry.get("linked_flag_id")
+            tail = f" (see {link})" if link else ""
+            lines.append(f"- `{code}` — {issue}{tail}")
+        lines.append("")
+    if missing:
+        lines.append(f"**Missing codes ({len(missing)}):**")
+        for entry in missing:
+            dx = entry.get("documented_dx", "")
+            sc = entry.get("suggested_code", "")
+            link = entry.get("linked_flag_id")
+            tail = f" (see {link})" if link else ""
+            lines.append(f"- {dx} → `{sc}`{tail}")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+
 # Render flags by severity
 def render_flag(flag):
     out = []
@@ -628,10 +702,17 @@ Set `JSON_PATH` and `MD_PATH` as env vars before running, or substitute the path
 
 Print exactly one terminal status line that the calling pipeline can grep for:
 
-**On success:**
+**On success (no codes were in the note):**
 ```
 CDI_OK: <abs JSON_PATH> · <total flag count> flags · quality <overall_score>/100
 ```
+
+**On success (codes were in the note and you validated them — `code_validation` was emitted in the JSON):**
+```
+CDI_OK: <abs JSON_PATH> · <total flag count> flags · quality <overall_score>/100 · ICD validated
+```
+
+The `· ICD validated` suffix is the signal to the calling pipeline that the JSON has a `code_validation` block. Decide which form to emit based on whether you populated `code_validation` in the output JSON. If you did, append the suffix; if you didn't, don't.
 
 **On failure** (couldn't write either file at all):
 ```
