@@ -1565,6 +1565,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
     onClose(code, errText, resultText, resultEvent) {
       templateJobProc = null
       const durationMs = Date.now() - templateJobStartMs
+      logSkillStream('', 'template', resultEvent)
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
         if (templateJobEventId != null) {
@@ -1703,6 +1704,7 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     onClose(code, errText, resultText, resultEvent) {
       templateJobProc = null
       const durationMs = Date.now() - templateJobStartMs
+      logSkillStream('', 'template-update', resultEvent)
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
         if (templateJobEventId != null) {
@@ -1976,6 +1978,7 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       templateJobProc = null
       cleanupAttachment()
       const durationMs = Date.now() - templateJobStartMs
+      logSkillStream('', `prechart][${patientLabel}`, resultEvent)
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
         if (templateJobEventId != null) {
