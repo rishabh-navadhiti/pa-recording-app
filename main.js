@@ -473,9 +473,19 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
   const safePrompt = prompt.replace(/"/g, '\\"')
   const modelFlag = model ? ` --model ${model}` : ''
   const spawnEnv = { ...process.env, ...(effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}), ...(env || {}) }
+  const shellCmd = `claude -p "${safePrompt}"${modelFlag} --output-format stream-json --verbose --dangerously-skip-permissions`
+
+  // Log the actual command that's about to run — prefix any custom env vars
+  // the way you'd type them in a shell, so the line is copy-pasteable for
+  // debugging (cwd is always NOTES_DIR).
+  const envPrefix = [
+    effort ? `CLAUDE_CODE_EFFORT_LEVEL=${effort}` : null,
+    ...(env ? Object.entries(env).map(([k, v]) => `${k}=${v}`) : [])
+  ].filter(Boolean).join(' ')
+  log(`${tag}[${label}] $ ${envPrefix ? envPrefix + ' ' : ''}${shellCmd}`)
 
   const proc = spawn(
-    `claude -p "${safePrompt}"${modelFlag} --output-format stream-json --verbose --dangerously-skip-permissions`,
+    shellCmd,
     [],
     { cwd: NOTES_DIR, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }
   )
@@ -541,9 +551,9 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     prompt = `generate a note using transcript "${relTranscript}"`
   }
 
-  const attempt = isRetry ? ' (retry)' : ''
   const soapModel = readSettings().soapModel
-  log(`${tag}[soap] Spawning${attempt}: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''}`)
+  if (isRetry) log(`${tag}[soap] retry attempt`)
+  // The actual shell command is logged by spawnClaude as `[soap] $ ...`.
 
   const startedAt = nowIso()
   let eventId = null
@@ -964,7 +974,7 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
     const relSoap = path.relative(NOTES_DIR, soapNoteMdPath).replace(/\\/g, '/')
     const prompt = `add ICD codes. Soap note: "${relSoap}".`
     const soapModel = readSettings().soapModel
-    log(`${tag}[icd] Spawning: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''}`)
+    // The actual shell command is logged by spawnClaude as `[icd] $ ...`.
 
     const startedAt = nowIso()
     const wallStart = Date.now()
@@ -1057,62 +1067,6 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
 // defensive backstop for direct `claude -p` invocations (testing, etc.).
 // ---------------------------------------------------------------------------
 
-// Helper: write the same stub _cdi.json + _cdi.md the skill's Step 0b would,
-// so downstream code (DB cdi_* columns, status popup) sees a consistent shape
-// whether the gate fired in main.js or in the skill.
-function writeCdiStub({ caseDir, doctor, mode, reason }) {
-  // Resolve the case stem the way the skill does — anchor on the existing
-  // *_soap_note.md if present, otherwise fall back to the folder name.
-  let fileStem = path.basename(caseDir)
-  try {
-    const soapMd = fs.readdirSync(caseDir).find(f => f.endsWith('_soap_note.md'))
-    if (soapMd) fileStem = soapMd.replace(/_soap_note\.md$/, '')
-  } catch {}
-  const jsonPath = path.join(caseDir, `${fileStem}_cdi.json`)
-  const mdPath   = path.join(caseDir, `${fileStem}_cdi.md`)
-
-  const stub = {
-    meta: {
-      case_dir: caseDir,
-      patient: fileStem,
-      doctor: doctor?.name || '',
-      specialty: doctor?.specialty || '',
-      mode: mode || '',
-      generated_at: new Date().toISOString(),
-      standards_versions: { icd10_cm: null, ahima_acdis: null, specialty_pack: null }
-    },
-    summary: {
-      overall_quality_score: null,
-      specificity_subscore: null,
-      evidence_subscore: null,
-      completeness_subscore: null,
-      flag_counts: { critical: 0, warning: 0, suggestion: 0, opportunity: 0 },
-      medical_necessity_status: null,
-      claim_defense_readiness: null,
-      clinician_approval_required: false
-    },
-    flags: [],
-    error: reason
-  }
-  try { fs.writeFileSync(jsonPath, JSON.stringify(stub, null, 2)) } catch (e) {
-    log(`[cdi] WARNING: failed to write stub JSON: ${e.message}`)
-    return { jsonPath: null, mdPath: null }
-  }
-  const md = [
-    `# CDI Review — ${fileStem}`,
-    '',
-    'CDI review was not performed for this case.',
-    '',
-    `**Reason:** ${reason}`,
-    ''
-  ].join('\n')
-  try { fs.writeFileSync(mdPath, md) } catch (e) {
-    log(`[cdi] WARNING: failed to write stub MD: ${e.message}`)
-    return { jsonPath, mdPath: null }
-  }
-  return { jsonPath, mdPath }
-}
-
 function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor }) {
   return new Promise(resolve => {
     const tag = caseTag ? `[${caseTag}] ` : ''
@@ -1140,39 +1094,43 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
     const doctorName = doctor?.name || ''
     const standardsAbs = path.join(NOTES_DIR, '.claude', 'standards')
 
-    // Gate 2 — no specialty set on the doctor. Skip the spawn; write the same
-    // stub the skill's Step 0b would have, mark cdi_status='skipped'.
-    if (!specialty) {
-      const reason = `specialty not set for ${doctorName || 'this doctor'}`
+    // Gates 2 + 3 are pure no-ops on disk — no _cdi.* files are created when
+    // CDI doesn't apply. The case-row's cdi_status='skipped' is the only audit
+    // trail; the popup shows the skip reason; the user sees nothing in the
+    // case folder. The skill's own Step 0b stays as a defensive backstop for
+    // direct `claude -p` invocations (testing, debugging) — but in normal
+    // pipeline operation those gates never reach the skill because main.js
+    // catches them here.
+    const markSkipped = (reason, uiReason, skippedTag) => {
       log(`${tag}[cdi] SKIPPED: ${reason}`)
-      const { jsonPath, mdPath } = writeCdiStub({ caseDir, doctor, mode, reason: 'specialty not yet supported for CDI v1: (none)' })
-      try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped', cdi_mode: mode, cdi_json_path: jsonPath, cdi_md_path: mdPath }) } catch (e) {
-        log(`${tag}[db] updateCaseCdi(skipped:no-specialty) failed: ${e.message}`)
+      try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped', cdi_mode: mode }) } catch (e) {
+        log(`${tag}[db] updateCaseCdi(${skippedTag}) failed: ${e.message}`)
       }
-      const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: reason }
+      const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: uiReason }
       if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
       else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-      if (jsonPath) hideFileFromUser(jsonPath)
-      resolve({ ok: false, jsonPath, mdPath, status: 'skipped', skipped: 'no_specialty' })
+      resolve({ ok: false, jsonPath: null, mdPath: null, status: 'skipped', skipped: skippedTag })
+    }
+
+    // Gate 2 — no specialty set on the doctor.
+    if (!specialty) {
+      markSkipped(
+        `specialty not set for ${doctorName || 'this doctor'}`,
+        `specialty not set for ${doctorName || 'this doctor'}`,
+        'no_specialty'
+      )
       return
     }
 
     // Gate 3 — specialty is set but the standards file doesn't exist (e.g.,
-    // user picked 'cardiology' but only orthopedics.md ships in v1). Same
-    // shape as gate 2.
+    // user picked 'cardiology' but only orthopedics.md ships in v1).
     const specialtyFile = path.join(standardsAbs, 'specialties', `${specialty}.md`)
     if (!fs.existsSync(specialtyFile)) {
-      const reason = `unsupported specialty '${specialty}' — no standards file at specialties/${specialty}.md`
-      log(`${tag}[cdi] SKIPPED: ${reason}`)
-      const { jsonPath, mdPath } = writeCdiStub({ caseDir, doctor, mode, reason: `specialty not yet supported for CDI v1: ${specialty}` })
-      try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped', cdi_mode: mode, cdi_json_path: jsonPath, cdi_md_path: mdPath }) } catch (e) {
-        log(`${tag}[db] updateCaseCdi(skipped:unsupported-specialty) failed: ${e.message}`)
-      }
-      const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: `unsupported specialty '${specialty}'` }
-      if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
-      else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-      if (jsonPath) hideFileFromUser(jsonPath)
-      resolve({ ok: false, jsonPath, mdPath, status: 'skipped', skipped: 'unsupported_specialty' })
+      markSkipped(
+        `unsupported specialty '${specialty}' — no standards file at specialties/${specialty}.md`,
+        `unsupported specialty '${specialty}'`,
+        'unsupported_specialty'
+      )
       return
     }
 
@@ -1189,7 +1147,7 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
     ].join(' ')
 
     const soapModel = settings.soapModel
-    log(`${tag}[cdi] Spawning: claude -p "${prompt}"${soapModel ? ` --model ${soapModel}` : ''} (effort=high)`)
+    // The actual shell command is logged by spawnClaude as `[cdi] $ ...`.
 
     // Surface the running stage in the popup. Mirror spawnIcdCoding's pattern.
     if (patientFolderName) {
@@ -1589,7 +1547,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
 
   const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
 
-  log(`[template] Spawning: claude -p "${prompt}" --model ${model} (effort=${effort})`)
+  // The actual shell command is logged by spawnClaude as `[template] $ ...`.
   templateJobStartMs = Date.now()
 
   const templateCreateStartedAt = nowIso()
@@ -1724,7 +1682,7 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
 
   const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}. CorrectionsFile: ${safeCorrectionsFile}. Samples: ${safeSamplesDir}`
 
-  log(`[template-update] Spawning: claude -p <update prompt> --model ${model} (effort=${effort})`)
+  // The actual shell command is logged by spawnClaude as `[template-update] $ ...`.
   templateJobStartMs = Date.now()
 
   const doctorForUpdate = dbDoctors.getDoctorByLastname(lastname)
@@ -1984,7 +1942,7 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   const safeInstr   = (instructions || '').replace(/\r?\n/g, ' ').replace(/"/g, "'")
   const promptText  = `edit note. Case: ${safeCase}. Template: ${safeTpl}. Attachment: ${safeAttach}. Instructions: ${safeInstr}`
 
-  log(`[prechart][${patientLabel}] Spawning: claude -p <edit-note prompt> --model ${model}`)
+  // The actual shell command is logged by spawnClaude as `[prechart] $ ...`.
   templateJobStartMs = Date.now()
 
   // Look up the case DB id by folder path so we can bump revision + write backup_path
