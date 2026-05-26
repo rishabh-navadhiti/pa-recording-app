@@ -84,11 +84,7 @@ DOCTOR_NAME=<value>
 STANDARDS_DIR=<value>
 ```
 
-If `CASE_DIR` is empty or doesn't exist on disk, write the failure line and stop:
-
-```
-CDI_FAIL: case_dir_not_found: <value>
-```
+If `CASE_DIR` is empty or doesn't exist on disk, emit a `status: "failed"` manifest (per Step 9) describing the missing input and stop. Example: `{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"case_dir missing","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"case_dir not found: <value>"}`.
 
 ### 0b. Specialty gate
 
@@ -160,12 +156,14 @@ CDI review was not performed for this case.
 
 To enable CDI for another specialty, add \`standards/specialties/<specialty>.md\` and update the doctor's specialty in settings.
 MD
-  echo "CDI_SKIPPED: unsupported specialty '${SPECIALTY}'"
+  echo "SKIP_SPECIALTY: ${SPECIALTY}"   # log marker for app.log; the real signal is the manifest below
   exit 0
 fi
 
 echo "SPECIALTY_FILE=${SPECIALTY_FILE}"
 ```
+
+If the specialty gate fired (the bash block above exited 0 after writing the stub files), your **final response** must be a single-line `status: "skipped"` manifest per Step 9. Set `json_path` and `md_path` to the stub paths you wrote, `skipped_reason` to a short string like `"specialty not yet supported for CDI v1: <specialty>"`, and all the summary numeric fields to `null`. **No prose, no closing summary — only the manifest line.**
 
 If supported, continue to Step 1.
 
@@ -175,11 +173,7 @@ If supported, continue to Step 1.
 
 Use the Read tool, in this order:
 
-1. **SOAP note** — `${EXISTING_NOTE_PATH}` (the `*_soap_note.md` resolved in Step 0b). **Required.** If missing:
-   ```
-   CDI_FAIL: soap_note_not_found in <CASE_DIR>
-   ```
-   Also write a stub JSON with `"error": "soap_note_not_found"` so downstream code has a file. Then exit.
+1. **SOAP note** — `${EXISTING_NOTE_PATH}` (the `*_soap_note.md` resolved in Step 0b). **Required.** If missing: write a stub JSON with `"error": "soap_note_not_found"` so downstream code has a file, then emit a `status: "failed"` manifest (per Step 9) with `error: "soap_note_not_found in <CASE_DIR>"` and `json_path` pointing at the stub. Stop.
 
 2. **Transcript** — try `${CASE_DIR}/transcript.md` then any `${CASE_DIR}/*_transcript.md`. **Optional.** If missing, log a warning and proceed with the SOAP note alone:
    ```
@@ -209,13 +203,7 @@ Read all three standards files, in full:
 2. **`${STANDARDS_DIR}/ahima_acdis_2026.md`** — query compliance rules. Required.
 3. **`${SPECIALTY_FILE}`** — specialty pack (e.g. `orthopedics.md`). Required (already verified in Step 0b).
 
-If any of the universal files is missing, fail loudly:
-
-```
-CDI_FAIL: standards_missing: <which-file>
-```
-
-Also write a stub JSON with the error, so downstream code has something.
+If any of the universal files is missing, write a stub JSON with the error so downstream code has something, then emit a `status: "failed"` manifest (per Step 9) with `error: "standards_missing: <which-file>"` and stop.
 
 Extract the `**Standards version:**` line from each file for the `meta.standards_versions` block of the output JSON.
 
@@ -698,33 +686,87 @@ Set `JSON_PATH` and `MD_PATH` as env vars before running, or substitute the path
 
 ---
 
-## Step 9: Confirm Completion
+## Step 9: Emit the Manifest (Last Line of Your Final Response)
 
-Print exactly one terminal status line that the calling pipeline can grep for:
+After writing the `_cdi.json` and `_cdi.md` files in Step 8, your **final assistant text response** (the message you write at the end) must end with **a single line of valid JSON** matching the schema below. The app's `parseSkillManifest` helper reads this line directly from your final response to drive everything that happens next — DB writes, status popup, file hiding, docx conversion.
 
-**On success (no codes were in the note):**
-```
-CDI_OK: <abs JSON_PATH> · <total flag count> flags · quality <overall_score>/100
+**Important:** This means you must literally type the JSON into your final response text — not print it via a bash or python subprocess, since subprocess output goes into a tool result, not your final message. Assemble the manifest mentally from the data you tracked in Steps 4–7, then write it out as one JSON line.
+
+**No closing summary.** After all the tool calls in earlier steps, you may feel like writing a closing summary for the operator — DO NOT. Your only final emission is the manifest line below. Any case-summary information already lives in the `_cdi.md` rendered in Step 8.
+
+### Output rules
+
+1. The manifest is **a single line** of valid JSON in your final response. No pretty-printing, no newlines inside the JSON.
+2. **No markdown code fences** (no ```` ```json ```` ... ```` ``` ````) around it.
+3. **No prose after** the manifest line. Any chief-complaint summaries, scoring narrative, etc. must appear **before** the manifest, not after — and even before is discouraged; the `_cdi.md` is the human-readable artifact.
+4. **All paths are absolute**, using the OS path separator the skill is running on (forward slashes on macOS/Linux, backslashes on Windows).
+5. If something goes wrong such that no CDI output could be written, emit a manifest with `status: "failed"` and `json_path: null`. **Never** end your response without a manifest line — downstream code uses the manifest to decide whether to mark the run failed.
+
+### Schema
+
+```json
+{
+  "schema_version": 1,
+  "skill": "cdi-review",
+  "status": "ok|skipped|failed",
+  "summary": "<one-line human description of what was produced>",
+  "json_path": "<absolute path to <case>_cdi.json, or null if not written>",
+  "md_path": "<absolute path to <case>_cdi.md, or null if not written>",
+  "flag_count": <total flag count after mode filtering, or null on skipped/failed>,
+  "flag_counts": { "critical": <n>, "warning": <n>, "suggestion": <n>, "opportunity": <n> },
+  "quality_score": <0-100 overall, or null on skipped/failed>,
+  "medical_necessity_status": "supported|weak|missing|null",
+  "claim_defense_readiness": "ready|needs_edits|hold_for_review|null",
+  "clinician_approval_required": <true|false|null>,
+  "icd_validated": <true if you populated code_validation in the JSON; false if you didn't; null on skipped/failed>,
+  "skipped_reason": "<set when status='skipped'; null otherwise>",
+  "error": "<set when status='failed'; null otherwise>"
+}
 ```
 
-**On success (codes were in the note and you validated them — `code_validation` was emitted in the JSON):**
-```
-CDI_OK: <abs JSON_PATH> · <total flag count> flags · quality <overall_score>/100 · ICD validated
+Field semantics:
+
+- `schema_version` — always `1` for this version.
+- `skill` — always `"cdi-review"`.
+- `status` — `ok` when the review ran and produced flags + summary; `skipped` when a gate fired (unsupported specialty, missing standards file, etc. — Step 0b path); `failed` when something prevented producing a usable `_cdi.json`.
+- `summary` — free string for the operator / log; not parsed.
+- `json_path` — absolute path to `${JSON_PATH}` from Step 1. **Required** for `status: "ok"`. May be set for `status: "skipped"` (stub JSON) or `null` for `status: "failed"`.
+- `md_path` — absolute path to `${MD_PATH}` from Step 1. Same rules as `json_path`.
+- `flag_count` — total flags emitted after Step 6 mode filtering. `null` on skipped/failed.
+- `flag_counts` — per-severity breakdown matching `summary.flag_counts` in the JSON. All zeros on skipped/failed.
+- `quality_score` — `summary.overall_quality_score` from the JSON. `null` on skipped/failed.
+- `medical_necessity_status` — echo of the JSON's `summary.medical_necessity_status`. `null` on skipped/failed.
+- `claim_defense_readiness` — echo of the JSON's `summary.claim_defense_readiness`. `null` on skipped/failed.
+- `clinician_approval_required` — echo of the JSON's `summary.clinician_approval_required`. `null` on skipped/failed.
+- `icd_validated` — `true` if you populated the optional `code_validation` block in the JSON (codes were present in the SOAP note); `false` if you didn't (note had no codes); `null` on skipped/failed.
+- `skipped_reason` — short reason string. Set when `status: "skipped"`; `null` otherwise.
+- `error` — one-line error description. Set when `status: "failed"`; `null` otherwise.
+
+The full per-flag detail lives in `_cdi.json` — the manifest just carries the at-a-glance summary. The app reads `_cdi.json` directly for the `cdi_flags` rows; the manifest is for the case-row summary and the routing decision.
+
+### Worked examples
+
+**Example 1 — status `ok`, ICD codes were in the note and you validated them:**
+
+```json
+{"schema_version":1,"skill":"cdi-review","status":"ok","summary":"5 flags surfaced; quality 73/100; ICD codes validated.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.md","flag_count":5,"flag_counts":{"critical":1,"warning":2,"suggestion":2,"opportunity":0},"quality_score":73,"medical_necessity_status":"weak","claim_defense_readiness":"hold_for_review","clinician_approval_required":true,"icd_validated":true,"skipped_reason":null,"error":null}
 ```
 
-The `· ICD validated` suffix is the signal to the calling pipeline that the JSON has a `code_validation` block. Decide which form to emit based on whether you populated `code_validation` in the output JSON. If you did, append the suffix; if you didn't, don't.
+**Example 2 — status `skipped`, specialty unsupported (Step 0b fired):**
 
-**On failure** (couldn't write either file at all):
-```
-CDI_FAIL: <reason>
-```
-
-**On clean specialty-skip** (already emitted in Step 0b):
-```
-CDI_SKIPPED: unsupported specialty '<specialty>'
+```json
+{"schema_version":1,"skill":"cdi-review","status":"skipped","summary":"Specialty 'cardiology' is not supported by CDI v1.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.md","flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":"specialty not yet supported for CDI v1: cardiology","error":null}
 ```
 
-That's the contract. The app's downstream pipeline parses one of these three lines to decide what to do next.
+**Example 3 — status `failed`, JSON validation failed after the one retry:**
+
+```json
+{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"JSON validation failed after retry; raw output saved.","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"JSON validation failed after 1 retry"}
+```
+
+You may write a short human-readable comment **before** the manifest line in your final response if it helps your own reasoning — but it's strictly optional and the `_cdi.md` is the canonical human-readable artifact. The only thing the app reads structurally is the JSON line at the very end of your response.
+
+**If the manifest line is missing or malformed**, the app falls back to reading the `_cdi.json` directly from disk to recover the run state. That fallback is the safety net; the manifest is the fast happy path. Don't rely on the fallback — emit the manifest.
 
 ---
 
@@ -734,5 +776,6 @@ That's the contract. The app's downstream pipeline parses one of these three lin
 - Does **not** call external tools (no ICD-10 MCP connector in v1).
 - Does **not** write outside `${CASE_DIR}` (no log files, no scratch dirs, no caches).
 - Does **not** modify the SOAP note. It is read-only against the case folder except for its own three output files.
-- Does **not** retry on transient failures beyond the one JSON-validation retry in Step 5. Fail loudly via the `CDI_FAIL:` line.
+- Does **not** retry on transient failures beyond the one JSON-validation retry in Step 5. Fail loudly via the manifest (`status: "failed"`).
 - Does **not** repeat itself across invocations. Each run is stateless; the app maintains the per-patient query log (v1.1).
+- Does **not** print a closing summary, "done!" message, or any other prose after the manifest line. The manifest is the final emission.

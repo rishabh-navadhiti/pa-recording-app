@@ -38,9 +38,23 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 - `processing_events` gains `job_kind='cdi'` rows. `SELECT SUM(cost_usd) FROM processing_events WHERE job_kind='cdi'` gives per-engine cost for free.
 - Windows file hiding extends to `<case>_cdi.json` (hidden inline by `spawnCdiReview` on `CDI_OK`; older cases get hidden on startup by `hideExistingCaseMdFiles` which now filters `.md` OR `*_cdi.json`). `<case>_cdi.md` is hidden by `spawnDocxConversion`'s existing `hideFileFromUser(mdPath)` on its success branch. `<case>_cdi.docx` stays visible.
 
+**Addendum (2026-05-26) — CDI Step 9 replaced with a JSON manifest; filesystem fallback added; full stream-json logging.**
+
+The Stephanie 2026-05-26 verification run revealed the magic-line terminal contract is unreliable for long CDI runs. The skill ran cleanly (5 flags, quality 73/100, $0.90, valid `_cdi.json` + `_cdi.md` on disk) but by turn 18 the model's attention had drifted and its final response was a conversational summary instead of the strict `CDI_OK:` line. main.js's grep-based parser logged `CDI_FAIL: no terminal line` and routed to the failure branch, leaving the DB row as failed despite the on-disk artifacts being perfect.
+
+Three changes addressing the root cause:
+
+- **(a) Step 9 of `cdi-review/SKILL.md` replaced with a single-line JSON manifest** matching `parseSkillManifest`'s expectations (`schema_version:1`, `skill:'cdi-review'`, `status:'ok'|'skipped'|'failed'`, plus `json_path`/`md_path`/`flag_count`/`flag_counts`/`quality_score`/`medical_necessity_status`/`claim_defense_readiness`/`clinician_approval_required`/`icd_validated`/`skipped_reason`/`error`). Same emission discipline as `generate-note` Step 7 (last line of final response, no fences, no prose after). Three worked examples embedded in Step 9. Explicit "do NOT write a closing summary" guidance baked in. The old `CDI_OK:` / `CDI_SKIPPED:` / `CDI_FAIL:` text-line spec is removed entirely.
+
+- **(b) Filesystem fallback in `spawnCdiReview`** is the load-bearing reliability layer. When the manifest line is missing, malformed, or `status:'failed'`, main.js reads the on-disk `<case>_cdi.json` (which the skill writes in Step 8, before Step 9's emission), validates its shape (`summary` + `flags` present), and synthesizes a manifest from its content. The case is recovered to `cdi_status='completed'` as if the manifest had been emitted cleanly. `applyCdiSuccess(manifest)` is shared between the happy path and the fallback path so DB writes, flag inserts, file hiding, and popup updates are identical regardless of which route succeeded. The model can drop the manifest line entirely and we still recover. Only when both the manifest AND the on-disk JSON are unusable does main.js mark `cdi_status='failed'` and surface a `service-warning` IPC.
+
+- **(c) Full stream-json logging** for all three Claude-driven skills. `logSkillStream(tag, kind, resultEvent)` writes one grep-able JSON line per run: `[soap][stream]`, `[icd][stream]`, `[cdi][stream]`. The stream wrapper already contains `result` (the model's final text) plus `usage`, `total_cost_usd`, `duration_api_ms`, `num_turns`, `permission_denials`, etc. — single source of truth. The earlier `[soap][response]` (just the result text, multi-line) is replaced. `[soap][manifest]` and `[cdi][manifest]` remain as the parsed-manifest log lines — semantically distinct from `[stream]` (the stream's `result` field is raw text; the manifest is the parsed structure driving DB + UI writes).
+
+Net effect: the manifest is the fast happy path; the filesystem fallback is the safety net. Long CDI runs that drift on the closing line still complete successfully. The "upgrade CDI to manifest format" item below is **done** as of this addendum — moved into v1 from v1.1.
+
 **Known v1.1 follow-ups (logged 2026-05-22):**
 
-- Upgrade `cdi-review` to emit the JSON manifest format established for `generate-note`. Use `parseSkillManifest.js`.
+- ~~Upgrade `cdi-review` to emit the JSON manifest format established for `generate-note`. Use `parseSkillManifest.js`.~~ *Done 2026-05-26 — see addendum above.*
 - Upgrade `add-icd-codes` to emit the JSON manifest format. Same.
 - Move the CDI rendering Python script from SKILL.md into a sibling `python/cdi_render.py`.
 - Add `python/md_to_docx.py` styling extensions for severity-coloured cells in the CDI docx.

@@ -23,10 +23,15 @@ After the run, three files should appear in the case folder:
 - `<stem>_cdi.md`   — human-readable rendering
 - `<stem>_cdi.docx` — produced later by the app's existing md→docx conversion step; not part of this skill's responsibility
 
-The terminal output's **last line** should match one of:
-- `CDI_OK: <path> · <N> flags · quality <X>/100`
-- `CDI_SKIPPED: unsupported specialty '<name>'`
-- `CDI_FAIL: <reason>`
+The skill's **final assistant text** ends with a single-line JSON manifest matching SKILL.md Step 9. Its `status` field is one of `"ok"` / `"skipped"` / `"failed"`. main.js's `parseSkillManifest` (in repo root) reads this line; if it's missing or malformed, main.js falls back to reading the on-disk `<stem>_cdi.json` to recover the run state.
+
+Pull the manifest line out for inspection:
+
+```bash
+# manifest is the last line of the model's final assistant text — also logged
+# as [cdi][manifest] in app.log on successful parse
+grep '\[cdi\]\[manifest\]' "<NOTES_DIR>/app.log" | tail -1
+```
 
 ---
 
@@ -58,7 +63,7 @@ claude -p "review cdi. Case: <NOTES_DIR>/Cases/Cecil Daniels_2026-03-11. Special
 - [ ] `summary.clinician_approval_required` is `true` (critical flag fires)
 - [ ] `summary.medical_necessity_status` is `weak` or `missing`
 - [ ] `_cdi.md` renders cleanly with severity emoji, headings, code blocks for ICD codes
-- [ ] Last terminal line starts with `CDI_OK:`
+- [ ] Final assistant text ends with a manifest line whose `status` is `"ok"`
 
 ---
 
@@ -88,7 +93,7 @@ claude -p "review cdi. Case: <NOTES_DIR>/Cases/James Marx_2025-03-13. Specialty:
 - [ ] `summary.clinician_approval_required` is `true`
 - [ ] `summary.claim_defense_readiness` is `hold_for_review`
 - [ ] Evidence in the critical flag mentions the EMG findings verbatim (or near-verbatim)
-- [ ] Last terminal line starts with `CDI_OK:`
+- [ ] Final assistant text ends with a manifest line whose `status` is `"ok"`
 
 ---
 
@@ -144,7 +149,7 @@ claude -p "review cdi. Case: <any case>. Specialty: cardiology. Mode: balanced. 
 - [ ] `_cdi.json` is written and contains `"error": "specialty not yet supported for CDI v1: cardiology"`
 - [ ] `_cdi.md` is written and explains why CDI was not performed
 - [ ] `summary.flag_counts` are all 0
-- [ ] Terminal line is `CDI_SKIPPED: unsupported specialty 'cardiology'`
+- [ ] Final manifest line has `status: "skipped"` and `skipped_reason` containing `cardiology`
 - [ ] Skill exits 0 (not a failure)
 
 ### 4b — Null / empty specialty
@@ -155,16 +160,16 @@ claude -p "review cdi. Case: <any case>. Specialty: . Mode: balanced. Doctor: . 
 ```
 
 **Expected:**
-- [ ] Same as 4a — stub JSON, MD, `CDI_SKIPPED` terminal line, exit 0
+- [ ] Same as 4a — stub JSON + MD, manifest `status: "skipped"`, exit 0
 
 ### 4c — Missing SOAP file in case dir
 
 **Setup:** Case folder exists but has no `*_soap_note.md`.
 
 **Expected:**
-- [ ] Terminal line is `CDI_FAIL: soap_note_not_found in <case_dir>`
+- [ ] Final manifest line has `status: "failed"` and `error` containing `soap_note_not_found`
 - [ ] Stub `_cdi.json` is still written (with `"error"` field) — downstream code needs a file
-- [ ] Skill exits non-zero
+- [ ] Skill exits non-zero (or 0 with `status: "failed"`; either way main.js's filesystem fallback will read the stub)
 
 ### 4d — Missing transcript, SOAP present
 
@@ -180,9 +185,9 @@ claude -p "review cdi. Case: <any case>. Specialty: . Mode: balanced. Doctor: . 
 **Invocation:** Point `Standards:` at a non-existent path.
 
 **Expected:**
-- [ ] Skill prints `CDI_FAIL: standards_missing: <which file>`
+- [ ] Final manifest line has `status: "failed"` and `error` containing `standards_missing`
 - [ ] Stub `_cdi.json` is written if possible
-- [ ] Skill exits non-zero
+- [ ] Skill exits non-zero (or 0 with `status: "failed"`)
 
 ---
 

@@ -166,8 +166,8 @@ const DEFAULT_SETTINGS = {
   // CDI Co-Pilot — global on/off + mode. Per-doctor specialty is in app.db
   // (doctors.specialty). When enableCdi is false, the CDI pipeline step is
   // skipped entirely for every case — no claude spawn, no DB writes, no UI.
-  // When true, the CDI skill runs per case folder and emits CDI_SKIPPED for
-  // doctors whose specialty is unset or unsupported.
+  // When true, the CDI skill runs per case folder; the skill's manifest
+  // marks status='skipped' for doctors whose specialty is unset or unsupported.
   enableCdi: false,
   cdiMode:   'balanced'
 }
@@ -385,6 +385,24 @@ function extractUsage(ev) {
   }
 }
 
+// Log a skill's final stream-json `result` event as one grep-able line.
+// resultEvent is the parsed stream-json wrapper captured by spawnClaude — it
+// already contains `result` (the model's final text), `usage`, `total_cost_usd`,
+// `duration_api_ms`, `num_turns`, `permission_denials`, etc. Single source of
+// truth — no need to log the result text separately. Pipe through `jq` later
+// if you want pretty-printing.
+function logSkillStream(tag, kind, resultEvent) {
+  if (!resultEvent) {
+    log(`${tag}[${kind}][stream] (no result event captured)`)
+    return
+  }
+  try {
+    log(`${tag}[${kind}][stream] ${JSON.stringify(resultEvent)}`)
+  } catch (e) {
+    log(`${tag}[${kind}][stream] (stringify failed: ${e.message})`)
+  }
+}
+
 function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   const stderrChunks = []
@@ -568,15 +586,15 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         return
       }
 
+      // Always log the full stream-json wrapper as a single grep-able line.
+      // This is the canonical source of truth for the run — contains the model's
+      // `result` text plus usage / cost / duration / permission_denials / etc.
+      logSkillStream(tag, 'soap', resultEvent)
+
       // Claude exited 0 — parse the JSON manifest from the skill's final assistant text.
       const manifest = parseSkillManifest(resultText)
       if (!manifest) {
         log(`${tag}[soap] ERROR: could not parse JSON manifest from skill output`)
-        if (resultText && resultText.trim()) {
-          log(`${tag}[soap][response]\n${resultText.trim()}`)
-        } else {
-          log(`${tag}[soap] (resultText was empty)`)
-        }
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'manifest parse failed', finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
@@ -586,14 +604,9 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         return
       }
 
-      // Log Claude's full final response (chief-complaint prose + manifest line) as-is,
-      // then log the parsed manifest separately on one line for grep. Non-DB manifest
-      // fields (visit_type, chief_complaint, placeholders, warnings, summary) all live
-      // in the manifest log entry below; the response above also preserves any
-      // narrative prose the skill emitted before the manifest line.
-      if (resultText && resultText.trim()) {
-        log(`${tag}[soap][response]\n${resultText.trim()}`)
-      }
+      // Log the parsed manifest separately on one line for grep. Semantically
+      // distinct from [soap][stream] above — the stream's `result` field is
+      // the raw text; this is the parsed structure driving DB + UI writes.
       try { log(`${tag}[soap][manifest] ${JSON.stringify(manifest)}`) } catch {}
 
       if (manifest.schema_version !== 1) {
@@ -967,6 +980,7 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
       label: 'icd',
       onClose(code, errText, resultText, resultEvent) {
         const durationMs = Date.now() - wallStart
+        logSkillStream(tag, 'icd', resultEvent)
         const combined = (resultText || '') + '\n' + (errText || '')
         const isMcpError    = /Needs authentication|unauthorized|\b401\b|MCP.*(connect|connection).*(fail|error|refused)/i.test(combined)
         const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(combined)
@@ -1204,103 +1218,113 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
       label: 'cdi',
       onClose(code, errText, resultText, resultEvent) {
         const durationMs = Date.now() - wallStart
+        logSkillStream(tag, 'cdi', resultEvent)
         const combined = (resultText || '') + '\n' + (errText || '')
         const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(combined)
 
-        // Parse the terminal contract line from the skill (Step 9):
-        //   CDI_OK: <abs path> · <N> flags · quality <X>/100 [· ICD validated]
-        //   CDI_SKIPPED: unsupported specialty '<specialty>'
-        //   CDI_FAIL: <reason>
-        const okMatch      = /CDI_OK:\s*(\S+)\s*·\s*(\d+)\s*flags\s*·\s*quality\s*(\d+)\/100(.*)/i.exec(resultText)
-        const skippedMatch = /CDI_SKIPPED:\s*(.*)$/im.exec(resultText)
-        const failMatch    = /CDI_FAIL:\s*(.*)$/im.exec(resultText)
+        // --- Inner helper: turn a CDI manifest (real or filesystem-synthesized)
+        // into the DB + UI writes for a successful run. Both the happy path and
+        // the filesystem-fallback path call this with the same shape.
+        // Returns { jsonPath, mdPath, flagCount, qScore, approval } so the caller
+        // can resolve() with mdPath for the docx step.
+        const applyCdiSuccess = (manifest) => {
+          const jsonPathResult = manifest.json_path || null
+          const mdPathResult   = manifest.md_path   || null
+          const flagCount      = manifest.flag_count != null ? manifest.flag_count : 0
+          const qScore         = manifest.quality_score != null ? Number(manifest.quality_score) : null
+          const approval       = !!manifest.clinician_approval_required
 
-        let outcome
-        if (okMatch)             outcome = 'ok'
-        else if (skippedMatch)   outcome = 'skipped'
-        else if (failMatch)      outcome = 'failed'
-        else if (code === 0)     outcome = 'failed_silent'  // exit 0 but no terminal line
-        else                     outcome = 'failed'
-
-        let cdiStatusDb     = 'failed'
-        let eventStatus     = 'failed'
-        let jsonPathResult  = null
-        let mdPathResult    = null
-
-        if (outcome === 'ok') {
-          cdiStatusDb = 'completed'
-          eventStatus = isRateLimited ? 'rate_limited' : 'success'
-          jsonPathResult = okMatch[1]
-          // .md sits next to .json with the same stem.
-          if (jsonPathResult && jsonPathResult.endsWith('_cdi.json')) {
-            mdPathResult = jsonPathResult.replace(/_cdi\.json$/, '_cdi.md')
-          }
-
-          // Parse the JSON, persist summary fields + flags.
           try {
-            if (jsonPathResult && fs.existsSync(jsonPathResult)) {
-              const cdi = JSON.parse(fs.readFileSync(jsonPathResult, 'utf8'))
-              const summary = cdi.summary || {}
-              const flagCount = Array.isArray(cdi.flags) ? cdi.flags.length : 0
-              const qScore = (summary.overall_quality_score != null) ? Number(summary.overall_quality_score) : null
-              const approval = !!summary.clinician_approval_required
+            dbCases.updateCaseCdi(caseId, {
+              cdi_status:                       'completed',
+              cdi_json_path:                    jsonPathResult,
+              cdi_md_path:                      mdPathResult,
+              cdi_quality_score:                qScore,
+              cdi_medical_necessity:            manifest.medical_necessity_status || null,
+              cdi_claim_defense_readiness:      manifest.claim_defense_readiness || null,
+              cdi_clinician_approval_required:  approval ? 1 : 0
+            })
+          } catch (e) { log(`${tag}[db] updateCaseCdi(ok) failed: ${e.message}`) }
 
-              try {
-                dbCases.updateCaseCdi(caseId, {
-                  cdi_status:                       'completed',
-                  cdi_json_path:                    jsonPathResult,
-                  cdi_md_path:                      mdPathResult,
-                  cdi_quality_score:                qScore,
-                  cdi_medical_necessity:            summary.medical_necessity_status || null,
-                  cdi_claim_defense_readiness:      summary.claim_defense_readiness || null,
-                  cdi_clinician_approval_required:  approval ? 1 : 0
-                })
-              } catch (e) { log(`${tag}[db] updateCaseCdi(ok) failed: ${e.message}`) }
-
-              if (Array.isArray(cdi.flags) && cdi.flags.length > 0) {
-                try { dbCdiFlags.insertFlags(caseId, eventId, cdi.flags) } catch (e) {
+          // Read the full _cdi.json from disk for the per-flag detail. The manifest
+          // carries only the summary; per-flag rows come from the file.
+          if (jsonPathResult && fs.existsSync(jsonPathResult)) {
+            try {
+              const fullJson = JSON.parse(fs.readFileSync(jsonPathResult, 'utf8'))
+              if (Array.isArray(fullJson.flags) && fullJson.flags.length > 0) {
+                try { dbCdiFlags.insertFlags(caseId, eventId, fullJson.flags) } catch (e) {
                   log(`${tag}[db] insertFlags failed: ${e.message}`)
                 }
               }
-
-              // Surface to the popup so the Open CDI Review button can appear
-              // (once the cdi docx is generated) and the badge can show.
-              const cdiUi = {
-                cdiStatus:                       'completed',
-                cdiFlagCount:                    flagCount,
-                cdiQualityScore:                 qScore,
-                cdiClinicianApprovalRequired:    approval
-              }
-              if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
-              else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-
-              // Hide the _cdi.json on Windows — the user opens the .docx.
-              hideFileFromUser(jsonPathResult)
-
-              log(`${tag}[cdi] CDI_OK: ${flagCount} flags, quality ${qScore}/100${approval ? ' (approval required)' : ''}`)
-            } else {
-              log(`${tag}[cdi] WARNING: CDI_OK terminal line but JSON not on disk: ${jsonPathResult}`)
+            } catch (e) {
+              log(`${tag}[cdi] WARNING: failed to read full _cdi.json for flag inserts: ${e.message}`)
             }
-          } catch (e) {
-            log(`${tag}[cdi] WARNING: failed to read/parse cdi JSON: ${e.message}`)
-            // Still record success at the event level — the file just had a parse issue.
+            hideFileFromUser(jsonPathResult)
           }
-        } else if (outcome === 'skipped') {
-          cdiStatusDb = 'skipped'
-          eventStatus = 'success'
-          const reason = (skippedMatch[1] || '').trim()
-          log(`${tag}[cdi] CDI_SKIPPED: ${reason}`)
-          try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped' }) } catch (e) {
-            log(`${tag}[db] updateCaseCdi(skipped) failed: ${e.message}`)
+
+          // Surface to the popup so the Open CDI Review button can appear
+          // (once the cdi docx is generated) and the badge can show.
+          const cdiUi = {
+            cdiStatus:                       'completed',
+            cdiFlagCount:                    flagCount,
+            cdiQualityScore:                 qScore,
+            cdiClinicianApprovalRequired:    approval
           }
-          const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: reason }
           if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
           else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-        } else {
-          // failed or failed_silent
-          eventStatus = isRateLimited ? 'rate_limited' : 'failed'
-          const reason = failMatch ? (failMatch[1] || '').trim() : (outcome === 'failed_silent' ? 'no terminal line' : 'exit non-zero')
-          log(`${tag}[cdi] CDI_FAIL: ${reason}`)
+
+          log(`${tag}[cdi] success: ${flagCount} flags, quality ${qScore != null ? qScore : '?'}/100${approval ? ' (approval required)' : ''}${manifest.icd_validated ? ' · ICD validated' : ''}`)
+          return { jsonPath: jsonPathResult, mdPath: mdPathResult }
+        }
+
+        // --- Inner helper: synthesize a manifest from the on-disk _cdi.json
+        // when the model's manifest line was missing or unparseable. Returns
+        // null if the file doesn't exist or has the wrong shape.
+        const synthesizeManifestFromDisk = () => {
+          // Find the expected json/md stems anchored on the existing soap note.
+          let fileStem = path.basename(caseDir)
+          try {
+            const soapMd = fs.readdirSync(caseDir).find(f => f.endsWith('_soap_note.md'))
+            if (soapMd) fileStem = soapMd.replace(/_soap_note\.md$/, '')
+          } catch {}
+          const jsonOnDisk = path.join(caseDir, `${fileStem}_cdi.json`)
+          const mdOnDisk   = path.join(caseDir, `${fileStem}_cdi.md`)
+
+          if (!fs.existsSync(jsonOnDisk)) return null
+          try {
+            const full = JSON.parse(fs.readFileSync(jsonOnDisk, 'utf8'))
+            if (!full || !full.summary || !Array.isArray(full.flags)) {
+              log(`${tag}[cdi] fallback: _cdi.json present but malformed (missing summary/flags)`)
+              return null
+            }
+            const s = full.summary
+            return {
+              schema_version: 1,
+              skill: 'cdi-review',
+              status: 'ok',
+              summary: `Recovered from on-disk _cdi.json (manifest miss). ${full.flags.length} flags.`,
+              json_path: jsonOnDisk,
+              md_path:   fs.existsSync(mdOnDisk) ? mdOnDisk : null,
+              flag_count: full.flags.length,
+              flag_counts: s.flag_counts || { critical: 0, warning: 0, suggestion: 0, opportunity: 0 },
+              quality_score: s.overall_quality_score != null ? s.overall_quality_score : null,
+              medical_necessity_status: s.medical_necessity_status || null,
+              claim_defense_readiness: s.claim_defense_readiness || null,
+              clinician_approval_required: !!s.clinician_approval_required,
+              icd_validated: !!full.code_validation,
+              skipped_reason: null,
+              error: null
+            }
+          } catch (e) {
+            log(`${tag}[cdi] fallback parse failed: ${e.message}`)
+            return null
+          }
+        }
+
+        // --- Inner helper: mark the run as failed and surface a service-warning.
+        // Used when neither the manifest nor the on-disk _cdi.json can be recovered.
+        const markFailed = (reason) => {
+          log(`${tag}[cdi] FAILED: ${reason}`)
           try { dbCases.updateCaseCdi(caseId, { cdi_status: 'failed' }) } catch (e) {
             log(`${tag}[db] updateCaseCdi(failed) failed: ${e.message}`)
           }
@@ -1321,6 +1345,60 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
           }
         }
 
+        // --- Try the manifest first (fast happy path).
+        const manifest = parseSkillManifest(resultText)
+        const manifestValid = manifest && manifest.schema_version === 1 && manifest.skill === 'cdi-review' && typeof manifest.status === 'string'
+
+        if (manifestValid) {
+          try { log(`${tag}[cdi][manifest] ${JSON.stringify(manifest)}`) } catch {}
+        } else if (manifest) {
+          log(`${tag}[cdi] WARNING: manifest present but wrong shape (schema_version=${manifest.schema_version} skill=${manifest.skill}); falling back to on-disk _cdi.json`)
+        } else {
+          log(`${tag}[cdi] WARNING: manifest unparseable from result text; falling back to on-disk _cdi.json`)
+        }
+
+        let eventStatus = 'failed'
+        let result      = { ok: false, jsonPath: null, mdPath: null, status: 'failed' }
+
+        if (manifestValid && manifest.status === 'ok') {
+          // Happy path — manifest says ok. Trust it; still read disk for the flag detail.
+          eventStatus = isRateLimited ? 'rate_limited' : 'success'
+          const applied = applyCdiSuccess(manifest)
+          result = { ok: true, jsonPath: applied.jsonPath, mdPath: applied.mdPath, status: 'completed' }
+        } else if (manifestValid && manifest.status === 'skipped') {
+          // Skill ran a gate (Step 0b etc.). No spawn-side work to apply, just record state.
+          eventStatus = 'success'
+          const reason = manifest.skipped_reason || 'skipped'
+          log(`${tag}[cdi] skipped: ${reason}`)
+          try { dbCases.updateCaseCdi(caseId, {
+            cdi_status:    'skipped',
+            cdi_json_path: manifest.json_path || null,
+            cdi_md_path:   manifest.md_path   || null
+          }) } catch (e) { log(`${tag}[db] updateCaseCdi(skipped) failed: ${e.message}`) }
+          if (manifest.json_path) hideFileFromUser(manifest.json_path)
+          const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: reason }
+          if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
+          else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
+          result = { ok: false, jsonPath: manifest.json_path || null, mdPath: manifest.md_path || null, status: 'skipped' }
+        } else {
+          // Manifest says failed, OR no manifest at all, OR wrong shape.
+          // Try the filesystem fallback — model may have written a perfectly good
+          // _cdi.json but forgotten to emit the manifest line.
+          const synthesized = synthesizeManifestFromDisk()
+          if (synthesized) {
+            log(`${tag}[cdi] manifest miss; recovered from on-disk _cdi.json`)
+            eventStatus = isRateLimited ? 'rate_limited' : 'success'
+            const applied = applyCdiSuccess(synthesized)
+            result = { ok: true, jsonPath: applied.jsonPath, mdPath: applied.mdPath, status: 'completed', recovered: 'filesystem' }
+          } else {
+            // Genuinely failed — manifest unparseable AND no usable _cdi.json on disk.
+            eventStatus = isRateLimited ? 'rate_limited' : 'failed'
+            const reason = manifestValid ? (manifest.error || 'manifest status=failed') : 'manifest unparseable, no on-disk _cdi.json'
+            markFailed(reason)
+            result = { ok: false, jsonPath: null, mdPath: null, status: 'failed' }
+          }
+        }
+
         if (eventId != null) {
           try {
             dbEvents.finishEvent(eventId, {
@@ -1333,7 +1411,7 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
           } catch (e) { log(`${tag}[db] finishEvent(cdi) failed: ${e.message}`) }
         }
 
-        resolve({ ok: outcome === 'ok', jsonPath: jsonPathResult, mdPath: mdPathResult, status: cdiStatusDb })
+        resolve(result)
       },
       onError(err) {
         log(`${tag}[cdi ERR] failed to spawn claude: ${err.message}`)
@@ -1359,7 +1437,7 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
   // Source of truth: the case row's *_path columns. By the time this function
   // runs, the relevant column is always populated (transcript_path during
   // spawnTranscription's onSuccess; soap_note_path in apply*Manifest before
-  // the docx call; cdi_md_path in spawnCdiReview's CDI_OK branch before docx
+  // the docx call; cdi_md_path in spawnCdiReview's success branch before docx
   // fires on the cdi .md). Falls back to filename-suffix matching when the
   // case row isn't available (e.g., DB unavailable or caseId not passed).
   const base = path.basename(mdPath)
@@ -3186,7 +3264,8 @@ function registerIpcHandlers() {
   // ---- update-doctor-specialty (per-doctor CDI specialty assignment) ----
   // Pass a value from the closed enum or empty/null to clear. The skill loads
   // notes-claude/standards/specialties/<value>.md at runtime — values that
-  // don't have a corresponding standards file produce CDI_SKIPPED.
+  // don't have a corresponding standards file are gated in main.js's
+  // spawnCdiReview and never reach the skill.
   ipcMain.handle('update-doctor-specialty', (_, id, specialty) => {
     const doctor = dbDoctors.getDoctor(id)
     if (!doctor) return { ok: false, error: 'Doctor not found' }
