@@ -437,6 +437,8 @@ The pull is branch-agnostic — whatever branch the clone is on. User installs (
 
 ## DB schema overview
 
+See [DB-SCHEMA.md](DB-SCHEMA.md) for column-by-column reference, FK diagram, and paste-ready debug queries.
+
 SQLite database at `<NOTES_DIR>/app.db`. WAL mode, `better-sqlite3` in main process. All writes are `try/catch` — a failed write never breaks the pipeline.
 
 | Table | Key columns | Written by |
