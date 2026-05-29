@@ -337,9 +337,10 @@ The presence vs. absence of the `code_validation` field is the signal to downstr
       "type": "<critical|warning|suggestion|opportunity>",
       "category": "<Specificity|Linkage|HCC|Completeness|Audit-defense>",
       "title": "<short title, ≤ 12 words>",
+      "action": "<single imperative line: WHAT TO DO about this flag — the scannable TL;DR>",
       "body": "<1-3 sentence rationale that cites a guideline reference>",
       "guideline_reference": "<e.g. 'ICD-10-CM Sec IV.A' or 'Ortho pack §3 (fracture coding)'>",
-      "drg_impact": null,
+      "reimbursement_impact": "<short reimbursement signal in outpatient units, or null — see field rules>",
       "current_code": "<code in the note that should change, or null>",
       "suggested_codes": [
         { "code": "<ICD-10 code>", "description": "<human description>" }
@@ -373,10 +374,16 @@ The presence vs. absence of the `code_validation` field is the signal to downstr
 **Field constraints:**
 - `type` ∈ {`critical`, `warning`, `suggestion`, `opportunity`}. `opportunity` only in `aggressive` mode.
 - `category` ∈ {`Specificity`, `Linkage`, `HCC`, `Completeness`, `Audit-defense`}.
+- `action` is **required** on every flag — a single imperative line stating WHAT TO DO. This is the scannable TL;DR a busy clinician/scribe reads instead of the full body. Write it as a direct instruction (start with a verb), one sentence (occasionally two if two distinct steps). Examples:
+  - title "Finkelstein's test result contradicts between note sections" → action: `"Correct the PE section to reflect positive Finkelstein's findings; reconcile the ROM contradiction before claim submission."`
+  - title "Right lateral periostitis: 'history of' vs. active status conflict" → action: `"Clarify whether periostitis is currently active or resolved. If active, add to Assessment and code per Sec IV.J."`
+  - title "Thumb ROM limitation documented without degree measurements" → action: `"Document thumb abduction and extension ROM in degrees bilaterally at this visit."`
 - `confidence` is an integer 0–100.
 - `evidence_found` and `evidence_missing` each have 0–4 entries (strings).
 - `suggested_codes` has 0–N entries; each has both `code` and `description`.
-- `drg_impact` is always `null` in v1 (we're outpatient).
+- `reimbursement_impact` is **mostly `null`** — most CDI flags are quality / audit-defense and carry no direct revenue signal. Populate it **only** when a flag has a real reimbursement consequence, expressed in the units of the care setting:
+  - **Outpatient (the primary use case):** an E/M-level, HCC-capture, or modifier signal — e.g., `"Supports 99214 over 99213 if data-reviewed is documented"`, `"Additional billable Dx — captures HCC if validated"`, `"Supports modifier-25 add-on for the procedure billing"`.
+  - **Inpatient (if ever):** a DRG shift — e.g., `"Moves to a higher-paying DRG with MCC"`. The field is generic across settings; only the unit varies. Do **not** fabricate a signal to fill it — `null` is the correct value most of the time.
 - `current_code` is the code currently in the note that this flag would replace; `null` if none.
 - `code_validation` is **optional** — include it ONLY when codes were found in the note. Omit the field entirely when the note contained no codes (downstream code uses presence/absence of the field as the validation signal).
 - Within `code_validation`: `linked_flag_id` should reference an `id` from the `flags[]` array when a code-validation entry has a corresponding flag, or `null` if standalone. Downstream code tolerates dangling references (UI shows the entry as standalone if the linked flag isn't found).
@@ -386,6 +393,8 @@ The presence vs. absence of the `code_validation` field is the signal to downstr
 - **No hallucination.** Every `suggested_codes` entry should be a plausible FY2026 code. If you're not confident the code exists, use a more general code in the same family OR omit the entry — never invent codes.
 - **Quote evidence verbatim** where reasonable. `evidence_found` should read like sentence fragments lifted from the note, not paraphrases.
 - **Cite the guideline.** `guideline_reference` should name the specific section that governs the rule (e.g., `ICD-10-CM Sec IV.H`, `Ortho pack §3`, `AHIMA/ACDIS 2026 §2`).
+- **Every flag gets an `action`.** Write the imperative TL;DR before you write the body — it forces you to be clear about what the scribe should actually do. The body justifies; the action instructs. Never leave `action` empty.
+- **`reimbursement_impact` defaults to `null`.** Only fill it when the flag genuinely changes what can be billed (E/M level, HCC capture, modifier). Quality and audit-defense flags — the majority — have no reimbursement signal; leave the field `null`. Don't invent one.
 - **Confidence honesty.** Don't inflate. A laterality gap with the side documented unambiguously in HPI = 95+. A suggestion based on a single indirect mention = 30–50.
 - **Don't repeat the same gap.** If two diagnoses in the note both have laterality issues, consolidate into one flag with multiple suggested codes, not two flags.
 - **Mode discipline.** In compliance mode, suppress `suggestion` and `opportunity` flags entirely. In balanced, no `opportunity`. In aggressive, surface `opportunity` for HCC hints, MDM upgrade paths, and missed specificity that wouldn't normally rise to a warning.
@@ -621,6 +630,12 @@ def render_flag(flag):
     sev   = (flag.get("type") or "").upper()
     out.append(f"## {e} {sev} · {title} · {conf}% confidence")
     out.append("")
+    # Action line first — the scannable TL;DR, rendered prominently above the
+    # detailed body so a busy clinician can act without reading every paragraph.
+    action = flag.get("action", "")
+    if action:
+        out.append(f"**→ Action:** {action}")
+        out.append("")
     body = flag.get("body", "")
     if body:
         out.append(body)
@@ -628,6 +643,8 @@ def render_flag(flag):
     out.append(f"**Category:** {flag.get('category', '—')}  ")
     if flag.get("guideline_reference"):
         out.append(f"**Guideline:** {flag['guideline_reference']}  ")
+    if flag.get("reimbursement_impact"):
+        out.append(f"**Reimbursement impact:** {flag['reimbursement_impact']}  ")
     if flag.get("current_code"):
         out.append(f"**Current code:** `{flag['current_code']}`  ")
     out.append("")

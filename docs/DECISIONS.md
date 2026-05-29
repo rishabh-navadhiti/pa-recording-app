@@ -52,6 +52,16 @@ Three changes addressing the root cause:
 
 Net effect: the manifest is the fast happy path; the filesystem fallback is the safety net. Long CDI runs that drift on the closing line still complete successfully. The "upgrade CDI to manifest format" item below is **done** as of this addendum — moved into v1 from v1.1.
 
+**Addendum (2026-05-27) — per-flag schema refinements: `drg_impact` → `reimbursement_impact`, new required `action` field.**
+
+Surfaced after Phase-2 end-to-end testing on Stephanie + Guardo (both single-patient ortho cases, 5–6 dense flags each):
+
+- **`drg_impact` renamed to `reimbursement_impact`.** DRG is inpatient-only and [docs/pa-planning/05-engines.md](pa-planning/05-engines.md) sub-feature 1.36 ("Per-flag DRG impact label") was explicitly ❌ out of scope — "Inpatient-only … revisit only if we onboard an inpatient practice." The field was null on every flag in real testing, confirming it was over-spec'd for our outpatient focus. `reimbursement_impact` is generic across settings: outpatient signals (E/M level, HCC capture, modifier) when one exists, DRG shift if we ever go inpatient. Still mostly null by design — most CDI flags are quality / audit-defense and carry no revenue signal. `drg_impact` was never a `cdi_flags` column (JSON-only), so migration 004 simply adds `reimbursement_impact TEXT` (nullable) — no rename needed at the DB layer.
+
+- **New required per-flag `action` field.** One imperative line stating what to do about the flag, rendered prominently in the markdown (`**→ Action:**`) directly under the title and above the body. Real-case testing showed each flag body is a multi-sentence paragraph with 2–3 guideline citations — useful audit depth, slow to scan. The action is the scannable TL;DR a busy clinician/scribe reads without parsing every body. Required on every flag (JSON + a `cdi_flags.action TEXT NOT NULL DEFAULT ''` column). Pre-migration `cdi_flags` rows from earlier dev runs get `action=''` (the DEFAULT) — acceptable, no backfill.
+
+Migration `004_extend_cdi_flags.sql` adds both columns (`action`, `reimbursement_impact`) and bumps `user_version` to 4. `db/cdi_flags.js` `insertFlags()` writes both; `main.js` `applyCdiSuccess` was unchanged (it passes whole flag objects to `insertFlags`, which does the per-field mapping). Scope was a field rename + a new field only — no new flag types, categories, or reasoning changes. E/M MDM scoring (Engine 3b) and SOAP structural validation (Engine 2) remain separate future engines, not CDI gaps.
+
 **Known v1.1 follow-ups (logged 2026-05-22):**
 
 - ~~Upgrade `cdi-review` to emit the JSON manifest format established for `generate-note`. Use `parseSkillManifest.js`.~~ *Done 2026-05-26 — see addendum above.*

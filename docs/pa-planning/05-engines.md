@@ -128,7 +128,9 @@ Our implementation extends Fahd's "one sentence appended" pattern — modes affe
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.36 | Per-flag DRG impact label (MCC / CC / no impact) | ❌ Out of scope | Inpatient-only — not relevant to our outpatient-focused doctors. Revisit only if we onboard an inpatient practice. |
+| 1.36 | Per-flag DRG impact label (MCC / CC / no impact) | ❌ Out of scope | Inpatient-only — not relevant to our outpatient-focused doctors. Revisit only if we onboard an inpatient practice. DRG-specific labeling stays deferred; superseded by 1.36b. |
+| 1.36b | Per-flag `reimbursement_impact` label (setting-generic) | 🟢 v1 | Renamed 2026-05-27 from the JSON-only `drg_impact` field. Generic across settings: outpatient signals (E/M level, HCC capture, modifier) when present, DRG shift if inpatient is ever onboarded. **Mostly null** — most CDI flags are quality / audit-defense and carry no revenue signal. Persists to `cdi_flags.reimbursement_impact` (nullable). |
+| 1.36c | Per-flag `action` label (imperative TL;DR) | 🟢 v1 | Added 2026-05-27. One imperative line per flag — what to do — rendered above the body in the CDI markdown so a busy clinician/scribe can scan without reading every paragraph. Required on every flag; persists to `cdi_flags.action`. Surfaced after Stephanie + Guardo testing showed 5–6 dense flags per note was slow to scan. |
 
 #### Quality scoring
 

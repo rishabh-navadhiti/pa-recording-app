@@ -25,32 +25,34 @@ function insertFlags(caseId, cdiRunId, flags) {
     const ts = new Date().toISOString()
     const insert = db.prepare(`
       INSERT INTO cdi_flags (
-        case_id, cdi_run_id, flag_index, type, category, title, body,
-        guideline_reference, current_code, suggested_codes, confidence,
-        evidence_found, evidence_missing, created_at
+        case_id, cdi_run_id, flag_index, type, category, title, action, body,
+        guideline_reference, reimbursement_impact, current_code, suggested_codes,
+        confidence, evidence_found, evidence_missing, created_at
       ) VALUES (
-        @case_id, @cdi_run_id, @flag_index, @type, @category, @title, @body,
-        @guideline_reference, @current_code, @suggested_codes, @confidence,
-        @evidence_found, @evidence_missing, @ts
+        @case_id, @cdi_run_id, @flag_index, @type, @category, @title, @action, @body,
+        @guideline_reference, @reimbursement_impact, @current_code, @suggested_codes,
+        @confidence, @evidence_found, @evidence_missing, @ts
       )
     `)
     const txn = db.transaction(rows => {
       for (const r of rows) insert.run(r)
     })
     const rows = flags.map((f, i) => ({
-      case_id:             caseId,
-      cdi_run_id:          cdiRunId ?? null,
-      flag_index:          i + 1,
-      type:                String(f.type || ''),
-      category:            String(f.category || ''),
-      title:               String(f.title || '').slice(0, 1024),
-      body:                String(f.body || ''),
-      guideline_reference: f.guideline_reference || null,
-      current_code:        f.current_code || null,
-      suggested_codes:     f.suggested_codes ? JSON.stringify(f.suggested_codes) : null,
-      confidence:          Number.isInteger(f.confidence) ? f.confidence : Math.round(Number(f.confidence) || 0),
-      evidence_found:      f.evidence_found   ? JSON.stringify(f.evidence_found)   : null,
-      evidence_missing:    f.evidence_missing ? JSON.stringify(f.evidence_missing) : null,
+      case_id:               caseId,
+      cdi_run_id:            cdiRunId ?? null,
+      flag_index:            i + 1,
+      type:                  String(f.type || ''),
+      category:              String(f.category || ''),
+      title:                 String(f.title || '').slice(0, 1024),
+      action:                String(f.action || ''),        // column is NOT NULL DEFAULT ''
+      body:                  String(f.body || ''),
+      guideline_reference:   f.guideline_reference || null,
+      reimbursement_impact:  f.reimbursement_impact || null, // mostly null by design
+      current_code:          f.current_code || null,
+      suggested_codes:       f.suggested_codes ? JSON.stringify(f.suggested_codes) : null,
+      confidence:            Number.isInteger(f.confidence) ? f.confidence : Math.round(Number(f.confidence) || 0),
+      evidence_found:        f.evidence_found   ? JSON.stringify(f.evidence_found)   : null,
+      evidence_missing:      f.evidence_missing ? JSON.stringify(f.evidence_missing) : null,
       ts
     }))
     txn(rows)

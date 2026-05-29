@@ -205,7 +205,9 @@ python3 -m json.tool <case>_cdi.json > /dev/null && echo OK || echo FAIL
 - [ ] `meta` has all 6 fields: `case_dir`, `patient`, `doctor`, `specialty`, `mode`, `generated_at`, `standards_versions`
 - [ ] `meta.standards_versions` has `icd10_cm`, `ahima_acdis`, `specialty_pack`
 - [ ] `summary` has all 8 fields including `medical_necessity_status`, `claim_defense_readiness`, `clinician_approval_required`
-- [ ] Every `flags[]` entry has `id`, `type`, `category`, `title`, `body`, `guideline_reference`, `drg_impact` (= null), `current_code`, `suggested_codes`, `confidence`, `evidence_found`, `evidence_missing`
+- [ ] Every `flags[]` entry has `id`, `type`, `category`, `title`, `action`, `body`, `guideline_reference`, `reimbursement_impact`, `current_code`, `suggested_codes`, `confidence`, `evidence_found`, `evidence_missing`
+- [ ] Every `flags[].action` is a non-empty imperative line (required field)
+- [ ] Every `flags[].reimbursement_impact` is present — usually `null` (only populated when the flag carries a real billing signal)
 - [ ] Every `flags[].type` is one of `critical` / `warning` / `suggestion` / `opportunity`
 - [ ] Every `flags[].category` is one of `Specificity` / `Linkage` / `HCC` / `Completeness` / `Audit-defense`
 - [ ] Every `flags[].confidence` is an integer 0–100
