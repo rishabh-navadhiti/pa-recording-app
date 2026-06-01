@@ -12,6 +12,63 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-05-19 (rs) — CDI v1 ships as a standalone skill + markdown standards files
+
+**Context:** Engine 1 (CDI Co-Pilot) is the next-week deliverable per Jayanth. Plan [docs/plans/2026-05-19-rs-cdi-v1-skill.md](plans/2026-05-19-rs-cdi-v1-skill.md) splits delivery into two PRs: Plan 1 = the skill + standards files (this entry), Plan 2 = app integration (`spawnCdiReview` in main.js, UI, DB writes — written *after* the skill is verified manually).
+
+**Decision:** Ship CDI v1 as a `claude -p`-invocable skill at `notes-claude/skills/cdi-review/`, with reference content in a new `notes-claude/standards/` directory. The skill produces three outputs per case in the case folder: `<stem>_cdi.json` (canonical), `<stem>_cdi.md` (rendered from the JSON), and `<stem>_cdi.docx` (produced later by `python/md_to_docx.py`). The skill is **non-blocking** — a CDI failure must not break the downstream SOAP pipeline; the skill itself always tries to write *something*, even on parse error, so Plan 2's main.js always has a file to point to. v1 supports `orthopedics` only; other specialties produce a stub output with `error: "specialty not yet supported"` and exit cleanly (no generic universal-only fallback — settled in [docs/pa-planning/04-open-questions.md](pa-planning/04-open-questions.md) Round 2).
+
+**Skill-level shape of standards consumption:** `standards/icd10_fy2026.md` (universal ICD-10), `standards/ahima_acdis_2026.md` (query compliance), `standards/specialties/<doctor.specialty>.md` (specialty-specific layered rules). Adding a specialty = drop a file. No code change. The standards files are designed to be reusable by future review engines (SOAP Validator, E/M Scorer, etc.) — each file's "Used by:" header tracks the dependency graph.
+
+**Skill judgment calls made during implementation (consistent with the plan's "open items" latitude):**
+
+- **Quality score formulas:** used the plan's defaults verbatim — `overall = max(0, 100 − 15C − 5W − 1S − 0O)`; specificity sub `= max(0, 100 − 12 * spec_flag_count)`; evidence sub `= round(avg(confidence) * evidence_factor)` where factor = 1.0 if every flag has ≥ 1 found AND ≥ 1 missing, else 0.85; completeness sub `= max(0, 100 − 12 * completeness − 8 * linkage)`. Simple, explainable, easy to retune after real-case testing.
+- **Two-pass extraction prompting:** expressed as explicit two-step prompt instruction in `SKILL.md` Step 3 (Pass 1 = extract every Dx from HPI + transcript + objective + assessment + plan; Pass 2 = evaluate against rules). Not trusted to emerge from a single-shot prompt.
+- **`medical_necessity_status` mapping:** explicitly defined — `supported` requires the note to address symptom duration + functional impact + prior-treatment outcome; `weak` if some elements present, others missing; `missing` if not addressed at all.
+- **Example codes in `orthopedics.md`:** included a curated set against the common-traps section (G56.0x carpal tunnel, M65.3xx trigger finger, M17.1x knee OA, M75.1xx rotator cuff, etc.) — not exhaustive, but enough to anchor the LLM. Claude's training covers FY2026 codes well enough that an exhaustive listing would just bloat the standards file.
+- **Standards file verbosity:** ~5 KB universal files, ~9 KB orthopedics pack. The LLM gets all three files plus the SOAP note plus transcript as context per invocation — concision matters, but ortho needs the room to cover Chapter 13 vs. 19, fracture coding, named tests, conservative therapy, and the 10 specificity traps.
+
+**Rejected:** (1) Inline CDI rules in the skill prompt itself — would couple rule updates to skill edits; standards files let you bump the ICD-10 FY without touching the skill. (2) JSON-schema-driven validator step — overkill for v1; a single `python3 -m json.tool` validation pass plus one retry is sufficient. (3) Inpatient DRG-impact field in the schema — out of scope (we're outpatient); kept the field as `null` for forward-compat. (4) Generic universal-only fallback for unsupported specialties — rejected per Round 2 decision; CDI without a specialty pack risks more harm than help.
+
+**Implications:**
+- Don't edit content inside `<NOTES_DIR>/.claude/standards/` — it's overwritten from `notes-claude/standards/` on every app start (same as the skills sync). Edit the repo files.
+- Adding a new specialty (cardiology, family medicine, ENT, etc.) requires only `notes-claude/standards/specialties/<name>.md` — no skill change. The skill's specialty gate in Step 1 checks for the file at runtime.
+- Plan 2 will:
+  - Add `spawnCdiReview` to main.js, mirroring the `spawnSoapGeneration` pattern (non-blocking).
+  - Parse one of three terminal lines: `CDI_OK:`, `CDI_SKIPPED:`, `CDI_FAIL:`.
+  - Extend `python/md_to_docx.py` for severity-coloured cells in the CDI docx.
+  - Add per-doctor `specialty` + `enable_cdi` + `cdi_mode` settings (default: disabled until specialty is set).
+  - Hide `*_cdi.md` and `*_cdi.json` on Windows (canonical view shows the docx only).
+- **Test execution is not in this PR.** The implementing session documented six test scenarios in `notes-claude/skills/cdi-review/TESTS.md` as a checklist for the human to run after merge. Nested `claude -p` calls during implementation waste tokens, are slow, and don't catch the right issues — real-case verification by the user is the gate.
+
+**Known v1.1 follow-ups (logged 2026-05-22):**
+
+- **Move CDI rendering script out of `SKILL.md` into `python/cdi_render.py`.** The deterministic JSON→markdown rendering Python script in Step 8 of `cdi-review/SKILL.md` (~100 lines) is mechanical formatting, not LLM work. It belongs in a sibling Python file the same way `md_to_docx.py` lives. Result: skill drops from ~650 to ~550 lines, rendering becomes testable without spawning Claude, and the future colored-cell styling pass becomes a Python-only edit. Not blocking v1.
+- **Strip repo-internal doc references from `notes-claude/` content.** Lines like "(per the design decision in `docs/pa-planning/04-open-questions.md` Round 2)" in `SKILL.md` and `standards/README.md` reference files that aren't synced to `<NOTES_DIR>/.claude/` at runtime. The skill is a production artifact — rationale belongs in DECISIONS.md, not in the skill prompt. Behavior statements only in runtime files.
+- **Unify docx generation path.** See [plans/2026-05-22-rs-unify-docx-generation.md](plans/2026-05-22-rs-unify-docx-generation.md). The `generate-note` skill currently has inline docx generation (added during the multi-patient flow work — that hack works but breaks the convention that all docx conversion goes through `main.js` → `python/md_to_docx.py`). Reconcile by giving skills a manifest contract and letting main.js drive all docx conversion.
+
+**Follow-up amendment (2026-05-22) — soft-target flag counts, no hard caps:**
+
+The original mode table specified hard caps (compliance: 4, balanced: 6, aggressive: 8) drawn from Fahd's PDF + `pa_agents.py`'s "Max 6 flags. Prioritize by revenue impact." On the first two real-case test runs (Tsai mark_freund, Sabbag cupp_carol_lee, both balanced mode), the engine produced exactly 6 flags in each case — strongly suggesting the cap was biting and the model was selecting "top 6" rather than reporting all genuine gaps.
+
+Hard caps were the wrong shape of filter — the severity filter (no `opportunity` in compliance/balanced) and confidence threshold (≥70/50/30) already do the right job. A count cap is an arbitrary third filter that pressures the model to drop legitimate clinical-safety or over-coding-defense flags when many genuine issues coexist (e.g., Sabbag's Marx note has ~10 real gaps).
+
+**Amendment:** the numbers stay in the mode table as **soft targets** — guidance for the scribe's expectations and an encouragement to consolidate truly redundant findings. The model is explicitly told these are not caps and may exceed them when warranted. The hard rules remain the severity filter and confidence threshold.
+
+Updated in: `notes-claude/skills/cdi-review/SKILL.md` (Step 3 mode table + Step 4 constraints + Step 6 mode reference), `notes-claude/skills/cdi-review/TESTS.md` (Scenario 3 assertions), `docs/pa-planning/05-engines.md` (sub-feature 1.7).
+
+---
+
+## 2026-05-18 (rs) — SQLite as a metadata + index store, not a content store
+
+**Context:** App state lived in three places: the filesystem (case folders walked on every IPC call), `settings.json` (doctors array), and `app.log` (token usage as unqueryable text). Pre-chart "recent cases" rescanned the whole `Cases/` tree on every open. Token cost per case required grepping logs. Phase 2 features (CDI, evaluations) need queryable per-case state.
+
+**Decision:** Introduce SQLite (`app.db` in `NOTES_DIR`) as a metadata + index store. Files on disk remain canonical (transcripts, soap notes, docx, MP3s). DB stores references to those files plus structured metadata and per-stage processing events with token usage. Four v1 tables: `doctors`, `sessions`, `cases`, `processing_events`. WAL mode, `better-sqlite3` in main process, `busy_timeout = 5000ms`. All write sites wrapped in `try/catch` — a failed DB write never blocks the recording pipeline. Schema versioned by `PRAGMA user_version`; migrations are numbered SQL files under `db/migrations/`. Doctors migrated from `settings.json` on first launch; backup written to `settings.doctors.backup.json`.
+
+**Rejected:** Keeping everything in `settings.json` (not queryable, no relational history). Using a full ORM (unnecessary complexity for a local single-writer app). Storing file artifacts in the DB as blobs (breaks the "everything's a file in your notes folder" affordance for end users).
+
+**Implications:** All doctor CRUD goes through `db/doctors.js`; `settings.json` no longer carries `doctors[]` after migration. Every spawn function (transcribe, soap, docx, template create/update, prechart) emits `startEvent`/`finishEvent` rows. `spawnClaude` passes the full parsed result event as a 4th `onClose` arg so token data reaches the DB. `record.py` prints `DURATION_SECONDS: <float>` on stop for `cases.audio_duration_seconds`.
+
 ## 2026-04-28 (rs) — `notes-claude/` is the source of truth for skills
 
 **Context:** Skills live in `<NOTES_DIR>/.claude/skills/` at runtime so the local `claude` CLI can find them. But that folder is per-user data outside the repo, so edits there aren't versioned.
@@ -114,3 +171,36 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 - `create a doctor profile for "<name>" from source folder "<rel>"`
 
 **Implications:** Don't change the spawn-side string in main.js without updating Step 0/1 of the corresponding SKILL.md, and vice versa. They're a contract.
+
+---
+
+## 2026-05-25 (rs) — `generate-note` emits a structured JSON manifest; app owns multi-patient folder splits + all DOCX
+
+**Context:** The `generate-note` skill historically owned three responsibilities in addition to writing the SOAP note:
+
+1. Detecting multi-patient transcripts and creating per-patient sub-folders next to the recording folder.
+2. Copying the MP3 and full transcript into each per-patient sub-folder.
+3. Generating `.docx` inline via pandoc / `python-docx`.
+
+Every other skill writes `.md` only and lets `main.js → spawnDocxConversion → python/md_to_docx.py` handle conversion. The split here meant two docx code paths (the skill's and the app's) and made multi-patient runs opaque to `main.js` — the app had to scan the filesystem after the fact to discover what sub-folders the skill had created, which broke down for child DB rows, file hiding, and any downstream skill chaining.
+
+**Decision:** Skill writes all `.md` outputs into the recording folder it was given and ends its final assistant response with a single-line JSON manifest (`schema_version: 1`) declaring patient name(s), per-case file paths, `multi_patient` flag, and per-case status. `main.js` parses the manifest via `parseSkillManifest()` (layered defensive parser: direct → strip fences → brace-balance scan) and does everything else:
+
+- **Single-patient:** verify the declared `.md` is on disk, run docx, hide, update existing `cases` row to `completed`.
+- **Multi-patient:** for each `ok`/`partial` case, create a child folder matching the single-patient on-disk convention (`<slug>_<YYYY-MM-DD>/`), copy in the MP3 + transcript + transcript.docx with single-patient naming, copy in the SOAP `.md` renamed to match, hide the audit `.md` in the recording folder (Windows), insert a child `cases` row (`createChildCase` in `db/cases.js`, status `converting` → flips to `completed` via the docx success path), and spawn docx on the copied `.md`. After the loop the parent row is marked `completed` with `soap_note_path=NULL` — an audit row. The recording folder retains all SOAP `.md` files the skill wrote, alongside the MP3 and transcript.
+
+**Rejected:**
+
+- **Skill keeps inline docx** — leaves two divergent docx paths and any future styling change (CDI severity-coloured cells, etc.) has to be applied twice.
+- **Skill keeps multi-patient folder creation** — moves file shuffling, copy semantics, and folder collision handling into a Claude invocation; loses structured visibility for the app's DB writes, status window, and file hiding.
+- **Adding manifest columns to `cases`** — `visit_type`, `chief_complaint`, `placeholders`, `warnings`, `summary` all live in the parsed manifest object and are logged to `app.log` only. Adding columns later is a one-line migration; preallocating is not. The DB stores only what existing queries need.
+- **Persisting the manifest to a file** — `app.log` is sufficient for v1. A future "resume failed split" feature would need a durable manifest; that's deferred.
+
+**Implications:**
+
+- `notes-claude/skills/generate-note/SKILL.md` Steps 4, 6, 7 rewritten — no sub-folders, no copies, no inline docx; ends with manifest line. Schema + 3 worked examples embedded in the skill.
+- `main.js` close handler in `spawnSoapGeneration` rewritten to manifest-driven; the old `detectPatientFolders` filesystem-probe helper is removed.
+- `parseSkillManifest()` extracted into [parseSkillManifest.js](../parseSkillManifest.js) so it is unit-testable in isolation. [tests/parseSkillManifest.test.js](../tests/parseSkillManifest.test.js) covers the four parse layers + failure modes.
+- `db/cases.js` gains `createChildCase` (inserts a child case with all paths populated, `status='converting'`) and `getCaseRow` (read-back for inheriting `recorded_at`/`doctor_id` onto child rows). **No schema changes.**
+- Multi-patient child folders are on-disk indistinguishable from single-patient cases — pre-chart, recent-cases listings, DB queries, and file hiding all work unmodified.
+- The skill is now schema-version-gated. Future format changes bump the version; the app fails closed (treats unknown versions as failed) until it catches up. Adopting the same JSON manifest format across the other skills (`cdi-review`, `edit-note`, `create-doctor-profile`, `update-doctor-profile`, future `icd`) is queued as follow-up work — out of scope for this PR.
