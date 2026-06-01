@@ -1048,6 +1048,61 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   })
 }
 
+// After a git pull that brought new commits: run npm install (picks up new/changed
+// deps) then electron-rebuild (recompiles native addons like better-sqlite3 for
+// this Electron ABI — plain npm install builds them for system Node, a different
+// ABI). Always calls onDone(); both steps are best-effort and never block the
+// restart prompt. On installs without native deps yet, the rebuild step no-ops.
+function runPostUpdateSetup(onDone) {
+  const isWin = process.platform === 'win32'
+
+  log('[update] Running npm install...')
+  const npmProc = spawn('npm', ['install', '--no-audit', '--silent'], {
+    cwd: __dirname,
+    stdio: 'pipe',
+    shell: isWin
+  })
+  let npmStderr = ''
+  npmProc.stderr.on('data', d => { npmStderr += d.toString() })
+  npmProc.on('error', err => {
+    log(`[update] npm install error: ${err.message}`)
+    onDone()
+  })
+  npmProc.on('close', code => {
+    if (code !== 0) {
+      log(`[update] npm install failed (exit ${code}): ${npmStderr.trim()}`)
+      onDone()
+      return
+    }
+    log('[update] npm install OK — rebuilding native modules for Electron...')
+
+    const rebuildBin = path.join(
+      __dirname, 'node_modules', '.bin',
+      isWin ? 'electron-rebuild.cmd' : 'electron-rebuild'
+    )
+    const rebuildProc = spawn(rebuildBin, ['-f', '-w', 'better-sqlite3'], {
+      cwd: __dirname,
+      stdio: 'pipe',
+      shell: isWin
+    })
+    let rebuildLog = ''
+    rebuildProc.stdout.on('data', d => { rebuildLog += d.toString() })
+    rebuildProc.stderr.on('data', d => { rebuildLog += d.toString() })
+    rebuildProc.on('error', err => {
+      log(`[update] electron-rebuild not found or failed to start: ${err.message}`)
+      onDone()
+    })
+    rebuildProc.on('close', rCode => {
+      if (rCode !== 0) {
+        log(`[update] electron-rebuild failed (exit ${rCode}): ${rebuildLog.trim()}`)
+      } else {
+        log('[update] Native modules rebuilt OK')
+      }
+      onDone()
+    })
+  })
+}
+
 function checkForUpdates() {
   // Run git pull --ff-only in background — no blocking, no crash on failure
   const gitPull = spawn('git', ['pull', '--ff-only'], {
@@ -1078,19 +1133,23 @@ function checkForUpdates() {
       log('[update] Skills re-synced from updated code')
     }
 
-    // Notify the user via tray tooltip and OS notification
-    log('[update] New version pulled — notifying user')
-    const stagingTag = isStagingBuild() ? ' (staging)' : ''
-    if (tray) tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
-
-    const { Notification } = require('electron')
-    if (Notification.isSupported()) {
-      new Notification({
-        title: `AI Medical Scribe${stagingTag} updated`,
-        body: 'A new version was downloaded. Restart the app to apply it.',
-        silent: true
-      }).show()
-    }
+    // Run npm install + electron-rebuild before telling the user to restart,
+    // so any new/changed deps and native modules are ready when they relaunch.
+    // Notification fires after both steps finish (or if either fails — best-effort).
+    log('[update] New version pulled — running post-update setup')
+    runPostUpdateSetup(() => {
+      const stagingTag = isStagingBuild() ? ' (staging)' : ''
+      if (tray) tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
+      log('[update] Notifying user to restart')
+      const { Notification } = require('electron')
+      if (Notification.isSupported()) {
+        new Notification({
+          title: `AI Medical Scribe${stagingTag} updated`,
+          body: 'A new version was downloaded. Restart the app to apply it.',
+          silent: true
+        }).show()
+      }
+    })
   })
 
   gitPull.on('error', err => log(`[update] git not found or failed: ${err.message}`))
