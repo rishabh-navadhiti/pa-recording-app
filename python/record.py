@@ -110,9 +110,6 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event):
                 pass
             sys.exit(1)
 
-        duration_seconds = frames_written[0] / sample_rate
-        print(f'DURATION_SECONDS: {duration_seconds:.3f}', flush=True)
-
         log.info('Converting to MP3...')
         wav_to_mp3(wav_path, output_mp3, sample_rate)
         log.info(f'Saved: {output_mp3}')
@@ -229,11 +226,7 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     ):
         stop_event.wait()
 
-    # tell() returns current write position = total frames written
-    total_frames = wav_file.tell()
     wav_file.close()
-    if total_frames > 0:
-        print(f'DURATION_SECONDS: {total_frames / sample_rate:.3f}', flush=True)
     log.info('Stopped recording. Converting to MP3...')
     wav_to_mp3(wav_path, output_mp3, sample_rate)
     log.info(f'Saved: {output_mp3}')

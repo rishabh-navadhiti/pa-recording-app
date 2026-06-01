@@ -70,78 +70,14 @@ User           Renderer            Main                Python              Eleve
  │               │                  │                   │                       │  generate-note
  │               │                  │                   │                       │  reads template
  │               │                  │                   │                       │  + transcript
- │               │                  │                   │                       │  writes one or more
- │               │                  │                   │                       │  _soap_note.md into
- │               │                  │                   │                       │  the case folder
- │               │                  │                   │                       │  ends response with
- │               │                  │                   │                       │  JSON manifest line
- │               │                  │ on claude close:                                          │
- │               │                  │   parseSkillManifest(resultText)                          │
- │               │                  │   if !multi_patient: spawn md_to_docx.py on the declared .md
- │               │                  │   if  multi_patient: per cases[] entry —                  │
- │               │                  │     mkdir <slug>_<YYYY-MM-DD>/,                           │
- │               │                  │     copy mp3 + transcript + transcript.docx + soap.md in, │
- │               │                  │     insert child cases row,                               │
- │               │                  │     spawn md_to_docx.py on the copied .md,                │
- │               │                  │     hide audit .md in recording folder (Windows)          │
- │               │                  │   mark parent row completed (soap_note_path=NULL on multi)│
+ │               │                  │                   │                       │  writes _soap_note.md
+ │               │                  │ on claude close: spawn md_to_docx.py for both .md files   │
 ```
 
 Key properties:
 - **Non-blocking**: state returns to `SESSION_ACTIVE` *before* transcription completes. The scribe can start the next case while the pipeline runs.
 - **Detached subtree**: transcribe → soap → docx is a chain, not a supervisor tree. Each child only listens for its predecessor's `close` event.
 - **Single log stream**: every child's stdout/stderr is captured by the main process and written to `<NOTES_DIR>/app.log` with a `[<case>]` tag, so the whole pipeline is reconstructable from one file.
-- **Skill is a pure note generator.** The `generate-note` skill writes `.md` files and declares them in a JSON manifest; it does not create sub-folders, copy files, or convert DOCX. All file shuffling and DOCX is owned by `main.js` after the manifest is parsed. See *Skill manifest contract* and *Multi-patient split* below.
-
-### Skill manifest contract
-
-The `generate-note` skill ends its final assistant response with a **single line of valid JSON** describing what it produced. The line is the **last** thing in the response — any chief-complaint prose, narrative confirmation, etc. appears before it. `main.js` consumes the manifest via `parseSkillManifest()` (in [parseSkillManifest.js](../parseSkillManifest.js)). Schema lives in [notes-claude/skills/generate-note/SKILL.md](../notes-claude/skills/generate-note/SKILL.md) Step 7; the load-bearing fields are:
-
-| Field | Used by app for |
-|---|---|
-| `schema_version` | Version gate. v1 only; future versions fail closed until app catches up. |
-| `status` | `failed` → mark case failed, no docx, no split. |
-| `multi_patient` | Branch decision: single vs multi-patient post-processing. |
-| `recording_folder` | Diagnostic only — the app uses `dirname(soap_note_md)` as authoritative. |
-| `cases[].soap_note_md` | Absolute path the skill claims to have written. App verifies on disk before docx/copy. |
-| `cases[].patient_name` | Source of the child folder slug (sanitised app-side). `null` falls back to `unknown_<n>`. |
-| `cases[].status` | Per-case gate — `failed` skips that case's post-processing. |
-
-Non-DB fields (`visit_type`, `chief_complaint`, `placeholders`, `warnings`, `summary`) are logged once to `app.log` via the parsed manifest object — never persisted to `app.db`. Adding columns later for any of these is a one-line migration; preallocating is not.
-
-The parser is layered defensive: (1) last non-empty line, direct `JSON.parse`; (2) strip ```` ```json ```` / ```` ``` ```` fences; (3) brace-balance scan from the rightmost `}` walking left for a matching `{`. On total failure: returns `null`; caller marks the run failed and logs the trailing stdout for debugging. Unit-tested via [tests/parseSkillManifest.test.js](../tests/parseSkillManifest.test.js) — run with `node tests/parseSkillManifest.test.js`.
-
-### Multi-patient split
-
-When the manifest sets `multi_patient: true`, the parent recording folder becomes an audit folder and the app fans out per-patient child folders next to it:
-
-```
-Cases/2026-05-22/
-  recording_2026-05-22_14-33-10/      ← audit folder (parent cases row, soap_note_path=NULL)
-    recording.mp3
-    transcript.md
-    transcript.docx
-    jane_doe_soap_note.md              ← retained (audit, .md hidden on Windows)
-    john_smith_soap_note.md
-    maria_garcia_soap_note.md
-  jane_doe_2026-05-22/                  ← child (own cases row, same session_id as parent)
-    jane_doe.mp3                       ← copy of parent's MP3 renamed to single-patient convention
-    transcript.md                       ← copy
-    transcript.docx                     ← copy
-    jane_doe_2026-05-22_soap_note.md   ← copy of the audit .md, renamed to single-patient convention
-    jane_doe_2026-05-22_soap_note.docx ← generated by app
-  john_smith_2026-05-22/
-    ...
-  maria_garcia_2026-05-22/
-    ...
-```
-
-Properties:
-- **Child folders are indistinguishable from single-patient cases on disk.** Pre-chart, the file picker, recent-cases listings, DB queries — none of them have to special-case multi-patient children.
-- **Recording folder retains everything the skill wrote.** No files are moved out, only copied. The audit `.md` files stay in the recording folder (hidden on Windows) alongside the original MP3 and transcript.
-- **DB shape: 1 parent row + N child rows, all sharing `session_id` and `doctor_id`.** Parent has `soap_note_path=NULL`, `status='completed'`. Each child has all paths populated and progresses `converting → completed` via the existing docx success path. Children are inserted by `db/cases.js → createChildCase` (a separate helper from `createCase` since children skip the `transcribing` → `generating_note` stages).
-- **`processing_events` for the SOAP step stays attached to the parent's `case_id`.** Only one Claude invocation, only one usage event. Each child docx run gets its own `docx` event row with `case_id` pointing to the child.
-- **No cleanup or "resume" logic in v1.** If the app crashes between skill exit and split completion, the recording folder is durable; the user can re-process manually. A future "resume split" feature could re-read the manifest from `app.log`.
 
 ---
 
@@ -300,10 +236,7 @@ The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt use
 
 ```
 <NOTES_DIR>/                                    e.g. ~/Documents/AI Medical Notes
-├── settings.json                               app + user-editable (doctors[] migrated to app.db on first launch)
-├── app.db                                      SQLite metadata store — doctors, sessions, cases, processing_events
-├── app.db-wal / app.db-shm                     WAL journal (auto-managed; safe to delete when app is closed)
-├── settings.doctors.backup.json                one-time backup of doctors[] at migration (hand-recovery only)
+├── settings.json                               app + user-editable
 ├── .template_job.json                          live + last-finished template job
 ├── app.log                                     append-only diagnostic log
 ├── .claude/                                    synced from repo notes-claude/
@@ -434,21 +367,6 @@ Failures (no git, conflicts, network) are logged and ignored. The app never bloc
 The pull is branch-agnostic — whatever branch the clone is on. User installs (`install.ps1`) clone `main`; staging installs (`install-staging.ps1`) clone `staging` and write a local `.staging-marker` that flips the UI badge and prefixes tooltip / notification titles with `(staging)`. See CLAUDE.md → *Branching + release flow* for the promotion rules.
 
 ---
-
-## DB schema overview
-
-SQLite database at `<NOTES_DIR>/app.db`. WAL mode, `better-sqlite3` in main process. All writes are `try/catch` — a failed write never breaks the pipeline.
-
-| Table | Key columns | Written by |
-|---|---|---|
-| `doctors` | `id` (preserves settings.json ids), `name`, `lastname`, `template_path`, `enable_cdi` | `db/doctors.js` — upserted by `add-doctor`, `update-doctor`, `update-doctor-template`, `spawnTemplateCreation` |
-| `sessions` | `id` (UUID), `session_folder`, `doctor_id`, `started_at`, `ended_at`, `case_count`, `failed_count` | `db/sessions.js` — inserted by `start-session`, updated by `stop-session`; counters bumped when cases reach terminal status |
-| `cases` | `id` (UUID), `case_dir` (UNIQUE), `status`, `revision`, file paths, audio metadata | `db/cases.js` — inserted in `stop-recording`/`process-audio-file`; updated at each pipeline stage |
-| `processing_events` | `job_kind` (`transcribe`/`soap`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
-
-`cases.status` transitions: `transcribing → generating_note → converting → completed` (or `failed` at any stage). `cases.revision` starts at 1 and increments on each successful prechart. `processing_events.backup_path` is populated from the `BACKUP_OK: <path>` line printed by the edit-note skill.
-
-Module layout: `db/init.js` (singleton + migrations + doctor migration), `db/doctors.js`, `db/sessions.js`, `db/cases.js`, `db/events.js`. `python/db_helper.py` is scaffolded for future Python workers (not used in v1).
 
 ## Cross-cutting: error surfacing
 
