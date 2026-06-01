@@ -76,6 +76,10 @@ Step 3 "Installing Node packages..."
 Refresh-Path
 Push-Location $installDir
 npm install --silent
+# Rebuild better-sqlite3 for the bundled Electron runtime (native addon — the
+# npm install above builds it for system Node.js, which has a different ABI).
+Write-Host "  Rebuilding native modules for Electron..." -ForegroundColor Gray
+npx electron-rebuild -f -w better-sqlite3
 Pop-Location
 OK "Node packages OK"
 
