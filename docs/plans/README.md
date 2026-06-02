@@ -4,6 +4,8 @@ One line per plan currently being worked on. When a feature ships, `git mv` its 
 
 Plan files use the convention `YYYY-MM-DD-<initials>-<slug>.md`.
 
+> **Big restructure:** the codebase refactor (modularizing `main.js`/`renderer.js`, the engine framework, distribution/packaging) is a multi-PR program with its own folder — see [`../refactor/`](../refactor/) (start at its [README](../refactor/README.md)). It's not a single-feature plan, so it lives outside this table.
+
 | Plan | Owner | Status |
 |---|---|---|
 | [2026-05-19-rs-cdi-v1-skill.md](2026-05-19-rs-cdi-v1-skill.md) | rs | Planned (Plan 1 of 2 — CDI skill + standards files; app integration is a separate Plan 2 after this lands) |
