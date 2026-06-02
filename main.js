@@ -2152,10 +2152,13 @@ function runPostUpdateSetup(onDone) {
       __dirname, 'node_modules', '.bin',
       isWin ? 'electron-rebuild.cmd' : 'electron-rebuild'
     )
-    const rebuildProc = spawn(rebuildBin, ['-f', '-w', 'better-sqlite3'], {
+    // Quote rebuildBin: default install paths contain spaces (e.g.
+    // "AI Medical Scribe (Staging)"), and with shell:true an unquoted path is
+    // split on the first space — cmd.exe then tries to run "...\Programs\AI".
+    const rebuildProc = spawn(`"${rebuildBin}" -f -w better-sqlite3`, [], {
       cwd: __dirname,
       stdio: 'pipe',
-      shell: isWin
+      shell: true
     })
     let rebuildLog = ''
     rebuildProc.stdout.on('data', d => { rebuildLog += d.toString() })
