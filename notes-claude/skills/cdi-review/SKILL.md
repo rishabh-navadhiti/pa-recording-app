@@ -272,6 +272,26 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
 - **Problem-to-plan linkage** — every active Dx must have a corresponding Plan item OR a stated reason no action is needed (e.g., "patient declines"). Missing → `category: "Linkage"` flag.
 - **Medical necessity narrative** — the note must explain why **this** visit / test / procedure / therapy is reasonable and necessary. Missing or weak → drives `summary.medical_necessity_status`; entirely absent → raise an `Audit-defense` flag.
 
+### Connector validation — MANDATORY before you emit ANY ICD code
+
+**You have the ICD-10 MCP connector available in this session. Use it. Never emit a code you have not confirmed against the connector.** This is the single most important rule in this skill: a hallucinated code that doesn't exist gets the claim rejected, and a "needs more specificity" flag suggesting a child code that doesn't exist actively breaks a correctly-coded note.
+
+The connector is the **ground truth for code existence and available specificity**. The prose standards packs (`standards/specialties/<x>.md`) are heuristics layered on top and are the **most error-prone** part of this system — they have contained outright-wrong claims (e.g., asserting a laterality axis on a code that has none). The universal `icd10_fy2026.md` is the reference for coding *rules / conventions*. **When any prose doc and the connector disagree about whether a code exists or what specificity is available, THE CONNECTOR WINS** — and the prose doc is the thing that's wrong.
+
+The connector may be registered under either namespace — use whichever appears in your tool list (prefer the project-scope `icd10` one if both are present):
+- `mcp__claude_ai_ICD-10_Codes__validate_code` / `…__lookup_code` / `…__search_codes`
+- `mcp__icd10__validate_code` / `…__lookup_code` / `…__search_codes`
+
+**Two mandatory checks, performed during analysis, before the code reaches the output JSON:**
+
+1. **Existence check — every code you emit.** For every code you would put in a flag's `current_code`, in any `suggested_codes[].code`, or anywhere in the `code_validation` block (`codes_in_note` / `supported` / `flagged` / `missing_codes`): call `validate_code` (or `lookup_code`) and confirm it exists and is `valid_for_hipaa_transactions`. **If a code fails validation, do not emit it.** If you intended to suggest a more-specific code and it turns out not to exist, drop the suggestion (and the flag that depended on it). Don't substitute a guess — re-`search_codes` to find what actually exists, or omit.
+
+2. **Specificity-flag guard — before claiming "this needs more specificity."** Before you raise a flag asserting that a documented code needs a more specific replacement (laterality, digit, stage, etc.), **confirm via `search_codes` (by code, prefix) that the more-specific code actually exists.** Look at the real children the connector returns. If the documented code is already complete and billable and has **no** more-specific child for the axis you were about to flag, **DO NOT raise the specificity flag** — the note's code is correct. The prose pack may say the condition "requires laterality"; the connector may show there is no laterality child. The connector wins.
+
+**Worked example — De Quervain (the exact bug this guard prevents):** The ortho pack once listed "De Quervain tenosynovitis → Laterality." A scribe note coded it `M65.4`. Before flagging "M65.4 needs laterality, use M65.41/M65.411," you call `search_codes(query="M65.4", search_by="code")`. The connector returns **exactly one code: `M65.4` "Radial styloid tenosynovitis [de Quervain]", billable, no children.** M65.41 / M65.411 / M65.42 / M65.412 **do not exist.** Correct action: **raise no specificity flag.** `M65.4` is the complete, correct code. (Contrast: `search_codes(query="G56.0")` returns G56.00/01/02/03 — carpal tunnel genuinely *does* have a laterality axis, so a laterality flag there is valid. The connector tells you which case you're in; never assume from the prose pack.)
+
+Validating a handful of codes per run adds a few connector calls — fine, CDI is already a long job. Don't validate the same code twice in one run; reuse the result.
+
 ### ICD code validation (when codes are present in the SOAP note)
 
 In production, the SOAP note often already contains ICD-10 codes appended by an earlier pipeline step. The codes typically live in a markdown table at the end of the note (default format: *Diagnosis | Code | Description*), but doctor-template variants may place them inline within sections, in the Assessment list, or in prose. **You don't need a separate detection step** — you're already reading the entire note in Step 1, so you'll see any codes naturally.
@@ -281,8 +301,8 @@ In production, the SOAP note often already contains ICD-10 codes appended by an 
 1. For each existing code, verify it's supported by the documentation (clinical indicators, laterality, acuity, etc.).
 2. Flag any code that's NOT supported by the documentation (over-coding risk) as a `critical` flag of category `Audit-defense` with `current_code` populated. This is one of the auto-critical conditions from the table above (#6 — "Suggested ICD-10 code doesn't match the documented Dx language").
 3. Flag any documented diagnosis that *should* have a code but isn't in the existing list (under-coding risk) as a `warning` of category `Specificity`.
-4. Flag any code that doesn't reflect the documented specificity (e.g., G56.00 unspecified when laterality is documented) as a `warning` of category `Specificity` with `current_code` populated and `suggested_codes` showing the more specific alternative.
-5. Populate the optional `code_validation` block in the output JSON (schema below) summarising what you found.
+4. Flag any code that doesn't reflect the documented specificity (e.g., G56.00 unspecified when laterality is documented — and you've **confirmed via `search_codes` that G56.01/02/03 exist**) as a `warning` of category `Specificity` with `current_code` populated and `suggested_codes` showing the more specific alternative. **Apply the specificity-flag guard above**: if the connector shows the documented code has no more-specific child for that axis (the M65.4 case), raise no flag.
+5. Populate the optional `code_validation` block in the output JSON (schema below) summarising what you found. Every code listed in it must have passed the existence check.
 
 **If you find no ICD codes in the note:** omit the `code_validation` field entirely from the output JSON. Proceed with the standard CDI analysis. Your `suggested_codes` arrays on individual flags still propose codes that *should* be assigned — that's the existing behavior for code-less notes and stays the same.
 
@@ -390,7 +410,7 @@ The presence vs. absence of the `code_validation` field is the signal to downstr
 
 ### Behavior rules
 
-- **No hallucination.** Every `suggested_codes` entry should be a plausible FY2026 code. If you're not confident the code exists, use a more general code in the same family OR omit the entry — never invent codes.
+- **No hallucination — connector-enforced.** Every code you emit (`suggested_codes`, `current_code`, `code_validation`) must be confirmed to exist via the ICD-10 connector (see *Connector validation* above). "Plausible" is not enough — validate it. If validation fails, drop the code; never invent one or trust the prose pack over the connector.
 - **Quote evidence verbatim** where reasonable. `evidence_found` should read like sentence fragments lifted from the note, not paraphrases.
 - **Cite the guideline.** `guideline_reference` should name the specific section that governs the rule (e.g., `ICD-10-CM Sec IV.H`, `Ortho pack §3`, `AHIMA/ACDIS 2026 §2`).
 - **Every flag gets an `action`.** Write the imperative TL;DR before you write the body — it forces you to be clear about what the scribe should actually do. The body justifies; the action instructs. Never leave `action` empty.

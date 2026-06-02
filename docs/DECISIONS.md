@@ -75,6 +75,22 @@ Surfaced after Phase-2 end-to-end testing on Stephanie + Guardo (both single-pat
 
 Migration `004_extend_cdi_flags.sql` adds both columns (`action`, `reimbursement_impact`) and bumps `user_version` to 4. `db/cdi_flags.js` `insertFlags()` writes both; `main.js` `applyCdiSuccess` was unchanged (it passes whole flag objects to `insertFlags`, which does the per-field mapping). Scope was a field rename + a new field only — no new flag types, categories, or reasoning changes. E/M MDM scoring (Engine 3b) and SOAP structural validation (Engine 2) remain separate future engines, not CDI gaps.
 
+**Addendum (2026-06-02) — CDI validates every emitted ICD code against the live connector; connector is ground-truth over the prose standards packs.**
+
+**Context:** A real verification run on two Stephanie cases (balanced + aggressive) both produced a 95%-confidence flag telling the scribe to replace the De Quervain code `M65.4` with laterality codes (`M65.411/412` balanced, `M65.41/42` aggressive). Validated against the ICD-10 connector: **`M65.4` is the complete, billable De Quervain code with no laterality children; M65.41/M65.411/M65.42/M65.412 do not exist.** The ICD step had coded `M65.4` correctly; CDI invented nonexistent codes and told the user to break a correct note. Root cause: `standards/specialties/orthopedics.md` asserted "De Quervain tenosynovitis → Laterality," inherited from a blanket "all musculoskeletal codes require laterality" overgeneralization. The CDI engine faithfully applied a wrong prose rule. This is a *class* of bug — the skill emitted codes (`current_code`, `suggested_codes[]`, `code_validation`) without ever checking they exist, while the ICD-10 MCP connector was already available to it (synced `.mcp.json`, `cwd = NOTES_DIR`) and simply unused.
+
+**Decision:** Two parts.
+- **(1) Connector validation in the `cdi-review` skill (the systemic fix).** Added a mandatory pass: before emitting any code, the skill calls the connector (`validate_code` / `search_codes`) to confirm it exists and is HIPAA-valid; before raising a "needs more specificity" flag, it confirms via `search_codes` that the more-specific child actually exists. If a documented code is already complete with no child for the requested axis (the `M65.4` case), no specificity flag is raised. **Stated conflict rule: when the prose standards pack and the connector disagree about code existence or available specificity, the connector wins** — it's the authoritative FY2026 set; the packs are error-prone heuristics. Hierarchy: connector = ground truth for *code existence + available specificity*; `icd10_fy2026.md` = coding *rules/conventions*; specialty packs = heuristics on top, most error-prone. Mirrors how `add-icd-codes` already invokes the connector.
+- **(2) Ortho-pack correction + full connector audit.** Removed the false De Quervain laterality claim and audited every specific code / specificity assertion in `orthopedics.md` against the connector. Findings corrected: De Quervain (no laterality — `M65.4` is terminal); M75.1xx mislabeled as per-tendon (it's complete/incomplete + shoulder side, no per-tendon axis — supraspinatus/infraspinatus is prose only); `Z48.815` mislabeled as musculoskeletal aftercare (it's *digestive-system*; MSK ortho aftercare is `Z47.1`/`Z47.89` — the Z48.81x series has no MSK member); M54.1x radiculopathy is region-specific not laterality-specific; trigger-finger digit example had M65.331 mislabeled (right *middle*, not index); M77.0/M77.1 medial-vs-lateral epicondylitis clarified. `icd10_fy2026.md` was spot-checked and is correctly worded ("laterality where applicable", "most conditions") — its discrete code references (I50.23, N18.1, N18.6) all resolve; **no changes made to it.** `ahima_acdis_2026.md` has no ICD codes — skipped.
+
+**Rejected / deferred:**
+- **Deterministic backstop (main.js cross-checks every code in the output `cdi.json`, or the render step flags unvalidated codes).** Prompt-driven validation *can* be skipped by the model on long runs (we've seen this with the terminal-line/manifest drift). For v1, a firm instruction + the M65.4 worked example is the approach. If post-fix testing shows the model still emitting unvalidated codes, build the deterministic backstop — tracked as a v1.1 option below, not built now.
+- Touching files under `/Users/rish/Development/PA/` (Jayanth/Fahd upstream reference docs) — out of repo scope; only the recording-app ortho pack + skill were corrected.
+
+**Implications:**
+- The connector is now a hard dependency of a *correct* CDI run, not just the ICD step. A run without connector access can still complete (best-effort), but its code suggestions are unvalidated and should be treated with suspicion — a future backstop would mark them.
+- When adding a new specialty pack, every code claim in it must be connector-validated before merge — the packs are the error-prone layer. Treat any "X requires laterality/specificity → code Y" assertion as a hypothesis until the connector confirms the child exists.
+
 **Known v1.1 follow-ups (logged 2026-05-22):**
 
 - ~~Upgrade `cdi-review` to emit the JSON manifest format established for `generate-note`. Use `parseSkillManifest.js`.~~ *Done 2026-05-26 — see addendum above.*
@@ -86,6 +102,7 @@ Migration `004_extend_cdi_flags.sql` adds both columns (`action`, `reimbursement
 - Pre-AI rules-engine prefilter (1.48–1.50).
 - Documentation Defense additions (1.54–1.60).
 - Re-run CDI automatically when a SOAP note is edited via pre-chart (today it's left as a stale artifact; the ICD step DOES re-run on pre-chart, so this asymmetry is a small wart).
+- **Deterministic ICD-code backstop for CDI** — main.js (or the render step) re-validates every code in the output `cdi.json` against the connector and drops/flags any that don't exist, so a hallucinated code can't reach the user even if the model skipped its prompt-driven validation pass. Build this if post-2026-06-02-fix testing shows the model still emitting unvalidated codes. (See the 2026-06-02 addendum above.)
 
 ---
 

@@ -149,19 +149,19 @@ Every fracture code needs **all** of:
 
 ## 6. Tendon and soft-tissue conditions
 
-Every tendon condition needs: specific tendon + laterality + acute vs. chronic (chapter selection).
+Most tendon conditions need: specific tendon + acute vs. chronic (chapter selection) + laterality **where the code actually has a laterality axis**. Laterality is *not* universal — some musculoskeletal codes have no laterality child (De Quervain is the classic example). **Always confirm the available axis against the ICD-10 connector before flagging a missing one** (see the connector-validation rule in the `cdi-review` skill). The "required specificity" column below is a heuristic; the connector is ground truth.
 
-| Common condition | Required specificity |
-|---|---|
-| Rotator cuff tear | Specific tendon (supraspinatus / infraspinatus / subscapularis / teres minor); complete vs. partial; acute vs. chronic; laterality |
-| Achilles | Rupture (acute → Ch 19) vs. tendinopathy / tendinitis (chronic → Ch 13); laterality |
-| Patellar tendon | Rupture vs. tendinitis; laterality |
-| Biceps tendon | Proximal vs. distal; long vs. short head; rupture vs. tendinitis; laterality |
-| Lateral / medial epicondylitis | Laterality |
-| De Quervain tenosynovitis | Laterality |
-| Trigger finger | **Which digit** (thumb / index / long / ring / small); laterality; acute vs. chronic |
+| Common condition | Required specificity | Laterality axis? |
+|---|---|---|
+| Rotator cuff tear | Specific structure + complete vs. partial + acute vs. chronic. **Note:** the M75.1xx codes encode complete/incomplete + shoulder laterality, **not** which tendon — there is no per-tendon ICD axis (supraspinatus vs. infraspinatus is documented in prose, not coded). | Yes (shoulder: right/left/unspecified) |
+| Achilles | Rupture (acute → Ch 19) vs. tendinopathy / tendinitis (chronic → Ch 13) | Yes |
+| Patellar tendon | Rupture vs. tendinitis | Yes |
+| Biceps tendon | Proximal vs. distal; long vs. short head; rupture vs. tendinitis | Yes |
+| Lateral / medial epicondylitis | (M77.0 medial, M77.1 lateral) | Yes (elbow) |
+| De Quervain tenosynovitis | **`M65.4` is the complete code — NO laterality, NO other specificity child.** Do not flag it for missing laterality; the code is correct as-is. | **No** — single code, no children |
+| Trigger finger | **Which digit** (thumb / index / long / ring / small); laterality; acute vs. chronic | Yes (per-digit + right/left) |
 
-**Flag:** rotator cuff pathology without tendon when MRI / op report has one; acute tendon rupture coded from Chapter 13; tendon condition without laterality.
+**Flag:** rotator cuff pathology coded as unspecified-structure when the note supports complete/incomplete or laterality (confirm the child exists first); acute tendon rupture coded from Chapter 13; a tendon condition missing laterality **only when the connector confirms a laterality child exists** for that code.
 
 ---
 
@@ -172,7 +172,6 @@ Every tendon condition needs: specific tendon + laterality + acute vs. chronic (
 | Routine post-joint-replacement follow-up | Z47.1 |
 | Routine post-other-orthopedic-surgery follow-up | Z47.89 |
 | Healing-phase follow-up for an injury | Injury code + 7th character D |
-| Post-op aftercare on musculoskeletal system | Z48.815 |
 | Implant complication (mechanical) | T84.0x–T84.4x by device + type |
 | Implant infection | T84.5x–T84.7x + organism code |
 | Periprosthetic fracture around implant | M97.x |
@@ -280,20 +279,20 @@ Common named tests by region:
 
 ## 13. Common ortho specificity traps (curated examples)
 
-These are the highest-frequency specificity failures we see in our doctors' notes. The engine should surface a flag against any of these when the trap is present:
+These are the highest-frequency specificity failures we see in our doctors' notes. The engine should surface a flag against any of these when the trap is present. **Every code below was validated against the ICD-10 connector (FY2026), but still confirm at runtime before emitting a suggestion** — the connector is ground truth and the code set changes yearly.
 
 | Note language | Why it's a trap | Better-defended code(s) |
 |---|---|---|
-| "Trigger finger" without specifying digit | Each digit has its own code | M65.331 (right index), M65.341 (right ring), M65.342 (left ring), etc. |
+| "Trigger finger" without specifying digit | Each digit has its own code | M65.321 (right index), M65.331 (right middle), M65.341 (right ring), M65.342 (left ring); thumb is M65.311/312 |
 | "Carpal tunnel syndrome" without laterality | G56.00 unspecified is denied by many payers | G56.01 (right), G56.02 (left), G56.03 (bilateral) |
 | "Fracture" without 7th character | Invalid code | Add A / D / G / K / P / S per care phase |
-| "CMC arthritis" without Eaton stage | Stage drives surgical decision-making | Document stage II / III / IV; M18.x by laterality |
-| "Knee OA" without compartment | Tri-compartmental vs. unicompartmental affects code and surgical option | M17.11 (right primary), M17.12 (left primary) — note compartment in narrative |
-| "Rotator cuff tear" without specific tendon | M75.10x family has tendon-specific subcategories | M75.111 (right supraspinatus), M75.121 (right infraspinatus), etc. |
-| "Lumbar radiculopathy" without level + side | M54.16 unspecified vs. level-specific | M54.16 may be acceptable if MRI doesn't localize; otherwise M54.16 is under-coded |
-| "Tendinitis" without specifying tendon and laterality | Generic M77.9 is denied | M77.0x epicondylitis, M77.1x lateral, etc. with laterality |
+| "CMC arthritis" without laterality | Eaton stage drives surgical decision-making (clinical, not a code axis) | M18.11 (right primary), M18.12 (left primary), M18.0 (bilateral primary); document Eaton stage in narrative |
+| "Knee OA" without compartment | Tri-compartmental vs. unicompartmental affects surgical option | M17.11 (right primary), M17.12 (left primary) — note compartment in narrative (no compartment-level ICD axis) |
+| "Rotator cuff tear" without completeness/laterality | M75.1xx encodes complete/incomplete + shoulder side — **NOT** which tendon | M75.111 (incomplete, right shoulder), M75.121 (complete, right shoulder), M75.112/122 (left). Tendon name (supraspinatus etc.) goes in the narrative — there is no per-tendon code. |
+| "Lumbar radiculopathy" without region | M54.1x is **region-specific, not laterality-specific** | M54.16 (lumbar), M54.17 (lumbosacral), M54.12 (cervical). No right/left axis on M54.1x — do not flag it for missing laterality. |
+| "Tendinitis" / "epicondylitis" without site + side | Generic M77.9 (unspecified enthesopathy) is denied | M77.0x = **medial** epicondylitis, M77.1x = **lateral** epicondylitis; each takes laterality (e.g., M77.11 right lateral, M77.12 left lateral) |
 | "Lateral epicondylitis" without laterality | M77.10 unspecified vs. M77.11 right vs. M77.12 left | Always document side |
-| "Post-op visit" without procedure or original Dx | Sec IV.A violation — first-listed Dx missing | Z47.x + original ICD or post-op aftercare Z48.815 |
+| "Post-op visit" without procedure or original Dx | Sec IV.A violation — first-listed Dx missing | Z47.89 (other orthopedic aftercare) or Z47.1 (joint-replacement aftercare) + the original ICD. **Not Z48.815** — that is digestive-system aftercare; the Z48.81x series has no musculoskeletal member. |
 
 ---
 
