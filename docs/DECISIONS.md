@@ -12,6 +12,19 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-02 (sr) — ICD-10 coding gated by a settings toggle; CDI forces ICD on
+
+**Context:** The ICD coding step (`spawnIcdCoding`) ran unconditionally on every case — there was no way to turn it off, unlike CDI (`enableCdi`). Users wanted a switch. CDI is built to run *after* ICD so the note already has codes baked in (ICD-aware validation in `cdi-review`), so CDI logically depends on ICD.
+
+**Decision:** Added a global `enableIcd` setting (`<NOTES_DIR>/settings.json`), surfaced as an "Enable ICD-10 coding" checkbox in Settings. `spawnIcdCoding` short-circuits with `[icd] SKIPPED: disabled` when off (no spawn, no codes, no status flip) — one gate covering both the single-patient and multi-patient call sites. **Default is `false` (opt-in, like CDI).** A one-way invariant couples the two: **`enableCdi` on ⟹ `enableIcd` on**, enforced in `main.js` `readSettings()` (normalizes the merged object — covers legacy configs + the live gate read) *and* the `save-settings` handler (persists the corrected value). The renderer mirrors it: while CDI is checked, the ICD checkbox is shown checked + disabled (`syncIcdLock`).
+
+**Rejected:**
+- ICD default `true` (preserve current behavior): the user explicitly chose opt-in. Existing installs stop running ICD until the user enables it.
+- Enforcing the invariant only in the UI: the main-process enforcement is load-bearing — a hand-edited `settings.json` with `enableCdi:true` and no `enableIcd` must still run ICD. The UI lock is convenience on top.
+- Coupling the reverse direction (ICD off ⟹ CDI off): unnecessary. ICD runs fine standalone; only CDI needs ICD.
+
+**Implications:** New settings consumers must respect that `enableCdi` true implies `enableIcd` true — read through `readSettings()` (which normalizes) rather than parsing `settings.json` directly. Any future per-case override of ICD must keep the CDI⟹ICD invariant.
+
 ## 2026-05-22 (rs) — CDI v1 wired into the recording-app pipeline
 
 **Context:** Plan 1 ([docs/archive/plans/2026-05-19-rs-cdi-v1-skill.md] when archived) shipped the `cdi-review` skill in isolation. Plan 2 ([docs/plans/2026-05-22-rs-cdi-v1-app-integration.md]) Phase 2 ships it as a real product feature with persistence, UI, status reporting, and ICD-aware behavior. Phase 1 of the same plan (ICD step re-implementation) is documented in the entry below; this entry covers Phase 2.

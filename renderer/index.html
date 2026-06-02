@@ -50,6 +50,11 @@
 
       <div class="settings-group">
         <label class="setting-row">
+          <input type="checkbox" id="chk-enable-icd" />
+          <span>Enable ICD-10 coding</span>
+        </label>
+        <div class="setting-hint">Appends an ICD-10-CM codes table to every new SOAP note (uses the claude.ai ICD-10 connector). Required by CDI review.</div>
+        <label class="setting-row">
           <input type="checkbox" id="chk-enable-cdi" />
           <span>Enable CDI review</span>
         </label>

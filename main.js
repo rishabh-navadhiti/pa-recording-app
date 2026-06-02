@@ -163,6 +163,11 @@ const DEFAULT_SETTINGS = {
   soapModel:      'claude-sonnet-4-6',
   templateModel:  'claude-opus-4-7',
   templateEffort: 'max',
+  // ICD-10 coding — global on/off. When false, spawnIcdCoding is skipped for
+  // every case (no claude spawn, no codes appended). CDI depends on ICD running
+  // first (codes baked into the note), so enabling CDI forces this on — see the
+  // CDI⟹ICD invariant in readSettings() + the save-settings handler.
+  enableIcd: false,
   // CDI Co-Pilot — global on/off + mode. Per-doctor specialty is in app.db
   // (doctors.specialty). When enableCdi is false, the CDI pipeline step is
   // skipped entirely for every case — no claude spawn, no DB writes, no UI.
@@ -174,7 +179,12 @@ const DEFAULT_SETTINGS = {
 
 function readSettings() {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8')) }
+    const merged = { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8')) }
+    // Invariant: CDI runs after ICD and needs codes in the note, so CDI on ⟹ ICD on.
+    // Normalize here so every runtime consumer (the spawnIcdCoding gate, the renderer)
+    // sees a consistent state — including legacy settings.json with enableCdi but no enableIcd.
+    if (merged.enableCdi) merged.enableIcd = true
+    return merged
   } catch { return { ...DEFAULT_SETTINGS } }
 }
 
@@ -955,6 +965,16 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
 function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patientFolderName = null, doctorId = null }) {
   return new Promise(resolve => {
     const tag = caseTag ? `[${caseTag}] ` : ''
+
+    // Gate — global enableIcd off. No spawn, no codes appended, no status flip.
+    // (CDI on ⟹ ICD on is enforced in readSettings, so a disabled ICD can never
+    // strand an enabled CDI.)
+    if (!readSettings().enableIcd) {
+      log(`${tag}[icd] SKIPPED: disabled`)
+      resolve()
+      return
+    }
+
     if (patientFolderName) {
       updatePatientStatus(caseTag, patientFolderName, 'coding_icd')
     } else if (caseTag) {
@@ -3278,6 +3298,8 @@ function registerIpcHandlers() {
     try {
       const current = readSettings()
       const merged = { ...current, ...settings }
+      // CDI on ⟹ ICD on (CDI needs ICD codes in the note). Persist the corrected value.
+      if (merged.enableCdi) merged.enableIcd = true
       writeSettings(merged)
       log(`Settings saved: ${JSON.stringify(merged)}`)
       return { ok: true }

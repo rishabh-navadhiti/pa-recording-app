@@ -54,6 +54,7 @@ const btnSettings        = document.getElementById('btn-settings')
 const settingsView       = document.getElementById('settings-view')
 const btnSettingsClose   = document.getElementById('btn-settings-close')
 const chkAutoRecord          = document.getElementById('chk-auto-record')
+const chkEnableIcd           = document.getElementById('chk-enable-icd')
 const chkEnableCdi           = document.getElementById('chk-enable-cdi')
 const cdiModeRow             = document.getElementById('cdi-mode-row')
 const cdiModeSelect          = document.getElementById('cdi-mode-select')
@@ -722,10 +723,13 @@ function maskApiKey(key) {
 async function loadSettings() {
   const s = await api.getSettings()
   chkAutoRecord.checked = s.autoRecord || false
+  // ICD toggle — locked on while CDI is enabled (CDI requires ICD).
+  if (chkEnableIcd) chkEnableIcd.checked = !!s.enableIcd
   // CDI toggle + mode — mode row is only visible when CDI is on.
   if (chkEnableCdi) chkEnableCdi.checked = !!s.enableCdi
   if (cdiModeSelect) cdiModeSelect.value = s.cdiMode || 'balanced'
   if (cdiModeRow) cdiModeRow.classList.toggle('hidden', !s.enableCdi)
+  syncIcdLock(!!s.enableCdi)
   const dir = await api.getNotesDir()
   notesDirPath.textContent = dir
   notesDirPath.title = dir
@@ -945,10 +949,32 @@ chkAutoRecord.addEventListener('change', () => {
   api.saveSettings({ autoRecord: chkAutoRecord.checked })
 })
 
+// Locks the ICD checkbox on (checked + disabled) while CDI is enabled, since CDI
+// requires ICD to run first. When CDI is off, the checkbox is editable again
+// (its checked state is left untouched).
+function syncIcdLock(cdiOn) {
+  if (!chkEnableIcd) return
+  if (cdiOn) {
+    chkEnableIcd.checked = true
+    chkEnableIcd.disabled = true
+  } else {
+    chkEnableIcd.disabled = false
+  }
+}
+
+if (chkEnableIcd) {
+  chkEnableIcd.addEventListener('change', () => {
+    api.saveSettings({ enableIcd: chkEnableIcd.checked })
+  })
+}
+
 if (chkEnableCdi) {
   chkEnableCdi.addEventListener('change', () => {
-    api.saveSettings({ enableCdi: chkEnableCdi.checked })
-    if (cdiModeRow) cdiModeRow.classList.toggle('hidden', !chkEnableCdi.checked)
+    const on = chkEnableCdi.checked
+    // CDI on ⟹ ICD on. Persist both so disk matches immediately.
+    api.saveSettings(on ? { enableCdi: true, enableIcd: true } : { enableCdi: false })
+    if (cdiModeRow) cdiModeRow.classList.toggle('hidden', !on)
+    syncIcdLock(on)
   })
 }
 
