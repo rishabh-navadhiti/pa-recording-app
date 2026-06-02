@@ -78,6 +78,22 @@ function updateDoctorTemplate(id, templatePath) {
   }
 }
 
+// Set / clear the doctor's specialty. Empty / null clears the column, which
+// causes the CDI skill's Step 0b specialty-gate to emit CDI_SKIPPED for that
+// doctor's cases (the global enableCdi flag stays orthogonal — it only gates
+// whether the skill is spawned at all).
+function updateDoctorSpecialty(id, specialty) {
+  const db = getDb()
+  if (!db) return
+  try {
+    const v = (specialty && String(specialty).trim()) ? String(specialty).trim() : null
+    db.prepare('UPDATE doctors SET specialty = ?, updated_at = ? WHERE id = ?')
+      .run(v, new Date().toISOString(), id)
+  } catch (e) {
+    console.error('[db] updateDoctorSpecialty failed:', e.message)
+  }
+}
+
 function getDoctorsWithTemplates() {
   const db = getDb()
   if (!db) return []
@@ -89,4 +105,4 @@ function getDoctorsWithTemplates() {
   }
 }
 
-module.exports = { listDoctors, getDoctor, getDoctorByLastname, upsertDoctor, removeDoctor, updateDoctorTemplate, getDoctorsWithTemplates }
+module.exports = { listDoctors, getDoctor, getDoctorByLastname, upsertDoctor, removeDoctor, updateDoctorTemplate, updateDoctorSpecialty, getDoctorsWithTemplates }

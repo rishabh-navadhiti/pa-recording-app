@@ -225,9 +225,9 @@ transcribing → generating_note → converting → completed
 |---|---|
 | NULL | CDI never attempted on this case. (CDI was added in migration 003; pre-existing cases will have NULL forever unless rerun.) |
 | `'running'` | CDI Claude invocation in flight. Set at spawn, before Claude returns. |
-| `'completed'` | Skill emitted `CDI_OK:` terminal line; JSON + MD on disk; flags inserted into `cdi_flags`. |
-| `'skipped'` | CDI was gated off (`enableCdi=false`, doctor has no specialty, or specialty has no standards file). Stub `_cdi.{json,md}` files written by main.js for UI consistency. |
-| `'failed'` | Skill non-zero exit, no terminal line, or `CDI_FAIL:`. Best-effort: pipeline still continues to DOCX. |
+| `'completed'` | Skill emitted a `status:'ok'` JSON manifest (or main.js recovered the run from the on-disk `_cdi.json` when the manifest line was missing); JSON + MD on disk; flags inserted into `cdi_flags`. |
+| `'skipped'` | CDI was gated off in main.js *before* the spawn because the doctor has no specialty, or the specialty has no standards file. **No `_cdi.*` files are written** — the case folder is untouched. Only this status column records the skip. (Note: when CDI is globally off via `enableCdi=false`, `spawnCdiReview` returns even earlier — before any DB write — so `cdi_status` stays NULL, not `'skipped'`.) |
+| `'failed'` | Manifest `status:'failed'` AND no usable on-disk `_cdi.json`, or skill non-zero exit with nothing recoverable. Best-effort: pipeline still continues to DOCX. |
 
 **Gotchas:**
 
@@ -279,7 +279,7 @@ One row per spawned subprocess that does meaningful work — transcribe.py, the 
 **`status` enum:**
 
 - `'started'` — inserted by `startEvent`. The job is running (or was running when the app crashed).
-- `'success'` — set by `finishEvent` when the close handler considers the job a success. For CDI specifically, "success" can also mean "skill emitted CDI_SKIPPED cleanly".
+- `'success'` — set by `finishEvent` when the close handler considers the job a success. For CDI specifically, a gated skip (no specialty / no standards file) is caught in main.js *before* a `processing_events` row is started, so a skip produces no CDI event at all — not a `'success'` one.
 - `'failed'` — set by `finishEvent` on any failure path. `error_message` is populated.
 
 **`job_kind` enum** (exact strings used in `startEvent` calls — see [main.js:396](../main.js#L396) and friends):
@@ -308,7 +308,7 @@ One row per spawned subprocess that does meaningful work — transcribe.py, the 
 
 The structured payload from a successful CDI run, one row per flag. Mirrors the `flags[]` array in the CDI JSON output exactly (see [cdi-review SKILL.md](../notes-claude/skills/cdi-review/SKILL.md) Step 3 / output schema).
 
-**Created by:** migration `003_add_cdi_tables.sql`.
+**Created by:** migration `003_add_cdi_tables.sql`; extended by `004_extend_cdi_flags.sql` (adds `action` + `reimbursement_impact`).
 **Written by:** `db/cdi_flags.js` — `insertFlags()` (bulk-insert, called by `spawnCdiReview`'s success path), `deleteFlagsForCase()` (used when CDI is re-run on the same case — v1.1 feature, not active in v1).
 
 | Column | Type | Nullable | Default | Meaning |
@@ -328,6 +328,10 @@ The structured payload from a successful CDI run, one row per flag. Mirrors the 
 | `evidence_found` | TEXT | yes | NULL | **JSON-stringified array** of verbatim/near-verbatim quotes from the note that support the flag. JSON.parse to read. 0–4 entries. |
 | `evidence_missing` | TEXT | yes | NULL | **JSON-stringified array** of what would be needed to upgrade or defend the documentation. JSON.parse to read. 0–4 entries. |
 | `created_at` | TEXT | no | — | ISO 8601 UTC at insertion (i.e., when the CDI run was successfully ingested). |
+| `action` | TEXT | no | `''` | *(migration 004)* One imperative line — what to do about the flag. The scannable TL;DR, rendered above the body in the CDI markdown. Required field; pre-migration rows carry `''`. |
+| `reimbursement_impact` | TEXT | yes | NULL | *(migration 004)* A billing signal in the units of the care setting (outpatient: E/M level / HCC / modifier; inpatient: DRG shift). **Mostly NULL** — most flags are quality/audit-defense with no revenue signal. Replaces the JSON-only `drg_impact` field. |
+
+> Physical column order: `action` and `reimbursement_impact` were appended by migration 004, so they sit **after** `created_at` in `PRAGMA table_info` — not in the logical reading order shown above. SQLite has no cheap mid-table column insert; order doesn't matter for named-column queries.
 
 **FK constraints:**
 - `case_id` → `cases.id` ON DELETE CASCADE. (Deleting a case removes its flags.)
@@ -341,7 +345,7 @@ The structured payload from a successful CDI run, one row per flag. Mirrors the 
 **Gotchas:**
 
 - **Three columns are JSON-encoded TEXT, not native arrays/objects:** `suggested_codes`, `evidence_found`, `evidence_missing`. SQL queries must `json_extract()` (SQLite's JSON1 functions are compiled in by default) or fetch and `JSON.parse` in JS. Treat these as strings until you decode.
-- **`drg_impact` field from the skill is dropped** — v1 is outpatient-only; the field is always null upstream and is not persisted to a column.
+- **`drg_impact` was renamed to `reimbursement_impact`** (migration 004). The old name was JSON-only and never a column. The new `reimbursement_impact` column **is** persisted but is mostly NULL (outpatient flags rarely carry a billing signal).
 - **Re-runs are not handled in v1.** If CDI somehow runs twice on the same case (manual `claude -p` re-invocation), you'll get **two sets of flag rows on the same `case_id`**, distinguishable only by `cdi_run_id` or `created_at`. Use `MAX(cdi_run_id)` to dedupe. The `deleteFlagsForCase()` helper exists for the future v1.1 pre-chart-re-runs-CDI feature.
 - **Multi-patient parent (audit) rows never get flags.** `case_id` always points to a single-patient case or a multi-patient child. Don't query `cdi_flags` joined to multi-patient parents expecting rows.
 

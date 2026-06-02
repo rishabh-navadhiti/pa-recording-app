@@ -77,14 +77,32 @@ User           Renderer            Main                Python              Eleve
  │               │                  │                   │                       │  JSON manifest line
  │               │                  │ on claude close:                                          │
  │               │                  │   parseSkillManifest(resultText)                          │
- │               │                  │   if !multi_patient: spawn md_to_docx.py on the declared .md
+ │               │                  │   per case folder (single=parent; multi=each child):      │
+ │               │                  │     spawn claude -p "add ICD codes..." (add-icd-codes)    │
+ │               │                  │       → appends ## ICD-10-CM Codes table to <case>.md     │
+ │               │                  │       → best-effort; failure falls through to next step   │
+ │               │                  │     spawn claude -p "review cdi..." (cdi-review)          │
+ │               │                  │       → produces <case>_cdi.json + <case>_cdi.md          │
+ │               │                  │       → writes cdi_* columns + cdi_flags rows             │
+ │               │                  │       → SKIPPED if enableCdi=false (no spawn) or no       │
+ │               │                  │         specialty (main.js gates before spawn)            │
+ │               │                  │       → emits JSON manifest (last line of final response) │
+ │               │                  │         consumed via parseSkillManifest()                 │
+ │               │                  │       → manifest miss → falls back to on-disk _cdi.json   │
+ │               │                  │       → best-effort; failure falls through to docx        │
+ │               │                  │     spawn md_to_docx.py on the now-coded soap .md         │
+ │               │                  │     spawn md_to_docx.py on cdi .md (if CDI succeeded)     │
  │               │                  │   if  multi_patient: per cases[] entry —                  │
  │               │                  │     mkdir <slug>_<YYYY-MM-DD>/,                           │
  │               │                  │     copy mp3 + transcript + transcript.docx + soap.md in, │
  │               │                  │     insert child cases row,                               │
- │               │                  │     spawn md_to_docx.py on the copied .md,                │
+ │               │                  │     await ICD then CDI on child (sequential across kids), │
+ │               │                  │     spawn md_to_docx.py on the now-coded child soap .md,  │
+ │               │                  │     spawn md_to_docx.py on cdi .md (if CDI succeeded),    │
  │               │                  │     hide audit .md in recording folder (Windows)          │
  │               │                  │   mark parent row completed (soap_note_path=NULL on multi)│
+ │               │                  │   (audit folder is never ICD-coded, CDI-reviewed, or      │
+ │               │                  │    docx-converted)                                        │
 ```
 
 Key properties:
@@ -141,7 +159,31 @@ Properties:
 - **Recording folder retains everything the skill wrote.** No files are moved out, only copied. The audit `.md` files stay in the recording folder (hidden on Windows) alongside the original MP3 and transcript.
 - **DB shape: 1 parent row + N child rows, all sharing `session_id` and `doctor_id`.** Parent has `soap_note_path=NULL`, `status='completed'`. Each child has all paths populated and progresses `converting → completed` via the existing docx success path. Children are inserted by `db/cases.js → createChildCase` (a separate helper from `createCase` since children skip the `transcribing` → `generating_note` stages).
 - **`processing_events` for the SOAP step stays attached to the parent's `case_id`.** Only one Claude invocation, only one usage event. Each child docx run gets its own `docx` event row with `case_id` pointing to the child.
+- **`processing_events` for the ICD step is per child.** Each child's ICD invocation gets its own `icd` event row with `case_id` pointing to the child — never the parent. The audit folder is not ICD-coded, so the parent gets zero `icd` events.
+- **`session.case_count` counts children, not recordings.** A 5-patient recording bumps `case_count` by 5 because `bumpSessionCounters` fires per docx-success and docx runs once per child. Parent (audit) rows never docx so they never bump the counter. Pre-existing develop behavior.
+- **`audio_duration` and `audio_size_bytes` live only on the parent row.** Children inherit nothing audio-specific — one audio file is shared across all patients in the recording. The child's `mp3_path` points to the per-child *copy* of that audio.
+- **Per-patient cost attribution for SOAP is intrinsically not separable.** One Claude invocation generates content for all patients, so SOAP cost lives on the audit row only. Per-child queries see ICD + docx costs only. Per-session totals (joining through `case_id` → `cases.session_id`) include the SOAP cost via the parent row.
 - **No cleanup or "resume" logic in v1.** If the app crashes between skill exit and split completion, the recording folder is durable; the user can re-process manually. A future "resume split" feature could re-read the manifest from `app.log`.
+
+### Per-case post-processing chain (ICD → CDI → docx)
+
+Both single-patient and multi-patient cases run the same per-case post-processing chain after the SOAP `.md` is in its final on-disk location:
+
+1. **`spawnIcdCoding(soapNoteMdPath, …)`** invokes the `add-icd-codes` skill (`claude -p "add ICD codes. Soap note: <rel-path>."`). The skill reads the SOAP `.md`, extracts diagnoses, looks them up via the claude.ai ICD-10 MCP connector, and appends an `## ICD-10-CM Codes` table at the end of the file. The function returns a Promise that resolves on completion (success OR failure — it never rejects). A `processing_events` row with `job_kind='icd'` is recorded with token usage, cost, duration, and status (`success` / `failed` / `rate_limited`). Status-popup label transitions through `coding_icd` while it runs. **One gate short-circuits the spawn before Claude runs** — the global `enableIcd` setting must be on, else the function logs `[icd] SKIPPED: disabled` and resolves with no spawn, no codes appended, and no status flip.
+
+2. **`spawnCdiReview({ caseDir, doctor, … })`** invokes the `cdi-review` skill (`claude -p "review cdi. Case: …. Specialty: …. Mode: …. Doctor: …. Standards: …"`). The skill validates the SOAP note against the standards packs in `<NOTES_DIR>/.claude/standards/`, produces `<case>_cdi.json` + `<case>_cdi.md` in the case folder, and emits a **JSON manifest** as the last line of its final assistant text (schema in SKILL.md Step 9; the contract is `schema_version:1` + `skill:'cdi-review'` + `status:'ok'|'skipped'|'failed'` + summary fields). main.js consumes the manifest via `parseSkillManifest()`. On `status:'ok'` the summary fields land in the `cases.cdi_*` columns (via `dbCases.updateCaseCdi`) and the per-flag payload lands in `cdi_flags` (via `dbCdiFlags.insertFlags` reading the full `_cdi.json` from disk). A `processing_events` row with `job_kind='cdi'` captures token usage. Status-popup label transitions through `running_cdi`. **Three gates short-circuit the spawn before Claude runs** — saves tokens + latency: (a) global `enableCdi` setting must be on; (b) `doctor.specialty` must be non-empty; (c) `<NOTES_DIR>/.claude/standards/specialties/<specialty>.md` must exist. When any gate fails, main.js writes the same stub `_cdi.{json,md}` the skill's Step 0b would have written and records `cdi_status='skipped'` — downstream shape is identical. **Filesystem fallback** is the load-bearing reliability layer: when the manifest line is missing, malformed, or `status:'failed'`, main.js reads the on-disk `<case>_cdi.json` (which the skill writes in Step 8, before Step 9's manifest emission) and synthesizes a manifest from its `summary` + `flags` + `code_validation` content. If the file exists and validates, the run is recovered to `cdi_status='completed'` as if the manifest had been emitted cleanly. Only when both the manifest AND the on-disk JSON are unusable does main.js mark `cdi_status='failed'`. **ICD-aware**: the skill notices any ICD codes already in the SOAP note (from step 1) and validates them, populating an optional `code_validation` block in the output JSON and setting `icd_validated:true` in the manifest.
+
+3. **`spawnDocxConversion(soapNoteMdPath, …)`** runs after the CDI promise resolves, generating the soap `.docx` from the now-coded `.md`. A second `spawnDocxConversion(cdiMdPath, …)` runs in parallel when CDI succeeded, generating the cdi `.docx`. The kind ('soap' / 'cdi' / 'transcript') is detected from the filename (`*_cdi.md` → 'cdi'); the close handler branches accordingly. Soap-docx success flips the case to `'completed'` (primary deliverable); cdi-docx success only populates `cdi_docx_path` and surfaces the Open CDI Review button in the popup.
+
+Properties:
+- **ICD + CDI are both best-effort.** Failure (MCP unreachable, model error, rate limit, network, skill bug) logs + emits a `service-warning` IPC + records the failure status on `processing_events`, but the chain always falls through to docx. A SOAP note without codes — or without a CDI review — is still useful.
+- **ICD + CDI are per case folder, never on audit folders.** Single-patient runs them once on the parent's `.md`. Multi-patient runs them once per child folder's `.md`. The recording (audit) folder retains the SOAP `.md` files the skill wrote — never appended to, never CDI-reviewed, never converted to docx.
+- **Sequential across children.** In multi-patient runs the per-child loop awaits each child's ICD then CDI before continuing to the next. This keeps MCP connector load + Anthropic rate-limit pressure + log-block readability sensible. Across-child parallelism is a future optimization.
+- **CDI sequentially after ICD.** The ICD-aware behavior in `cdi-review/SKILL.md` Step 3 requires codes to already be in the note when CDI runs. Running ICD and CDI in parallel would make the validation behavior non-deterministic — sometimes CDI sees codes, sometimes not. Sequential is correct.
+- **CDI on ⟹ ICD on (one-way invariant).** Because CDI depends on ICD codes being in the note, enabling `enableCdi` forces `enableIcd` on. Enforced in two places in `main.js`: `readSettings()` normalizes the merged object (covers legacy `settings.json` and the live `spawnIcdCoding` gate read), and the `save-settings` handler re-applies it before persisting. The renderer mirrors this in the UI — while CDI is checked, the ICD checkbox is shown checked + disabled (`syncIcdLock`). The reverse is not coupled: ICD can run with CDI off.
+- **Pre-chart re-runs ICD only.** When `edit-note` rewrites a SOAP `.md`, the diagnoses may have changed — `spawnIcdCoding` re-runs before the docx refresh. CDI is **not** re-run automatically (v1.1 follow-up); the old `_cdi.{json,md,docx}` artifacts remain in the case folder.
+- **All children visible in the status UI upfront.** `applyMultiPatientManifest` does a planning pass to compute every child's slug + folder + UI entry, calls `setRecordingPatients` once, then runs the processing pass. Each child starts in state `queued` (muted, static dot in the popup); the active one transitions to `coding_icd` → `running_cdi` → `converting` → `completed` (or `failed`) while siblings sit on `queued`. This decouples "show all patients" from "process them one at a time" — the per-child sequencing only affects work, not visibility.
+- **CDI UI fields ride alongside the main status.** Each entry / patient carries `cdiStatus`, `cdiFlagCount`, `cdiQualityScore`, `cdiClinicianApprovalRequired`, `cdiDocxPath` independent of the main status state machine. The status popup uses these to render the "⚠ Review" badge (when approval required) and the Open CDI Review button (when `cdiDocxPath` is set). `broadcastRecordingStatus` and `get-session-recordings` spread the entry, so these fields flow to the renderer without a separate IPC channel.
 
 ---
 
@@ -307,14 +349,19 @@ The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt use
 ├── .template_job.json                          live + last-finished template job
 ├── app.log                                     append-only diagnostic log
 ├── .claude/                                    synced from repo notes-claude/
-│   └── skills/...
+│   ├── skills/...
+│   └── standards/                              cdi-review consumes these at runtime
+├── .mcp.json                                   project-scope MCP config (ICD-10 connector)
 ├── Cases/
 │   └── <patient>_<YYYY-MM-DD>/
 │       ├── <patient>.mp3                       (or recording.mp3 if name skipped)
 │       ├── transcript.md                       diarised, by speaker
 │       ├── transcript.docx                     auto-converted
-│       ├── <case>_soap_note.md                 SOAP note from skill
-│       └── <case>_soap_note.docx               auto-converted
+│       ├── <case>_soap_note.md                 SOAP note from skill (with ## ICD-10-CM Codes table appended)
+│       ├── <case>_soap_note.docx               auto-converted (primary deliverable)
+│       ├── <case>_cdi.json                     CDI review — canonical structured output (Windows: hidden)
+│       ├── <case>_cdi.md                       CDI review — rendered from JSON (Windows: hidden)
+│       └── <case>_cdi.docx                     CDI review — auto-converted (visible)
 ├── templates/
 │   ├── <lastname>.md                           per-doctor template
 │   ├── _staging/                               transient — used during AI template creation
@@ -446,7 +493,8 @@ SQLite database at `<NOTES_DIR>/app.db`. WAL mode, `better-sqlite3` in main proc
 | `doctors` | `id` (preserves settings.json ids), `name`, `lastname`, `template_path`, `enable_cdi` | `db/doctors.js` — upserted by `add-doctor`, `update-doctor`, `update-doctor-template`, `spawnTemplateCreation` |
 | `sessions` | `id` (UUID), `session_folder`, `doctor_id`, `started_at`, `ended_at`, `case_count`, `failed_count` | `db/sessions.js` — inserted by `start-session`, updated by `stop-session`; counters bumped when cases reach terminal status |
 | `cases` | `id` (UUID), `case_dir` (UNIQUE), `status`, `revision`, file paths, audio metadata | `db/cases.js` — inserted in `stop-recording`/`process-audio-file`; updated at each pipeline stage |
-| `processing_events` | `job_kind` (`transcribe`/`soap`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
+| `processing_events` | `job_kind` (`transcribe`/`soap`/`icd`/`cdi`/`docx`/`prechart`/`template_create`/`template_update`), token columns, `cost_usd`, `duration_ms`, `backup_path` | `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in close handler |
+| `cdi_flags` | `case_id`, `cdi_run_id`, `flag_index`, `type`, `category`, `title`, `action` (imperative TL;DR), `body`, `guideline_reference`, `reimbursement_impact` (nullable), `current_code`, `suggested_codes` (JSON), `confidence`, `evidence_found` (JSON), `evidence_missing` (JSON) | `db/cdi_flags.js` — bulk-inserted by `spawnCdiReview` on a successful run (manifest `status:'ok'` OR filesystem-fallback recovery). Attached to the case row that owns the SOAP it flagged (never to multi-patient parent rows). |
 
 `cases.status` transitions: `transcribing → generating_note → converting → completed` (or `failed` at any stage). `cases.revision` starts at 1 and increments on each successful prechart. `processing_events.backup_path` is populated from the `BACKUP_OK: <path>` line printed by the edit-note skill.
 
@@ -464,6 +512,10 @@ Module layout: `db/init.js` (singleton + migrations + doctor migration), `db/doc
 | Claude usage limit | regex on claude stdout/stderr | `service-warning` IPC |
 | Recording process died unexpectedly | `record.py` exit handler with non-null `recordingProcess` | state recovers to `SESSION_ACTIVE` |
 | Template job orphaned by crash | startup check on `.template_job.json` | rewritten as `failed` |
-| ICD MCP not authenticated / 401 | regex on add-icd-codes stdout/stderr | `service-warning` IPC (best-effort — pipeline still falls through to DOCX) |
+| ICD MCP not authenticated / 401 | regex on add-icd-codes stdout/stderr | `service-warning` IPC (best-effort — pipeline still falls through to CDI and DOCX) |
+| CDI skill non-zero exit / no terminal line | `spawnCdiReview` close-handler | `service-warning` IPC ("CDI review failed"); `cdi_status='failed'`; pipeline still falls through to DOCX |
+| CDI rate-limited (Claude usage limit) | regex on cdi-review stdout/stderr | `service-warning` IPC ("Claude usage limit reached") |
+| CDI specialty unsupported / NULL | main.js gates before spawn; OR skill emits `status:'skipped'` manifest | `cdi_status='skipped'`; popup shows the skip reason; no warning IPC (not an error condition) |
+| CDI manifest line missing / malformed | `parseSkillManifest` returns null or wrong shape | main.js falls back to reading on-disk `<case>_cdi.json`; if usable, recovers the run to `cdi_status='completed'`; if not, `cdi_status='failed'` + `service-warning` IPC |
 
 Adding a new failure mode? Pick `setup-warning` (config issue, fix once) vs `service-warning` (runtime issue, may recover) and route accordingly.
