@@ -995,7 +995,7 @@ btnAdvancedToggle.addEventListener('click', async () => {
     const s = await api.getSettings()
     await loadDeviceList(s.selectedDeviceIndex)
     if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'claude-sonnet-4-6'
-    if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-7'
+    if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
   }
 })
 

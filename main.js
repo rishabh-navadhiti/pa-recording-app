@@ -161,7 +161,7 @@ const DEFAULT_SETTINGS = {
   // UI controls for these will come later; for now they are silent defaults that can be
   // overridden by editing settings.json directly.
   soapModel:      'claude-sonnet-4-6',
-  templateModel:  'claude-opus-4-7',
+  templateModel:  'claude-opus-4-8',
   templateEffort: 'max',
   // ICD-10 coding — global on/off. When false, spawnIcdCoding is skipped for
   // every case (no claude spawn, no codes appended). CDI depends on ICD running
@@ -1562,7 +1562,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   const lastname = extractLastname(doctorName) || 'doctor'
   const stagingRel = path.relative(NOTES_DIR, stagingDir).replace(/\\/g, '/')
   const settings = readSettings()
-  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const model  = settings.templateModel  || 'claude-opus-4-8'
   const effort = settings.templateEffort || 'max'
 
   const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
@@ -1691,7 +1691,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
 function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsFile, samplesDir) {
   const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
   const settings = readSettings()
-  const model  = settings.templateModel  || 'claude-opus-4-7'
+  const model  = settings.templateModel  || 'claude-opus-4-8'
   const effort = settings.templateEffort || 'max'
 
   // Flatten multi-line corrections and strip double quotes to avoid breaking shell quoting on Windows

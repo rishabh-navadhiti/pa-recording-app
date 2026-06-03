@@ -202,7 +202,7 @@ User           Renderer                Main                            Claude CL
  │               │                      │ broadcast {type:'create',      │
  │               │                      │            status: 'running'}  │
  │               │                      │ spawn claude -p ──────────────▶│ create-doctor-profile
- │               │                      │   --model opus-4-7             │   reads staging
+ │               │                      │   --model opus-4-8             │   reads staging
  │               │ ◀─template-job-status│   effort=max                   │   analyses N notes
  │ banner shown  │                      │                                │   writes <lastname>.md
  │               │                      │ on close + file exists:        │

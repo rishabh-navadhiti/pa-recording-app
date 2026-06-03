@@ -94,7 +94,7 @@ All three Claude background jobs (template create, template update, pre-chart ed
 **Template create (Templates tab):**
 1. User picks doctor name + sample-note files in the Templates tab.
 2. `start-template-creation` — files staged into `<NOTES_DIR>/Templates/_staging/<lastname>/`.
-3. `spawnTemplateCreation` → `claude -p "create a doctor profile for ... from source folder ..."` with `--model claude-opus-4-7`, `CLAUDE_CODE_EFFORT_LEVEL=max`.
+3. `spawnTemplateCreation` → `claude -p "create a doctor profile for ... from source folder ..."` with `--model claude-opus-4-8`, `CLAUDE_CODE_EFFORT_LEVEL=max`.
 4. Skill `create-doctor-profile` writes `<NOTES_DIR>/templates/<lastname>.md`.
 5. On success: doctor auto-registered in `settings.json`, staging folder deleted.
 
@@ -287,6 +287,6 @@ If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md i
 - Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile,edit-note,add-icd-codes,cdi-review}/SKILL.md`
 - Standards (consumed by cdi-review, future review engines): `notes-claude/standards/{icd10_fy2026,ahima_acdis_2026}.md` + `notes-claude/standards/specialties/<specialty>.md` (ortho only in v1)
 - CDI Co-Pilot review runs after ICD coding, before docx. Toggled globally in Settings (`enableCdi` + `cdiMode`); specialty is per-doctor in the Templates tab. Produces `<case>_cdi.{json,md,docx}` per case folder. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) → *Per-case post-processing chain*.
-- Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-7` (effort=max)
+- Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-8` (effort=max)
 - Python entry: `record.py`, `transcribe.py`, `md_to_docx.py`
 - Run: `npm start`
