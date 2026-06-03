@@ -2260,8 +2260,27 @@ const MCP_CONFIG = {
 
 function ensureMcpConfig(notesDir) {
   if (!notesDir) return
+  const target = path.join(notesDir, '.mcp.json')
+  const desired = JSON.stringify(MCP_CONFIG, null, 2) + '\n'
+
+  // Fast path: if the file already has the right content, do nothing. Avoids
+  // the Windows EPERM entirely on every launch after the first — the file is
+  // hidden (attrib +h via hideNotesDirInternals), and fs.writeFileSync with
+  // the default 'w' flag cannot open a hidden file for writing on Windows
+  // (throws EPERM). Most launches hit this branch since the config is static.
   try {
-    fs.writeFileSync(path.join(notesDir, '.mcp.json'), JSON.stringify(MCP_CONFIG, null, 2) + '\n')
+    if (fs.existsSync(target) && fs.readFileSync(target, 'utf8') === desired) return
+  } catch { /* fall through to the write path */ }
+
+  // A write is genuinely needed (first launch, or the config changed). On
+  // Windows, clear the hidden attribute first so the open() succeeds, write,
+  // then re-hide. attrib is synchronous via execSync so the ordering holds.
+  if (process.platform === 'win32' && fs.existsSync(target)) {
+    try { require('child_process').execSync(`attrib -h "${target}"`) } catch { /* best effort */ }
+  }
+  try {
+    fs.writeFileSync(target, desired)
+    hideFileFromUser(target)   // re-hide on Windows (no-op elsewhere)
   } catch (err) {
     log(`[mcp] failed to write .mcp.json: ${err.message}`)
   }
