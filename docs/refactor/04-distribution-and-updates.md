@@ -39,7 +39,7 @@ There is **no build artifact.** The "app" is a **git working tree** run via the 
 | **ffmpeg** | winget on PATH | bundled (`ffmpeg-static`) or one documented dep | removes a PATH dependency |
 | **Versioning** | git HEAD, static `0.1.0` | real semver + tagged releases; log the git SHA | telemetry, update decisions, "what are they running" |
 | **Channels** | `.staging-marker` file | electron-updater `channel` (`latest`/`beta`) + distinct beta `appId` | real beta soak; prod+beta install side-by-side (fixes the shared single-instance lock) |
-| **Signing** | none | Azure Trusted Signing (Win ~$10/mo); Apple Developer (mac $99/yr, required) | clean install/update UX; Gatekeeper |
+| **Signing** | none | Azure Trusted Signing (Win ~$10/mo); macOS signing skipped for production (A6 — only for external Mac users, currently none) | clean install/update UX; Gatekeeper |
 
 **Net:** install shrinks from a ~4 GB / 30-min toolchain to a signed `Setup.exe` double-click; updates become atomic and need neither git nor a compiler.
 
@@ -51,22 +51,30 @@ This is the hardest part, and it's a **billing/TOS** decision, not just packagin
 
 ### Python — recommendation: bundle it (low controversy)
 
-Ship a relocatable Python 3.12 + pinned wheels (incl. `pyaudiowpatch`/`numpy`) via electron-builder `extraResources`, using [python-build-standalone](https://github.com/astral-sh/python-build-standalone) (the modern relocatable distro `uv` uses). Repoint `PYTHON` (today's mutable global / `resolvePythonCommand`) to the bundled interpreter. This alone removes the 4 GB VC++ step, the PATH ambiguity, and the runtime `pip install --break-system-packages`. (PyInstaller-per-script is the alternative but clunkier for multiple entry points.) *Optional:* port the 3 non-audio workers (transcribe/extract/docx) to Node, shrinking the bundled Python to just `record.py` — lower long-term maintenance, but gate on golden-file tests because it moves the docx-formatting renderer (regression risk for existing notes). Decide in Phase 5.
+Ship a relocatable Python 3.12 + pinned wheels (incl. `pyaudiowpatch`/`numpy`) via electron-builder `extraResources`, using [python-build-standalone](https://github.com/astral-sh/python-build-standalone) (the modern relocatable distro `uv` uses). Repoint `PYTHON` (today's mutable global / `resolvePythonCommand`) to the bundled interpreter. This alone removes the 4 GB VC++ step, the PATH ambiguity, and the runtime `pip install --break-system-packages`. (PyInstaller-per-script is the alternative but clunkier for multiple entry points.)
+
+**Recommended split of the 4 Python workers** (rish confirmed the others only stayed in Python because `record.py` had to be — so porting is welcome where it helps):
+- **`record.py` (audio capture) — keep in Python forever.** WASAPI loopback (PyAudioWPatch) + BlackHole have no good Node equivalent. This is the one genuine Python dependency.
+- **`transcribe.py` — port to Node (clear win).** It's just an HTTPS POST to ElevenLabs + JSON→markdown formatting; `fetch` does it. Removes the `elevenlabs`/`requests` wheels and the `.env`-read-by-Python duplication, and folds transcription into the `node:test` harness.
+- **`extract_attachments.py` — port to Node (easy win).** `mammoth` (.docx) + `pdf-parse` (.pdf) cover it.
+- **`md_to_docx.py` — keep in Python until golden-file tests exist, then port (riskiest).** It's load-bearing formatting every existing note depends on; a port could subtly change output, so only move it behind golden-file assertions (markdown → docx structure).
+
+Net target: shrink the bundled Python to **just `record.py` (+ maybe `md_to_docx.py`)** with a much smaller wheel set, and pull transcribe + extract into the testable Node core. Decide finally in Phase 5.
 
 ### The `claude` CLI — the provider seam absorbs the uncertainty
 
 The app shells `claude -p`, which runs against whatever the local CLI is logged into — today typically a **Claude Pro/Max subscription via OAuth**. The honest landscape (from the agents' research):
 
 - **The Claude Agent SDK still wraps the Claude Code CLI** under the hood and *can* run filesystem skills (`settingSources: ['project']`) — so it doesn't remove the binary, but it replaces the brittle `spawn("claude -p ...")` string + stdout-JSON scraping with a typed `query()` returning structured messages/usage/cost ([platform.claude.com agent-sdk/skills](https://platform.claude.com/docs/en/agent-sdk/skills)).
-- **Auth catch:** as of **Feb 19 2026**, Anthropic's compliance docs state the **Agent SDK requires API-key auth**; using Pro/Max OAuth tokens with the Agent SDK is not permitted. And from **June 15 2026**, subscription `claude -p`/SDK usage draws from a **separate Agent-SDK credit pool**. So moving to the SDK effectively means moving to a pay-per-token `ANTHROPIC_API_KEY` model. *(Verify these dates/policies at implementation time — they're the kind of thing that shifts.)*
-- This is *why* the vendor decision has real consequences and is worth deferring until you have token data.
+- **Auth catch (confirmed by rish via Anthropic emails, 2026-06):** the **Agent SDK requires API-key auth** (Feb 19 2026) — Pro/Max OAuth tokens are not permitted with it; and from **June 15 2026**, subscription `claude -p`/SDK usage draws from a **separate Agent-SDK credit pool**. So moving to the SDK effectively means moving to a pay-per-token `ANTHROPIC_API_KEY` model.
+- This is *why* the vendor decision has real consequences and is worth deferring until you have token data. **Important framing: the refactor does NOT replace `claude -p` with the SDK.** Phase 2's `claudeCliProvider` keeps running the CLI exactly as today (same subscription, same `claude login`). The SDK (or any other provider) is only ever a *future, optional* second implementation behind the seam — written if/when you decide, not part of this work.
 
 **Therefore:**
 
 1. **Now (keep production alive):** bundle the `claude` CLI binary inside the app, keep subscription auth, and add a first-class **in-app auth health-check + guided login** (detect "not logged in," surface it, health-check on startup). This is the smallest change that makes packaging viable and kills the silent-death failure mode — independent of the eventual provider.
 2. **Build the provider seam** (`llm/provider.js`, Phase 2) so note-gen/ICD/CDI/future engines call `ctx.llm.runSkill(...)`, never the CLI directly.
 3. **Later (when you've decided, with data):** implement the chosen provider as one new file behind the seam:
-   - **Anthropic org API key** → `agentSdkProvider.js` (or raw Messages API), key held by a **thin backend broker** so it's never on the client. Billing moves from "each scribe's subscription" to "org pays per token" — centralized and predictable, and the only TOS-clean way to run note-gen as embedded product code. *(A thin backend is acceptable per your answer — it also becomes the home for telemetry and the future feedback-loop.)*
+   - **Anthropic org API key** → `agentSdkProvider.js` (or raw Messages API), key held by a **thin backend broker** so it's never on the client. Billing moves from "each scribe's subscription" to "org pays per token" — centralized and predictable, and the only TOS-clean way to run note-gen as embedded product code. *(A thin backend is acceptable per your answer — and the same backend is the natural home for the future **ElevenLabs key broker** (rish's plan: stop pasting the key on each machine, have the backend hold it and proxy transcription requests), plus telemetry and the future feedback-loop. One backend brokers both the LLM key and the ElevenLabs key.)*
    - **A different vendor** → `<vendor>Provider.js` implementing the same interface.
 
    Either way, **engines, pipeline, status, and DB are untouched** — flip one line in `appContext.js`. That decoupling is the entire point of building the seam before deciding.
@@ -80,9 +88,9 @@ The app shells `claude -p`, which runs against whatever the local CLI is logged 
 Scale = a handful of internal scribes, growing. Pragmatic stance:
 
 - **Windows — recommended: Azure Trusted Signing (~$9.99/mo, Basic).** GA since ~April 2026, no hardware token, CI-friendly; restricted to established US/Canada/EU/UK businesses, not EV ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options)). EV no longer skips SmartScreen reputation-building, so the ~$400/yr EV premium isn't justified. Signing is **strongly recommended, not strictly required** — unsigned runs but throws SmartScreen warnings (bad for non-technical medical users and for an `irm | iex` install). Do it when cutting the first real installer.
-- **macOS — required.** Apple Developer Program **$99/yr**; you must **code-sign + notarize + staple** or Gatekeeper blocks the app on every Mac since Catalina. electron-builder + `@electron/notarize` automate it in CI. Non-negotiable the moment mac ships.
+- **macOS — only needed to *distribute a Mac installer to other people's Macs*.** Apple's $99/yr Developer Program + notarization exists so Gatekeeper will let a downloaded `.app` open on a stranger's Mac. **For our actual situation it is likely unnecessary:** production scribes are on Windows; Mac is used by devs (who run from source — no signing needed) and a few internal demo machines (stakeholders / Fahd's front-end folks who demo or sell). A demo machine can open an unsigned `.app` via right-click → Open (a one-time Gatekeeper bypass), or a dev can self-sign locally for free. **So: do NOT pay for Apple signing for production** — defer it unless and until there's a real external Mac *user* base that can't be told to right-click→Open. If that day comes, the $99/yr + `@electron/notarize` in CI is the path; until then, "runs from source for devs + manual-open for demos" is sufficient and free.
 
-**Verdict:** ~$10/mo (Azure) + $99/yr (Apple) covers both. Windows signing at first installer; mac signing when mac ships.
+**Verdict:** Windows signing (~$10/mo Azure) at the first real installer. **macOS signing: skip for now** — only revisit if you distribute a Mac build to external non-technical Mac users (currently: nobody).
 
 ---
 

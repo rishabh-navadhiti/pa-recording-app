@@ -77,6 +77,16 @@ This is why the seams matter more than the tests themselves: a function that tak
 - **Seeded DB:** a `user_version=4` snapshot (the state real users are in *today*) so the migration-hardening change and every future migration are replay-tested against the actual production starting point — this is what protects the live scribes' `app.db`.
 - **Golden case folders:** a small set of real-shaped case dirs (transcript + soap.md + a malformed/valid `_cdi.json`) for `interpret`/fallback/multiPatient tests and the byte-identical pipeline diffs.
 - **Golden Python inputs:** ElevenLabs JSON → expected transcript; markdown (with tables/`<u>`/ALL-CAPS) → expected docx structure; attachment sets → combined output. These pin the formatting contract that all current + future engines emit into.
+- **Fake-provider fixtures (per job):** curated real-derived `{text, manifest, usage, costUsd}` responses for each job — note-gen, ICD, CDI, template, prechart — so engine/pipeline tests run through `fakeProvider` with **zero tokens, zero network, deterministic output**. (rish will help curate these from real example runs.) The fixtures live in `tests/fixtures/llm/<job>/`.
+
+### The fake provider + opt-in real runs
+
+The provider seam (`ctx.llm`, see [02](02-target-architecture.md)) makes the LLM swappable in tests, not just in production:
+- **Default in tests:** inject `fakeProvider`, which returns the per-job fixtures above. An engine test asserts on `interpret`/`persist`/`render` against a known response — no Claude, no cost, instant, repeatable. This is how the bulk of engine + pipeline logic gets verified.
+- **Opt-in real runs:** a flag/env (e.g. `LLM_PROVIDER=cli` or a `--real` test flag) swaps in the real `claudeCliProvider`, so a dev can deliberately say "actually run CDI on this fixture case for real" — same test, same seam, real inference. Gate it behind an explicit opt-in so a normal `npm test` never spends tokens or needs `claude login`.
+- This is the payoff of the seam: the fake is just another `provider.js` implementation; nothing in the engines knows or cares which one answered.
+
+Pairs with **Playwright-for-Electron** for the renderer/IPC smoke layer (Claude also has a Playwright MCP that can drive the running app). Dev-on-Mac / test-on-Windows is fine — the code is platform-clean except `record.py` + file-hiding (the platform seam), so the same tests run on both; a Claude session can be spun up on the Windows box for on-device verification when needed.
 
 ---
 
