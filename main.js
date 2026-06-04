@@ -25,7 +25,7 @@ try {
 } catch (e) {
   _dbStartupError = e
 }
-const { parseSkillManifest } = require('./parseSkillManifest')
+const { parseSkillManifest } = require('./src/llm/skill-io/manifest')
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -6,7 +6,7 @@
 
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const { parseSkillManifest } = require('../../parseSkillManifest')
+const { parseSkillManifest, validateManifest } = require('../../src/llm/skill-io/manifest')
 const { SINGLE_OK, MULTI_OK, CDI_OK, CDI_SKIPPED } = require('../fixtures/manifests/index')
 
 // ---- Layer 1: direct parse of the last line --------------------------------
@@ -123,4 +123,40 @@ test('returns null when CDI manifest line is missing (rate-limit truncated outpu
   // it must simply return null so the caller knows to attempt the fallback.
   const rateLimitOutput = 'Claude usage limit reached. Please try again after 3pm.\n\nI was generating your CDI review but ran out of time.'
   assert.strictEqual(parseSkillManifest(rateLimitOutput), null)
+})
+
+// ---- validateManifest ------------------------------------------------------
+
+test('validateManifest returns valid for an object matching the schema', () => {
+  const obj = { status: 'ok', flag_count: 2, quality_score: 72 }
+  const schema = { status: 'string', flag_count: 'number', quality_score: 'number' }
+  const result = validateManifest(obj, schema)
+  assert.strictEqual(result.valid, true)
+  assert.strictEqual(result.errors.length, 0)
+})
+
+test('validateManifest reports missing required fields', () => {
+  const obj = { status: 'ok' }
+  const schema = { status: 'string', flag_count: 'number' }
+  const result = validateManifest(obj, schema)
+  assert.strictEqual(result.valid, false)
+  assert.ok(result.errors.some(e => e.includes('flag_count')), 'should report missing flag_count')
+})
+
+test('validateManifest reports type mismatches', () => {
+  const obj = { status: 42 }
+  const schema = { status: 'string' }
+  const result = validateManifest(obj, schema)
+  assert.strictEqual(result.valid, false)
+  assert.ok(result.errors.some(e => e.includes('status')))
+})
+
+test('validateManifest with no schema accepts anything', () => {
+  const result = validateManifest({ anything: true }, null)
+  assert.strictEqual(result.valid, true)
+})
+
+test('validateManifest returns invalid for null input', () => {
+  const result = validateManifest(null, { status: 'string' })
+  assert.strictEqual(result.valid, false)
 })
