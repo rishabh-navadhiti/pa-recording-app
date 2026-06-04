@@ -34,7 +34,7 @@ The codebase already has the proof: **`parseSkillManifest.js`** is pure, total (
 | Seam (from [02](02-target-architecture.md)) | Unlocks (unit, no Electron) |
 |---|---|
 | **`db` getDb injectable** (`initDbWith(:memory:)`) | every `db/*` accessor against in-memory SQLite in **milliseconds**; migration 1→N replay on a seeded fixture; FK/cascade behavior |
-| **`skills/contracts/`** (prompts/markers/manifest) | prompt-builder ↔ skill-parser **round-trip**; marker-collision (corrections text containing `Samples:`); the 6 rate-limit regexes as one table; relative-path resolution; manifest parse (valid/fenced/prose-then-manifest/malformed→null) + per-engine `validateManifest` |
+| **`llm/skill-io/`** (prompts/markers/manifest) | prompt-builder ↔ skill-parser **round-trip**; marker-collision (corrections text containing `Samples:`); the 6 rate-limit regexes as one table; relative-path resolution; manifest parse (valid/fenced/prose-then-manifest/malformed→null) + per-engine `validateManifest` + the **on-disk `_cdi.json` fallback** when the result text is unparseable (e.g. a 429 ended the run) |
 | **`childRunner` injectable** | every provider/engine `interpret` against **canned stdout/stderr** — rate-limit/MCP/duration parsing without a real subprocess |
 | **`llm/provider` interface** | engines tested against a **fake provider** returning fixture `{text, manifest, usage}` — no real Claude, no tokens |
 | **engine descriptors** (`gates`/`buildInput`/`interpret`/`render` pure) | each engine's gates (CDI's 3, ICD's enable flag), input building, result interpretation (incl. **CDI filesystem-fallback**), and status rendering — with a fake `ctx` |

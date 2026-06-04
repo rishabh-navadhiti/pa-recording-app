@@ -12,7 +12,7 @@
 2. **Kill the globals with an injected `AppContext`.** The ~18 mutable globals become a handful of small stores owned by one context object threaded through the app. Functions take `ctx`; they stop reaching for module-scope state. *This is the change that makes everything testable.*
 3. **Make "add an engine" a local change.** A new review/generation engine = one descriptor + one registry line + one migration + one skill folder. The runner, provider, status, persistence, and chaining are shared infrastructure it plugs into.
 4. **The LLM is a swappable provider behind one interface.** Today it's the `claude` CLI; tomorrow it may be the Agent SDK on an org API key or a different vendor entirely. Engines call `ctx.llm.runSkill(...)`; they never know which provider answers.
-5. **Contracts are data in one place, not literals scattered across 19 sites.** Prompt builders, marker regexes, and manifest schemas live in `src/skills/contracts/` and are round-trip tested.
+5. **Contracts are data in one place, not literals scattered across 19 sites.** Prompt builders, marker regexes, and manifest schemas live in `src/llm/skill-io/` and are round-trip tested. (This is Node-side glue for *talking to* the prompt-skills — distinct from `notes-claude/skills/`, which holds the SKILL.md prompts the LLM executes. Two different things; don't confuse the dirs.)
 6. **Files on disk stay canonical; the DB stays an index.** Unchanged. The notes folder must survive a DB delete (it does today).
 7. **Pure where possible; Electron/fs/child_process at the edges.** Push decision logic into pure functions (gates, prompt-building, manifest parsing, planning, status shaping) that an AI can unit-test in milliseconds; keep the unavoidable I/O in thin shells.
 8. **Behavior-preserving by default.** Larger chunks are fine (AI does the work), but each landed change keeps the production pipeline byte-identical unless a fix is explicitly intended. Verify on a real case before promoting.
@@ -55,15 +55,13 @@ src/
     claudeCliProvider.js       current impl: arg-array spawn of `claude -p` (no shell:true) + stream-json parse
     childRunner.js             injectable spawn wrapper (testable against canned stdout/stderr)
     usage.js                   extractUsage / stream logging
-    # future: agentSdkProvider.js, <vendor>Provider.js — engines unchanged when these arrive
-
-  skills/                      ← the Node side of the skills + their contracts
-    contracts/
+    skill-io/                  Node-side glue for talking to the prompt-skills (NOT the prompts — those stay in notes-claude/skills/)
       prompts.js               buildPrompt(skillId, input) → safe args (proper encoding, no shell escaping)
       markers.js               named regexes: rateLimited, mcpAuth, duration, errorLine, backupOk (single source)
       manifest.js              parseSkillManifest (moved here) + validateManifest(obj, schema)
+    # future: agentSdkProvider.js, <vendor>Provider.js — engines unchanged when these arrive
 
-  engines/                     ← THE CENTERPIECE (the PA roadmap drops in here)
+  engines/                     ← de-duplicates the 3 current spawn functions; future engines drop in here too
     registry.js                ordered list of engine descriptors the chain iterates
     engineRunner.js            runEngine(engine, ctx): gates → buildInput → ctx.llm.runSkill → interpret → persist → reportStage
     soap.js  icd.js  cdi.js    the 3 current engines as descriptors (~50–80 lines each, mostly declarative)
@@ -182,18 +180,20 @@ You're migrating off the `claude` CLI *soon* but haven't chosen the target (Anth
 //  - prompts.buildPrompt(skillId, input) → arg array (no shell:true, no string-escaping bug)
 //  - childRunner.run('claude', ['-p', prompt, '--output-format','stream-json', ...], { cwd, signal })
 //  - parse stream-json result event → usage/cost (llm/usage.js)
-//  - skills/contracts/manifest.js parses + validates the manifest
+//  - llm/skill-io/manifest.js parses + validates the manifest
 ```
 
 When you decide the target provider, you write one new file (`agentSdkProvider.js` or `<vendor>Provider.js`) implementing the same interface and flip the line in `appContext.js`. **Every engine, the pipeline, the status UI, and the DB writes are unaffected.** This is exactly why the seam is worth building before the provider decision — it decouples "restructure the code" (now) from "choose the vendor" (after your token-data + testing).
 
-> Why this is better than committing to C1 or C2: the agents' research surfaced that the Agent SDK requires API-key auth (Pro/Max OAuth not permitted as of Feb 2026) and that subscription `claude -p` usage moves to a separate credit pool from June 2026 — i.e. the provider choice has billing/TOS consequences you're still evaluating. The seam lets you defer that without blocking the refactor. (More in [04](04-distribution-and-updates.md).)
+> Why build the seam instead of just picking a provider now: the provider choice has billing/TOS consequences you're still evaluating (analysis surfaced that the Anthropic Agent SDK requires API-key auth — subscription OAuth isn't permitted for it — and that subscription `claude -p` usage moves to a separate credit pool; full detail and the options are in [04 §"The claude-CLI + Python dependency problem"](04-distribution-and-updates.md)). The seam lets you keep the working `claude` CLI today and defer the vendor decision until you have token-volume data, without blocking the refactor. Note: this is **independent of model selection** — the user still picks which model (`soapModel`, `templateModel`, etc.) in Settings exactly as today; the provider is *who runs the inference*, the model is *which model string is passed to it*. Same provider with multiple models is just the provider's `runSkill({model})` taking the model as a parameter.
 
 ---
 
-## The engine framework (the centerpiece)
+## The engine framework
 
-Today `spawnIcdCoding` / `spawnCdiReview` / `spawnSoapGeneration` are three copies of one shape. Make that shape explicit. An **engine** is a declarative descriptor; a shared **runner** executes it.
+> **Why this exists, and what it is NOT.** The *present-day* justification is plain de-duplication: `spawnIcdCoding`, `spawnCdiReview`, and `spawnSoapGeneration` are already three near-identical copies of one sequence (you can watch the identical `[soap]`/`[icd]`/`[cdi]` log shape in any run — build prompt → run `claude -p` → log usage/cost → parse result → write DB → update status → next step), with the rate-limit regex and status-update branch copy-pasted into each. Extracting that shared sequence once makes the **three engines that exist today** shorter and removes the duplication — that alone pays for it. The fact that future "review/generate" features (the PA roadmap) happen to share the same shape is a **bonus, not the driver** — **no core architecture decision here depends on the roadmap materializing.** If extracting the runner does *not* visibly shrink the 3 current engines and collapse the duplicated regex, that's the signal it's premature abstraction — don't build it. Do not add descriptor fields that no current engine needs.
+
+Make that shared sequence explicit. An **engine** is a declarative descriptor (just the per-engine differences); a shared **runner** executes the common steps.
 
 ```js
 // engines/cdi.js — a descriptor (≈ all engines look like this)
@@ -216,7 +216,11 @@ module.exports = {
                           mode: ctx.config.cdiMode, doctor: ctx.doctor.name,
                           standards: ctx.paths.standardsDir }),
 
-  // PURE-ish: provider result → normalized engine result (+ on-disk fallback for CDI)
+  // PURE-ish: provider result → normalized engine result.
+  // MUST-PRESERVE for CDI: when the manifest line is missing/unparseable (e.g. the
+  // claude run ended on a 429 "session limit" message instead of the manifest — this
+  // happens in production), fall back to reading the on-disk <case>_cdi.json the skill
+  // already wrote. This filesystem fallback is load-bearing reliability, not optional.
   interpret: (runResult, ctx) => interpretCdi(runResult, ctx.caseDir, ctx.fs),
 
   // I/O: DB writes (cdi_* columns + cdi_flags rows) via injected db
@@ -275,11 +279,13 @@ module.exports = [ require('./soap'), require('./icd'), require('./cdi') ]
 
 ---
 
-## Skills + contracts
+## Skill-I/O contracts (the Node side of the skills)
 
-- **Move `parseSkillManifest.js` → `src/skills/contracts/manifest.js`** and add `validateManifest(obj, schemaForEngine)` beside it. The parser stays the pure, total function it is; validation is per-engine.
-- **`src/skills/contracts/prompts.js`** — one `buildPrompt(skillId, input)` per skill returning a safe arg array; the *only* place a prompt string is assembled. Kills the injection bug and the scattered escaping.
-- **`src/skills/contracts/markers.js`** — named regexes (`rateLimited`, `mcpAuth`, `duration`, `errorLine`, `backupOk`), single source for the 6 duplicated rate-limit copies.
+> Naming: `src/llm/skill-io/` is the **Node code that builds prompts for and parses output from** the skills. `notes-claude/skills/` is the **SKILL.md prompts the LLM executes**. They are two different things — the dir name `skill-io` is chosen to keep them distinct.
+
+- **Move `parseSkillManifest.js` → `src/llm/skill-io/manifest.js`** and add `validateManifest(obj, schemaForEngine)` beside it. The parser stays the pure, total function it is; validation is per-engine. (Today only `generate-note` and `cdi-review` emit a JSON manifest — `add-icd-codes` emits `ICD_OK:` text, the template/edit skills emit other markers; standardizing all of them on the manifest is B6.)
+- **`src/llm/skill-io/prompts.js`** — one `buildPrompt(skillId, input)` per skill returning a safe arg array; the *only* place a prompt string is assembled. Kills the injection bug and the scattered escaping.
+- **`src/llm/skill-io/markers.js`** — named regexes (`rateLimited`, `mcpAuth`, `duration`, `errorLine`, `backupOk`), single source for the 6 duplicated rate-limit copies.
 - **Standardize every engine/job on the JSON-manifest envelope** (retire `ICD_OK:`, the free-prose `edit-note` output, and `Updated:`). One return protocol → `parseSkillManifest` works for all. *Migrate the skills in lockstep with the spawn side* (they ship together; no in-flight skew because it's one bundle).
 - **Inside `notes-claude/`:** move the embedded CDI renderer to `python/render_cdi.py`; strip repo-internal references (`main.js`, table names, `app.log`, "(v1.1)", the hardcoded dev path); replace the recursive "go read the other skill and run its steps" coupling with a shared referenced spec; delete the dead permission-setup heredocs and `draft/`; move per-doctor surnames out of `orthopedics.md`.
 - **Standards registry:** a small `standards/manifest.json` mapping engine → files, so engine adapters load standards by lookup, not hardcoded path lists — keeps "drop a specialty file" zero-code.
@@ -302,7 +308,8 @@ module.exports = [ require('./soap'), require('./icd'), require('./cdi') ]
 - **`components/fileListField.js`** replaces the 4 copy-pasted file-list widgets; **`components/timer.js`** is a pure object; **`ipc/client.js`** is the one typed wrapper over `window.api` (feature-flag guards live here, not scattered).
 - **One visibility mechanism** (the `.hidden` class via a `setVisible(el,bool)` helper) — ban inline `.style.display`.
 - **Engine-driven UI:** the Settings CDI block and per-doctor specialty dropdown are today bespoke one-offs. Drive future per-engine toggles from an **engine registry → UI manifest** (engine id → label, settings schema, per-doctor config) so adding Workers-Comp/PA/E-M to Settings is a config entry, not new imperative DOM. The status panel's per-engine result list (`reviews: [{engine, label, badges, stats, openPath}]`) replaces the flat `cdi*` fields and generalizes to N engines.
-- No framework. A hand-rolled `{mount,update,unmount}` pattern over ~13 screens, jsdom-tested. (Revisit a 5–15 KB lib like Preact/Lit only if the hand-rolled pattern strains — note it, don't pre-adopt.)
+- **No framework for this refactor** — a hand-rolled `{mount,update,unmount}` pattern over the ~13 current screens, jsdom-tested. The screens are simple; stacking a framework migration on top of the restructure is two big changes colliding.
+- **But keep the seam framework-shaped, and adopt a mainstream framework when the unified workflow screen lands.** A future *prescribed* single screen (note editing + all CDI flags/action items + status + telemetry/edit-time tracking, for compliance) is a stateful, data-dense UI where hand-rolled reactive DOM updates become the next monolith. When that arrives, build **that screen** in a **mainstream** framework — **React** (the industry default; by far the best-represented in AI-coding training data, so an agent builds screens in it most reliably) or **Vue** (most readable cold for a non-framework reader) — incrementally, mounted via the same `{mount,update,unmount}` contract so it coexists with the vanilla screens. **Avoid niche libraries** (Preact, Lit, etc.): their only real advantage is tiny bundle size, which is irrelevant in a desktop Electron app, and they have weaker tooling/AI/community support than React or Vue. The build step a framework wants will already exist by then (it arrives with packaging/TypeScript, A2). Not in scope now — just don't architect it *out*. See [07 B15](07-open-questions-and-decisions.md).
 
 ---
 
@@ -357,7 +364,7 @@ To prove the structure: shipping a future engine becomes these local steps, touc
 2. **Descriptor:** `src/engines/workersComp.js` — `id:'wc'`, `skillId:'workers-comp'`, `jobKind:'wc'`, `gates: (ctx) => ctx.encounter?.visit_type?.startsWith('wc_') ? [] : [{skip:true, reason:'not a WC visit'}]`, `buildInput` (includes payer, DOI, employer from `ctx.encounter`), `interpret`, `persist`, `render`. *(Note: `visit_type` must be captured from the SOAP manifest into `ctx.encounter` / a `cases` column — see Phase 2/3 in [03](03-migration-plan.md) and [07 B13](07-open-questions-and-decisions.md). Also note WC is a generation engine requiring a per-encounter form for payer/DOI — see §engine-framework above.)*
 3. **Registry:** add one line to `src/engines/registry.js`.
 4. **DB:** one migration (`00N_add_wc.sql`) + `db/wc.js` (or a row in the generic findings table — see [07 B3](07-open-questions-and-decisions.md); lean generic once the 2nd engine lands).
-5. **Contract:** add the WC manifest schema to `skills/contracts/manifest.js`.
+5. **Contract:** add the WC manifest schema to `src/llm/skill-io/manifest.js`.
 6. **UI:** appears automatically in Settings + the status panel via the engine→UI manifest; no imperative DOM.
 7. **Tests:** unit-test `gates`/`buildInput`/`interpret`/`persist` with a fake `ctx` and fixture manifests — no Electron, no real Claude.
 

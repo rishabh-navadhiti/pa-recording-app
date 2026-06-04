@@ -60,7 +60,7 @@ All cross-process coordination is shell-string prompts + stdout line-scraping, s
 | 18 | claude (all jobs) → main | rate-limit regex | **same regex literally duplicated 6×** (~580, ~1016, ~1201, ~1590, ~1729, ~2003; exact lines drift; count is verified) |
 | 19 | claude (icd) → main | MCP-auth regex | matches prose in model output — false-positives on a note mentioning "401" |
 
-**Consequence:** these are the product's actual integration surface, yet they live as scattered literals. A field-order change, a duplicated-regex edit-one-miss-five, or a patient name containing a shell metacharacter all break silently. **Fix: a `src/skills/contracts/` module** — `prompts.js` (typed builders, proper arg-encoding), `markers.js` (named regexes, single source), `manifest.js` (parser + per-engine validator) — with round-trip fixture tests. This is the highest test-ROI, lowest-prod-risk extraction.
+**Consequence:** these are the product's actual integration surface, yet they live as scattered literals. A field-order change, a duplicated-regex edit-one-miss-five, or a patient name containing a shell metacharacter all break silently. **Fix: a `src/llm/skill-io/` module** — `prompts.js` (typed builders, proper arg-encoding), `markers.js` (named regexes, single source), `manifest.js` (parser + per-engine validator) — with round-trip fixture tests. This is the highest test-ROI, lowest-prod-risk extraction.
 
 ---
 
