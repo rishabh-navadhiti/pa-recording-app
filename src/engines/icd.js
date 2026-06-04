@@ -29,19 +29,35 @@ const icd = {
   },
 
   /**
-   * Classify the ICD skill output.
-   * Note: ICD_OK: is currently not explicitly parsed — the skill appends codes
-   * to the SOAP .md in place; success is inferred from exit code 0 + no error
-   * markers. ICD_SKIPPED: signals no diagnoses found (still a success, no codes
-   * added). B6 migration (Phase 2 Group 9) will replace this with a manifest parse.
+   * Parse the JSON manifest emitted by the add-icd-codes skill (B6 migration).
+   * Falls back to ICD_SKIPPED text detection for backward compat with older
+   * skill versions still in flight during a rolling deploy.
    */
   interpret(runResult) {
     const combined = (runResult.text || '') + '\n' + (runResult.errText || '')
+    const rateLimited = CLAUDE_RATE_LIMITED.test(combined)
+    const mcpError    = MCP_AUTH_ERROR.test(combined)
+
+    // Try JSON manifest first (new protocol).
+    const { parseSkillManifest } = require('../llm/skill-io/manifest')
+    const manifest = parseSkillManifest(runResult.text)
+    if (manifest && manifest.skill === 'add-icd-codes') {
+      return {
+        ok:          manifest.status === 'ok',
+        skipped:     manifest.status === 'skipped',
+        codesAdded:  manifest.codes_added ?? 0,
+        rateLimited,
+        mcpError,
+      }
+    }
+
+    // Backward compat: older skill emits ICD_SKIPPED text marker.
     return {
       ok:          runResult.code === 0,
       skipped:     /ICD_SKIPPED/i.test(combined),
-      rateLimited: CLAUDE_RATE_LIMITED.test(combined),
-      mcpError:    MCP_AUTH_ERROR.test(combined),
+      codesAdded:  0,
+      rateLimited,
+      mcpError,
     }
   },
 

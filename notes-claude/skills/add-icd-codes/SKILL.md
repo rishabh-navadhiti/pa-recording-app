@@ -63,7 +63,7 @@ add ICD codes. Soap note: <abs-path-to-soap-note.md>.
 
 Extract `SOAP_NOTE_PATH` — the substring between `Soap note:` and the trailing period. The path may contain spaces; treat the final period followed by end-of-input as the terminator.
 
-If `SOAP_NOTE_PATH` is empty or missing, print `ICD_ERROR: no soap note path provided` and exit.
+If `SOAP_NOTE_PATH` is empty or missing, respond with `{"schema_version":1,"skill":"add-icd-codes","status":"failed","error":"no soap note path provided"}` and stop.
 
 ---
 
@@ -73,7 +73,7 @@ If `SOAP_NOTE_PATH` is empty or missing, print `ICD_ERROR: no soap note path pro
 SOAP_NOTE_PATH="<SOAP_NOTE_PATH from Step 1>"
 
 if [ ! -f "${SOAP_NOTE_PATH}" ]; then
-  echo "ICD_ERROR: soap note not found at ${SOAP_NOTE_PATH}"
+  echo '{"schema_version":1,"skill":"add-icd-codes","status":"failed","error":"soap note not found"}'
   exit 0
 fi
 
@@ -190,24 +190,19 @@ Always end with a single trailing newline.
 
 ## Step 7: Confirm Completion
 
-Print a concise summary to stdout:
+End your **final assistant response** with a single line of valid JSON as the very last line:
 
-```
-ICD_OK: <N> codes added to <SOAP_NOTE_PATH>
-
-Codes:
-  1. <code>  <description>  ← <diagnosis>
-  2. <code>  <description>  ← <diagnosis>
-  ...
+```json
+{"schema_version":1,"skill":"add-icd-codes","status":"ok","codes_added":<N>,"soap_note_path":"<SOAP_NOTE_PATH>"}
 ```
 
-If no diagnoses were extractable (genuinely none — short visit, no diagnostic content):
+If no diagnoses were extractable (genuinely none — short visit, no diagnostic content), emit:
 
-```
-ICD_SKIPPED: no diagnoses found in <SOAP_NOTE_PATH>
+```json
+{"schema_version":1,"skill":"add-icd-codes","status":"skipped","codes_added":0,"soap_note_path":"<SOAP_NOTE_PATH>"}
 ```
 
-Either way, exit 0. The downstream `.docx` conversion runs regardless.
+You may include a human-readable summary **before** the JSON line (e.g. "Added 3 ICD codes to the note."), but the JSON must be the very last line of your response. Either way, exit 0. The downstream `.docx` conversion runs regardless.
 
 If a non-billable code was used because no billable child fit:
 

@@ -837,8 +837,14 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
           try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         }
 
-        // Extract the Step 7 changes report — everything from "Updated:" to end of output
+        // Extract changes report from JSON manifest (B6) or fall back to "Updated:" text marker.
+        const updateManifest = parseSkillManifest(resultText)
         const changesReport = (() => {
+          if (updateManifest && updateManifest.skill === 'update-doctor-profile') {
+            // Manifest is last line — everything before it is the human-readable report.
+            const lastNewline = resultText.lastIndexOf('\n')
+            return lastNewline > 0 ? resultText.slice(0, lastNewline).trim() : null
+          }
           const idx = resultText.indexOf('Updated:')
           return idx !== -1 ? resultText.slice(idx).trim() : null
         })()
@@ -1105,11 +1111,14 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       }
 
       if (code === 0) {
-        // Parse BACKUP_OK: <abs-path> from skill output (Step 9 of edit-note skill)
+        // Parse backup_path from the JSON manifest (B6 migration).
+        // Falls back to BACKUP_OK: text marker (older skill) then to filesystem glob.
         let backupPath = null
-        const backupMatch = resultText.match(/BACKUP_OK:\s*(.+)/)
-        if (backupMatch) {
-          backupPath = backupMatch[1].trim()
+        const manifest = parseSkillManifest(resultText)
+        if (manifest && manifest.skill === 'edit-note' && manifest.backup_path) {
+          backupPath = manifest.backup_path
+        } else if (/BACKUP_OK:\s*(.+)/.test(resultText)) {
+          backupPath = resultText.match(/BACKUP_OK:\s*(.+)/)[1].trim()
         } else {
           // Defensive fallback: glob for most-recent backup file in the case dir
           try {
