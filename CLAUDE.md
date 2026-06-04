@@ -27,7 +27,7 @@ renderer/
   status.html / status.js     Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
-  transcribe.py               ElevenLabs scribe_v1 → diarised transcript.md
+  transcribe.py               ElevenLabs scribe_v2 → diarised transcript.md
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
   extract_attachments.py      Combines multiple prechart files (.md/.txt/.docx/.pdf) into a single .md for the edit-note skill
 notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
@@ -39,11 +39,13 @@ notes-claude/                   Bundled Claude Code workspace — copied at runt
   skills/cdi-review/              CDI Co-Pilot skill (v1, ortho only), invoked by `claude -p "review cdi. Case: ..."` — produces <case>_cdi.json + .md. Standalone in v1; app pipeline integration is Plan 2.
   standards/                      Standards packs consumed by cdi-review (and future review engines): icd10_fy2026.md, ahima_acdis_2026.md, specialties/orthopedics.md. README.md explains naming + update policy.
   .mcp.json                       Project-scope MCP config — copied verbatim by main.js's ensureMcpConfig() to <NOTES_DIR>/.mcp.json on every skills sync so `claude -p` (cwd: NOTES_DIR) always sees the ICD-10 connector
-  scripts/, draft/, settings.json
+  settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
+src/shared/                   Single-sourced enums (STATE, STATUS_LABELS, CHANNELS, DOCTOR_SPECIALTIES) imported by main.js; Phase 4 wires renderer too
+src/llm/skill-io/manifest.js  Manifest parser + validateManifest (canonical; parseSkillManifest.js at root is a forwarding shim)
 install.ps1, setup.ps1,
-uninstall*.ps1, launch.vbs    Windows installer / launcher scripts
+uninstall*.ps1                Windows installer / launcher scripts
 ```
 
 `<NOTES_DIR>` = the folder the user picked on first launch (stored in repo `.env` as `NOTES_DIR_PATH`). Conventionally `~/Documents/AI Medical Notes`.
@@ -123,26 +125,25 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | Method | Purpose |
 |---|---|
 | `getState()` | Current state at startup |
+| `getBuildInfo()` | `{isStaging, version, gitSha}` — used by renderer to show STAGING badge |
 | `startSession() / stopSession()` | Session lifecycle (returns `{ok, error?}` — `no-doctors`, `cancelled`) |
 | `startRecording() / stopRecording()` | Recording lifecycle |
 | `pauseRecording() / resumeRecording() / discardRecording()` | Mid-recording control |
 | `submitPatientName(name)` | Resolves the awaited patient-name promise in stop-recording |
 | `getConfigStatus()` | `{elevenLabsKeyMissing, elevenLabsKeyInvalid, noDoctors, notesDirMissing}` |
+| `getElevenLabsKey()` | Returns the configured ElevenLabs key for the Settings view |
 | `saveElevenLabsKey(key)` | Writes to repo `.env` |
-| `getDoctors() / addDoctor / updateDoctor / updateDoctorTemplate / removeDoctor / selectDoctor` | Doctor CRUD + picker resolution |
-| `browseAudioFile() / processAudioFile(path, name)` | Audio-file upload flow |
-| `browseNotesFiles() / startTemplateCreation / getTemplateJobStatus / cancelTemplateCreation / dismissTemplateJob` | Template-creation flow |
+| `getDoctors() / addDoctor(name) / updateDoctor(id, name) / updateDoctorTemplate(id) / updateDoctorSpecialty(id, specialty) / removeDoctor(id) / selectDoctor(id)` | Doctor CRUD + picker resolution |
+| `browseAudioFile() / processAudioFile(filePath, patientName)` | Audio-file upload flow |
+| `browseNotesFiles() / startTemplateCreation(doctorName, filePaths) / getTemplateJobStatus() / cancelTemplateCreation() / dismissTemplateJob()` | Template-creation flow |
 | `startTemplateUpdate(doctorName, corrections, correctionsFile, sampleFiles) / browseCorrectionsFile() / getDoctorsWithTemplates()` | Template-update flow (corrections can be typed AND/OR loaded from a file; optional extra sample notes for additional context) |
 | `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(doctorId, caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
 | `getSessionRecordings() / openStatusWindow() / closeStatusWindow()` | Floating status window for tracking concurrent background pipelines |
-| `openSoapNote(filePath)` | Opens the SOAP `.docx` in the OS default handler |
-| `getElevenLabsKey()` | Returns the configured ElevenLabs key for the Settings view |
-| `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
+| `openSoapNote(filePath)` | Opens the SOAP `.docx` in the OS default handler (confined to CASES_DIR) |
 | `getSettings() / saveSettings(s)` | `settings.json` in NOTES_DIR |
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
 | `hideWindow()` | Close popup |
-| `openSoapNote(filePath)` | Opens SOAP note `.docx` via OS default handler |
 
 Events (`on*`):
 `onStateChange`, `onShowPatientForm`, `onSetupWarning`, `onAutoStartRecording`, `onPickDoctor`, `onServiceWarning`, `onTemplateJobStatus`, `onRecordingStatusUpdate` (driving the floating status window).

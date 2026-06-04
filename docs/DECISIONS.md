@@ -320,3 +320,25 @@ Every other skill writes `.md` only and lets `main.js → spawnDocxConversion �
 - `db/cases.js` gains `createChildCase` (inserts a child case with all paths populated, `status='converting'`) and `getCaseRow` (read-back for inheriting `recorded_at`/`doctor_id` onto child rows). **No schema changes.**
 - Multi-patient child folders are on-disk indistinguishable from single-patient cases — pre-chart, recent-cases listings, DB queries, and file hiding all work unmodified.
 - The skill is now schema-version-gated. Future format changes bump the version; the app fails closed (treats unknown versions as failed) until it catches up. Adopting the same JSON manifest format across the other skills (`cdi-review`, `edit-note`, `create-doctor-profile`, `update-doctor-profile`, future `icd`) is queued as follow-up work — out of scope for this PR.
+
+---
+
+## 2026-06-04 — Phase 0: refactor foundations & safety gates (rs)
+
+**Context:** Start of the planned multi-phase refactor (`docs/refactor/`). Phase 0 is all additive or behavior-preserving; no pipeline logic changes.
+
+**Decisions made in this phase:**
+
+1. **Test runner: `node:test` + `node:assert`, zero new deps.** Avoids Jest/Vitest which fight `better-sqlite3`'s native addon and require config the project doesn't have. `node --test` is built into Node 18+. The suite runs against system Node (ABI 137 on the dev machine); `electron-rebuild` targets the Electron ABI (132). Running integration tests locally requires `npm rebuild better-sqlite3` first; CI (`npm ci` on ubuntu-latest Node 20) gets the right ABI without this step.
+
+2. **DB migration runner: transactions + runner owns user_version.** Each migration is now wrapped in `db.transaction()`. The SQL file's trailing `PRAGMA user_version = N` is stripped before `db.exec()` and the runner sets it via `db.pragma()` inside the same transaction. This makes schema + version advance atomic; a mid-migration failure cannot leave partial DDL committed. Backward-compatible with `user_version=4` (the version on production installs as of 2026-06-01).
+
+3. **`open-soap-note` confined to `CASES_DIR`.** The renderer could previously pass any path to `shell.openPath`. Now the handler rejects any resolved path that does not start with `CASES_DIR`. Low-severity but correct.
+
+4. **`python -c` injection replaced with `python/probe_duration.py`.** The inline `python -c "...r\"${audioDest}\"..."` in `process-audio-file` interpolated the path into Python source code. Replaced with a 4-line script that reads the path from `sys.argv[1]`.
+
+5. **`spawnClaude` shell-injection (`shell:true`) deferred to Phase 2.** Changing from shell-string to arg-array spawn requires the full `claudeCliProvider` test harness (stream-json format, flag handling). Doing it in Phase 0 would be under-tested. The risk is low in practice: patient names go through `sanitizeName()` and OS file-dialog paths don't contain shell metacharacters on Windows.
+
+6. **`src/shared/` enums: main.js wired, renderer deferred to Phase 4.** `STATE` and `STATUS_LABELS` are now imported from `src/shared/` by main.js. `renderer/renderer.js` retains its own copies until Phase 4 restructures it; the drift test in `tests/unit/shared-drift.test.js` catches divergence in CI.
+
+7. **`parseSkillManifest.js` forwarding shim.** The canonical location is now `src/llm/skill-io/manifest.js`. The root-level `parseSkillManifest.js` is a `module.exports = require(...)` shim. Shim deleted in Phase 3 when all callers are updated.
