@@ -456,12 +456,12 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
       if (caseTag) updateRecordingStatus(caseTag, 'failed')
       const stderr = stderrChunks.join('')
       if (/401|invalid.api.key|unauthorized/i.test(stderr)) {
-        win.webContents.send('service-warning', {
+        if (win && !win.isDestroyed()) win.webContents.send('service-warning', {
           title: 'ElevenLabs API key invalid',
           message: 'Your API key was rejected. Update it in Settings to resume transcription.'
         })
       } else if (/429|quota.exceeded|rate.limit|insufficient.credit/i.test(stderr)) {
-        win.webContents.send('service-warning', {
+        if (win && !win.isDestroyed()) win.webContents.send('service-warning', {
           title: 'ElevenLabs quota exceeded',
           message: 'Your ElevenLabs usage limit has been reached. Transcription could not complete.'
         })
@@ -589,7 +589,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
           dbCases.setCaseStatus(caseId, 'failed')
           dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
         } catch (e) { log(`[db] soap rate-limited update failed: ${e.message}`) }
-        win.webContents.send('service-warning', {
+        if (win && !win.isDestroyed()) win.webContents.send('service-warning', {
           title: 'Claude usage limit reached',
           message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
         })
@@ -669,7 +669,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
       } catch (e) { log(`[db] soap onError update failed: ${e.message}`) }
       if (err.code === 'ENOENT') {
-        win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+        if (win && !win.isDestroyed()) win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
       }
     }
   })
@@ -2554,7 +2554,7 @@ app.whenReady().then(async () => {
       const msg = 'BlackHole not found. Install: brew install blackhole-2ch'
       log(`WARNING: ${msg}`)
       win.webContents.on('did-finish-load', () => {
-        win.webContents.send('setup-warning', msg)
+        if (win && !win.isDestroyed()) win.webContents.send('setup-warning', msg)
       })
     }
   }
@@ -2616,7 +2616,7 @@ function registerIpcHandlers() {
       // Multiple doctors — ask renderer to pick
       const selectedId = await new Promise(resolve => {
         doctorPickerResolver = resolve
-        win.webContents.send('pick-doctor', doctors)
+        if (win && !win.isDestroyed()) win.webContents.send('pick-doctor', doctors)
       })
 
       if (!selectedId) {
@@ -2710,7 +2710,7 @@ function registerIpcHandlers() {
       log(`[record.py ERR] ${msg}`)
       // Surface BlackHole / setup errors to renderer
       if (msg.includes('ERROR')) {
-        win.webContents.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
+        if (win && !win.isDestroyed()) win.webContents.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
       }
     })
     recordingProcess.on('exit', code => {
@@ -2757,7 +2757,7 @@ function registerIpcHandlers() {
     // Update UI immediately — don't wait for Python's WAV→MP3 conversion first.
     // This stops the timer and shows PROCESSING state right when Save is clicked.
     setState(STATE.PROCESSING)
-    win.webContents.send('show-patient-form')
+    if (win && !win.isDestroyed()) win.webContents.send('show-patient-form')
 
     // Wait for patient name entry and Python's WAV→MP3 conversion concurrently.
     // The scribe can name the case while the conversion runs in the background.
@@ -3419,7 +3419,7 @@ function registerIpcHandlers() {
     if (caseId && fs.existsSync(audioDest)) {
       const probeProc = spawn(
         PYTHON,
-        ['-c', `from pydub import AudioSegment; a = AudioSegment.from_file(r"${audioDest}"); print(f"DURATION_SECONDS: {a.duration_seconds:.3f}")`],
+        [path.join(__dirname, 'python', 'probe_duration.py'), audioDest],
         { stdio: ['ignore', 'pipe', 'pipe'] }
       )
       let probeBuf = ''
@@ -3567,7 +3567,13 @@ function registerIpcHandlers() {
   // ---- open-soap-note ----
   ipcMain.handle('open-soap-note', async (_, filePath) => {
     const { shell } = require('electron')
-    return shell.openPath(filePath)
+    // Confine to CASES_DIR so the renderer cannot open arbitrary paths.
+    const normalized = path.resolve(filePath)
+    if (!CASES_DIR || !normalized.startsWith(path.resolve(CASES_DIR) + path.sep)) {
+      log(`open-soap-note: path outside CASES_DIR rejected: ${filePath}`)
+      return ''
+    }
+    return shell.openPath(normalized)
   })
 }
 
