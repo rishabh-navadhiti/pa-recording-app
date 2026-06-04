@@ -26,94 +26,68 @@ try {
   _dbStartupError = e
 }
 const { parseSkillManifest } = require('./src/llm/skill-io/manifest')
+const { bootstrapLogger }    = require('./log/logger')
+const { DEFAULT_SETTINGS }   = require('./config/settings')
+const { writeMcpConfig }     = require('./config/mcp')
+const { bootstrap }          = require('./startup/bootstrap')
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-let PYTHON = process.platform === 'win32' ? 'python' : 'python3'
-
-// Staging-build detection. Presence of `.staging-marker` (gitignored, written by
-// install-staging.ps1) flips the app into staging mode — UI badge, tooltip
-// suffix on update notifications, etc. Marker is local-only by design so the
-// same code on every branch behaves correctly without leaking the flag to users.
-const STAGING_MARKER = path.join(__dirname, '.staging-marker')
-function isStagingBuild () {
-  try { return fs.existsSync(STAGING_MARKER) } catch { return false }
-}
-
-function getCurrentBranch () {
-  try {
-    return execSync('git rev-parse --abbrev-ref HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
-      .toString().trim()
-  } catch { return 'unknown' }
-}
-
-function resolvePythonCommand () {
-  const candidates = process.platform === 'win32'
-    ? ['py', 'python', 'python3']
-    : ['python3', 'python']
-  for (const cmd of candidates) {
-    try {
-      const out = execSync(`${cmd} --version`, { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
-      if (/^Python\s+3\./.test(out)) return { cmd, version: out }
-    } catch { /* not available — try next */ }
-  }
-  return null
-}
-
 const { STATE }        = require('./src/shared/state')
 const { STATUS_LABELS } = require('./src/shared/pipeline-status')
 
 // ---------------------------------------------------------------------------
-// Module-level state
+// Single module-level context reference — set by bootstrap() in app.whenReady().
 // ---------------------------------------------------------------------------
 
-let tray = null
-let win = null
-let currentState = STATE.IDLE
-let recordingProcess = null
-let tempMp3Path = null
-let patientNameResolver = null
-let activeDoctorId = null
-let activeSessionId = null
-let doctorPickerResolver = null
-let pendingAudioDuration = null  // set by record.py DURATION_SECONDS output; consumed in stop-recording
-let activeSessionDir = null
-let statusWin = null
-let sessionRecordings = []
-let isQuitting = false
+let ctx = null
 
 // ---------------------------------------------------------------------------
-// Paths
-// ---------------------------------------------------------------------------
-
-const CLAUDE_CONFIG_SRC = path.join(__dirname, 'notes-claude')
-
-let NOTES_DIR   = ''
-let CASES_DIR   = ''
-let TEMPLATES_DIR = ''
-let LOG_FILE    = ''
-
-function loadPaths(notesDir) {
-  NOTES_DIR     = notesDir
-  CASES_DIR     = path.join(notesDir, 'Cases')
-  TEMPLATES_DIR = path.join(notesDir, 'Templates')
-  LOG_FILE      = path.join(notesDir, 'app.log')
-}
-
-// ---------------------------------------------------------------------------
-// Logging
+// Shims — delegate to ctx after bootstrap; fallback for early startup code
 // ---------------------------------------------------------------------------
 
 function log(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}\n`
-  process.stdout.write(line)
-  try {
-    fs.appendFileSync(LOG_FILE, line)
-  } catch (e) {
-    // Log file may not exist yet on first run — ignore
-  }
+  if (ctx) ctx.log(msg)
+  else bootstrapLogger.log(msg)
+}
+
+function readSettings() {
+  return ctx ? ctx.config.get() : { ...DEFAULT_SETTINGS }
+}
+
+function writeSettings(patch) {
+  if (ctx) ctx.config.save(patch)
+}
+
+function setState(s) {
+  if (ctx) ctx.stores.state.setState(s)
+}
+
+function addRecordingEntry(caseTag, displayName) {
+  ctx?.stores.recordings.add({ caseTag, displayName })
+}
+function updateRecordingStatus(caseTag, status) {
+  ctx?.stores.recordings.updateStatus(caseTag, status)
+}
+function setRecordingPatients(caseTag, patients) {
+  ctx?.stores.recordings.setPatients(caseTag, patients)
+}
+function updatePatientStatus(caseTag, folderName, status) {
+  ctx?.stores.recordings.updatePatientStatus(caseTag, folderName, status)
+}
+function setRecordingCdi(caseTag, update) {
+  ctx?.stores.recordings.setCdi(caseTag, update)
+}
+function setPatientCdi(caseTag, folderName, update) {
+  ctx?.stores.recordings.setPatientCdi(caseTag, folderName, update)
+}
+function broadcastRecordingStatus() {
+  if (!ctx) return
+  const payload = ctx.stores.recordings.getAll()
+  ctx.renderer.send('recording-status-update', payload)
+  ctx.sendStatus('recording-status-update', payload)
 }
 
 function nowIso() { return new Date().toISOString() }
@@ -124,55 +98,15 @@ function getAllDoctors() {
   const fromDb = dbDoctors.listDoctors()
   if (fromDb.length > 0) return fromDb
   try {
-    const backupPath = path.join(NOTES_DIR, 'settings.doctors.backup.json')
+    const backupPath = path.join(ctx.paths.notesDir, 'settings.doctors.backup.json')
     const raw = JSON.parse(fs.readFileSync(backupPath, 'utf8'))
     if (Array.isArray(raw) && raw.length > 0) return raw
   } catch (_) {}
   return []
 }
 
-// ---------------------------------------------------------------------------
-// Settings helpers (settings.json in NOTES_DIR)
-// ---------------------------------------------------------------------------
-
-function getSettingsPath() { return path.join(NOTES_DIR, 'settings.json') }
-
-const DEFAULT_SETTINGS = {
-  autoRecord: false,
-  manualDeviceSelection: true,
-  selectedDeviceIndex: null,
-  // Model config — surfaced in settings.json so it can be edited without a code change.
-  // UI controls for these will come later; for now they are silent defaults that can be
-  // overridden by editing settings.json directly.
-  soapModel:      'claude-sonnet-4-6',
-  templateModel:  'claude-opus-4-8',
-  templateEffort: 'max',
-  // ICD-10 coding — global on/off. When false, spawnIcdCoding is skipped for
-  // every case (no claude spawn, no codes appended). CDI depends on ICD running
-  // first (codes baked into the note), so enabling CDI forces this on — see the
-  // CDI⟹ICD invariant in readSettings() + the save-settings handler.
-  enableIcd: false,
-  // CDI Co-Pilot — global on/off + mode. Per-doctor specialty is in app.db
-  // (doctors.specialty). When enableCdi is false, the CDI pipeline step is
-  // skipped entirely for every case — no claude spawn, no DB writes, no UI.
-  // When true, the CDI skill runs per case folder; the skill's manifest
-  // marks status='skipped' for doctors whose specialty is unset or unsupported.
-  enableCdi: false,
-  cdiMode:   'balanced'
-}
-
-function readSettings() {
-  try {
-    const merged = { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8')) }
-    // Invariant: CDI runs after ICD and needs codes in the note, so CDI on ⟹ ICD on.
-    // Normalize here so every runtime consumer (the spawnIcdCoding gate, the renderer)
-    // sees a consistent state — including legacy settings.json with enableCdi but no enableIcd.
-    if (merged.enableCdi) merged.enableIcd = true
-    return merged
-  } catch { return { ...DEFAULT_SETTINGS } }
-}
-
 // Atomic write: write to .tmp then rename, with retry for transient Windows AV locks (EPERM/EBUSY).
+// Still used by writeSettings() shim (via ctx.config.save) and by ensureMcpConfig replacement.
 function safeWriteFile(filePath, data) {
   const tmp = filePath + '.tmp'
   let lastErr
@@ -192,11 +126,6 @@ function safeWriteFile(filePath, data) {
     }
   }
   throw lastErr
-}
-
-function writeSettings(settings) {
-  fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true })
-  safeWriteFile(getSettingsPath(), JSON.stringify(settings, null, 2))
 }
 
 // ---------------------------------------------------------------------------
@@ -231,38 +160,6 @@ function writeEnvKey(key, value) {
 }
 
 // ---------------------------------------------------------------------------
-// State broadcast
-// ---------------------------------------------------------------------------
-
-function setState(newState) {
-  currentState = newState
-  log(`State → ${newState}`)
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('state-change', newState)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tray popup positioning
-// ---------------------------------------------------------------------------
-
-function togglePopup() {
-  if (win.isMinimized()) {
-    win.restore()
-    win.focus()
-  } else if (win.isVisible()) {
-    win.minimize()
-  } else {
-    win.show()
-    win.focus()
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Shared helpers — used by both recording flow and upload flow
 // ---------------------------------------------------------------------------
 
@@ -283,13 +180,14 @@ function sanitizeName(name) {
 }
 
 function createSessionFolder() {
+  const casesDir = ctx.paths.casesDir
   const datestamp = new Date().toISOString().slice(0, 10)
   let todayCount = 0
   try {
-    todayCount = fs.readdirSync(CASES_DIR).filter(name => name === datestamp || name.startsWith(`${datestamp}(`)).length
+    todayCount = fs.readdirSync(casesDir).filter(name => name === datestamp || name.startsWith(`${datestamp}(`)).length
   } catch {}
   const folderName = todayCount === 0 ? datestamp : `${datestamp}(${todayCount + 1})`
-  const sessionDir = path.join(CASES_DIR, folderName)
+  const sessionDir = path.join(casesDir, folderName)
   fs.mkdirSync(sessionDir, { recursive: true })
   log(`Session folder created: ${sessionDir}`)
   return sessionDir
@@ -300,13 +198,14 @@ function buildCaseFolder(sanitizedName) {
   const folderName = sanitizedName
     ? `${sanitizedName}_${datestamp}`
     : `recording_${datestamp}_${new Date().toISOString().slice(11, 19).replace(/:/g, '-')}`
-  const baseDir = activeSessionDir || CASES_DIR
+  const baseDir = ctx.stores.session.get().dir || ctx.paths.casesDir
   const caseDir = path.join(baseDir, folderName)
   fs.mkdirSync(caseDir, { recursive: true })
   return { caseDir, folderName }
 }
 
 function notifyUser(title, body) {
+  if (ctx) { ctx.platform.notify(title, body); return }
   const { Notification } = require('electron')
   if (Notification.isSupported()) {
     new Notification({ title, body, silent: false }).show()
@@ -314,43 +213,12 @@ function notifyUser(title, body) {
 }
 
 function hideFileFromUser(filePath) {
+  if (ctx) { ctx.platform.hideInternal(filePath); return }
   if (process.platform !== 'win32') return
   const { exec } = require('child_process')
   exec(`attrib +h "${filePath}"`, err => {
     if (err) log(`[hide] ${path.basename(filePath)}: ${err.message}`)
   })
-}
-
-function hideNotesDirInternals() {
-  if (process.platform !== 'win32') return
-  if (!fs.existsSync(NOTES_DIR)) return
-  try {
-    fs.readdirSync(NOTES_DIR, { withFileTypes: true })
-      .filter(e => e.name !== 'Cases')
-      .forEach(e => hideFileFromUser(path.join(NOTES_DIR, e.name)))
-  } catch {}
-}
-
-function hideExistingCaseMdFiles() {
-  if (process.platform !== 'win32') return
-  if (!fs.existsSync(CASES_DIR)) return
-  try {
-    const sessions = fs.readdirSync(CASES_DIR, { withFileTypes: true }).filter(e => e.isDirectory())
-    for (const session of sessions) {
-      const sessionPath = path.join(CASES_DIR, session.name)
-      try {
-        const cases = fs.readdirSync(sessionPath, { withFileTypes: true }).filter(e => e.isDirectory())
-        for (const c of cases) {
-          const caseDir = path.join(sessionPath, c.name)
-          try {
-            fs.readdirSync(caseDir)
-              .filter(f => f.endsWith('.md') || f.endsWith('_cdi.json'))
-              .forEach(f => hideFileFromUser(path.join(caseDir, f)))
-          } catch {}
-        }
-      } catch {}
-    }
-  } catch {}
 }
 
 function validateElevenLabsKey(apiKey) {
@@ -408,7 +276,7 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
     eventId = dbEvents.startEvent({ caseId, jobKind: 'transcribe', startedAt })
   } catch (e) { log(`[db] startEvent(transcribe) failed: ${e.message}`) }
 
-  const transcribeProc = spawn(PYTHON, [
+  const transcribeProc = spawn(ctx.python, [
     path.join(__dirname, 'python', 'transcribe.py'),
     '--input', mp3Path,
     '--output', transcriptDest
@@ -435,17 +303,17 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
         const stderr = stderrChunks.join('')
         dbEvents.finishEvent(eventId, { status: 'failed', durationMs, errorMessage: stderr.slice(0, 1024), finishedAt: nowIso() })
         dbCases.setCaseStatus(caseId, 'failed')
-        if (caseId) dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        if (caseId) dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
       } catch (e) { log(`[db] transcribe failure update failed: ${e.message}`) }
       if (caseTag) updateRecordingStatus(caseTag, 'failed')
       const stderr = stderrChunks.join('')
       if (/401|invalid.api.key|unauthorized/i.test(stderr)) {
-        if (win && !win.isDestroyed()) win.webContents.send('service-warning', {
+        ctx.renderer.send('service-warning', {
           title: 'ElevenLabs API key invalid',
           message: 'Your API key was rejected. Update it in Settings to resume transcription.'
         })
       } else if (/429|quota.exceeded|rate.limit|insufficient.credit/i.test(stderr)) {
-        if (win && !win.isDestroyed()) win.webContents.send('service-warning', {
+        ctx.renderer.send('service-warning', {
           title: 'ElevenLabs quota exceeded',
           message: 'Your ElevenLabs usage limit has been reached. Transcription could not complete.'
         })
@@ -481,7 +349,7 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
   const proc = spawn(
     shellCmd,
     [],
-    { cwd: NOTES_DIR, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }
+    { cwd: ctx.paths.notesDir, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }
   )
 
   let buf = ''
@@ -536,10 +404,10 @@ function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError 
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
-  const relTranscript = path.relative(NOTES_DIR, transcriptAbsPath).replace(/\\/g, '/')
+  const relTranscript = path.relative(ctx.paths.notesDir, transcriptAbsPath).replace(/\\/g, '/')
   let prompt
   if (templatePath) {
-    const relTemplate = path.relative(NOTES_DIR, templatePath).replace(/\\/g, '/')
+    const relTemplate = path.relative(ctx.paths.notesDir, templatePath).replace(/\\/g, '/')
     prompt = `generate a note using template "${relTemplate}" and transcript "${relTranscript}"`
   } else {
     prompt = `generate a note using transcript "${relTranscript}"`
@@ -571,9 +439,9 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
             finishedAt: nowIso()
           })
           dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
         } catch (e) { log(`[db] soap rate-limited update failed: ${e.message}`) }
-        if (win && !win.isDestroyed()) win.webContents.send('service-warning', {
+        ctx.renderer.send('service-warning', {
           title: 'Claude usage limit reached',
           message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
         })
@@ -584,7 +452,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
         } catch (e) { log(`[db] soap failure update failed: ${e.message}`) }
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
         return
@@ -602,7 +470,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'manifest parse failed', finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
         } catch (e) { log(`[db] soap manifest-parse update failed: ${e.message}`) }
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
         return
@@ -618,7 +486,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `unsupported manifest schema_version=${manifest.schema_version}`, finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
         } catch {}
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
         return
@@ -629,7 +497,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `manifest status=${manifest.status || '?'}`, finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
         } catch {}
         if (caseTag) updateRecordingStatus(caseTag, 'failed')
         return
@@ -650,10 +518,10 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       try {
         dbEvents.finishEvent(eventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
         dbCases.setCaseStatus(caseId, 'failed')
-        dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+        dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
       } catch (e) { log(`[db] soap onError update failed: ${e.message}`) }
       if (err.code === 'ENOENT') {
-        if (win && !win.isDestroyed()) win.webContents.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
+        ctx.renderer.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
       }
     }
   })
@@ -669,7 +537,7 @@ function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPat
     log(`${tag}[soap] single-patient case status=${c.status || '?'} or no soap_note_md — marking failed`)
     try {
       dbCases.setCaseStatus(caseId, 'failed')
-      dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
     } catch {}
     if (caseTag) updateRecordingStatus(caseTag, 'failed')
     return
@@ -680,7 +548,7 @@ function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPat
     log(`${tag}[soap] WARNING: manifest declared ${soapPath} but file is not on disk`)
     try {
       dbCases.setCaseStatus(caseId, 'failed')
-      dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
     } catch {}
     if (caseTag) updateRecordingStatus(caseTag, 'failed')
     return
@@ -699,9 +567,10 @@ function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPat
   // Each step is best-effort; failures resolve cleanly and the chain continues.
   // The SOAP docx transition flips the row to 'completed' (primary deliverable);
   // the CDI docx populates cdi_docx_path so the Open CDI Review button can appear.
-  const soapDoctor = dbDoctors?.getDoctor(activeDoctorId) || null
+  const _singleActiveDoctorId = ctx.stores.session.get().doctorId
+  const soapDoctor = dbDoctors?.getDoctor(_singleActiveDoctorId) || null
   const caseDir = path.dirname(soapPath)
-  spawnIcdCoding({ soapNoteMdPath: soapPath, caseId, caseTag, doctorId: activeDoctorId })
+  spawnIcdCoding({ soapNoteMdPath: soapPath, caseId, caseTag, doctorId: _singleActiveDoctorId })
     .then(() => spawnCdiReview({ caseDir, caseId, caseTag, doctor: soapDoctor }))
     .then(cdiResult => {
       if (caseTag) updateRecordingStatus(caseTag, 'converting')
@@ -732,7 +601,7 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
   // Pull the parent's recorded_at + doctor_id from DB so children inherit them
   // (same audio source ⇒ same recording timestamp; same doctor as the session).
   let parentRecordedAt = nowIso()
-  let parentDoctorId = activeDoctorId
+  let parentDoctorId = ctx.stores.session.get().doctorId
   let parentMp3Path = null
   try {
     const row = dbCases.getCaseRow(parentCaseId)
@@ -882,7 +751,7 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
       childCaseId = dbCases.createChildCase({
         patientName:        slug,
         doctorId:           parentDoctorId,
-        sessionId:          activeSessionId,
+        sessionId:          ctx.stores.session.get().sessionId,
         caseDir:            targetDir,
         source:             'recording',
         mp3Path:            childMp3,
@@ -915,7 +784,7 @@ async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expe
     log(`${tag}[soap] WARNING: no child cases created from manifest — marking parent failed`)
     try {
       dbCases.setCaseStatus(parentCaseId, 'failed')
-      dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
     } catch {}
     if (caseTag) updateRecordingStatus(caseTag, 'failed')
     return
@@ -975,7 +844,7 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
       return
     }
 
-    const relSoap = path.relative(NOTES_DIR, soapNoteMdPath).replace(/\\/g, '/')
+    const relSoap = path.relative(ctx.paths.notesDir, soapNoteMdPath).replace(/\\/g, '/')
     const prompt = `add ICD codes. Soap note: "${relSoap}".`
     const soapModel = readSettings().soapModel
     // The actual shell command is logged by spawnClaude as `[icd] $ ...`.
@@ -1021,13 +890,13 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
           } catch (e) { log(`${tag}[db] finishEvent(icd) failed: ${e.message}`) }
         }
 
-        if (isMcpError && win && !win.isDestroyed()) {
-          win.webContents.send('service-warning', {
+        if (isMcpError) {
+          ctx.renderer.send('service-warning', {
             title: 'ICD-10 connector unavailable',
             message: 'Could not look up ICD-10 codes — the note was generated without codes. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled.'
           })
-        } else if (isRateLimited && win && !win.isDestroyed()) {
-          win.webContents.send('service-warning', {
+        } else if (isRateLimited) {
+          ctx.renderer.send('service-warning', {
             title: 'Claude usage limit reached',
             message: 'ICD codes could not be added — try again once the limit resets. The note has been saved without codes.'
           })
@@ -1096,7 +965,7 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
     const mode = settings.cdiMode || 'balanced'
     const specialty = (doctor?.specialty || '').toLowerCase()
     const doctorName = doctor?.name || ''
-    const standardsAbs = path.join(NOTES_DIR, '.claude', 'standards')
+    const standardsAbs = path.join(ctx.paths.notesDir, '.claude', 'standards')
 
     // Gates 2 + 3 are pure no-ops on disk — no _cdi.* files are created when
     // CDI doesn't apply. The case-row's cdi_status='skipped' is the only audit
@@ -1294,13 +1163,13 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
           if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
           else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
 
-          if (isRateLimited && win && !win.isDestroyed()) {
-            win.webContents.send('service-warning', {
+          if (isRateLimited) {
+            ctx.renderer.send('service-warning', {
               title: 'Claude usage limit reached',
               message: 'CDI review could not be completed — try again once the limit resets. The SOAP note has been saved.'
             })
-          } else if (win && !win.isDestroyed()) {
-            win.webContents.send('service-warning', {
+          } else {
+            ctx.renderer.send('service-warning', {
               title: 'CDI review failed',
               message: 'The CDI review skill exited with an error. The SOAP note is unaffected — check app.log for details.'
             })
@@ -1433,7 +1302,7 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
     eventId = dbEvents.startEvent({ caseId, jobKind: 'docx', startedAt: nowIso() })
   } catch (e) { log(`[db] startEvent(docx) failed: ${e.message}`) }
 
-  const proc = spawn(PYTHON, [
+  const proc = spawn(ctx.python, [
     path.join(__dirname, 'python', 'md_to_docx.py'),
     mdPath
   ], { cwd: __dirname, stdio: 'pipe' })
@@ -1451,17 +1320,19 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
         try {
           dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: nowIso() })
           dbCases.updateCasePaths(caseId, { status: 'completed', soap_docx_path: docxPath, completed_at: nowIso() })
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: false })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: false })
         } catch (e) { log(`[db] docx soap success update failed: ${e.message}`) }
         if (patientFolderName) {
-          const entry = sessionRecordings.find(r => r.caseTag === caseTag)
+          const allEntries = ctx.stores.recordings.getAll()
+          const entry = allEntries.find(r => r.caseTag === caseTag)
           const patient = entry?.patients?.find(p => p.folderName === patientFolderName)
-          if (patient) patient.soapDocxPath = docxPath
+          ctx.stores.recordings.setDocxPath(caseTag, docxPath)
           notifyUser('SOAP note ready', patient?.name || patientFolderName.replace(/_/g, ' '))
           updatePatientStatus(caseTag, patientFolderName, 'completed')
         } else if (caseTag) {
-          const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-          if (entry) entry.soapDocxPath = docxPath
+          const allEntries = ctx.stores.recordings.getAll()
+          const entry = allEntries.find(r => r.caseTag === caseTag)
+          ctx.stores.recordings.setDocxPath(caseTag, docxPath)
           notifyUser('SOAP note ready', entry?.displayName || caseTag)
           updateRecordingStatus(caseTag, 'completed')
         }
@@ -1469,7 +1340,7 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
         try {
           dbEvents.finishEvent(eventId, { status: 'failed', durationMs, finishedAt: nowIso() })
           dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(activeSessionId, { failed: true })
+          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
         } catch (e) { log(`[db] docx soap failure update failed: ${e.message}`) }
         if (patientFolderName) {
           updatePatientStatus(caseTag, patientFolderName, 'failed')
@@ -1513,38 +1384,23 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId =
 // <NOTES_DIR>/.template_job.json so the renderer can poll while the popup
 // is closed and pick up progress on reopen.
 
-let templateJobProc = null
-let templateJobStartMs = 0
-let templateJobEventId = null
-
-function getJobStatusPath() { return path.join(NOTES_DIR, '.template_job.json') }
-
 function readTemplateJob() {
-  try {
-    return JSON.parse(fs.readFileSync(getJobStatusPath(), 'utf8'))
-  } catch {
-    return { status: 'idle' }
-  }
+  return ctx ? ctx.jobState.load() : { status: 'idle' }
 }
 
 function writeTemplateJob(job) {
-  try {
-    safeWriteFile(getJobStatusPath(), JSON.stringify(job, null, 2))
-  } catch (e) {
-    log(`[template-job] WARNING: failed to write job status: ${e.message}`)
-  }
+  if (ctx) ctx.jobState.save(job)
 }
 
 function broadcastTemplateJob(job) {
   writeTemplateJob(job)
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('template-job-status', job)
-  }
+  ctx?.renderer.send('template-job-status', job)
+  ctx?.sendStatus('template-job-status', job)
 }
 
 function spawnTemplateCreation(doctorName, stagingDir) {
   const lastname = extractLastname(doctorName) || 'doctor'
-  const stagingRel = path.relative(NOTES_DIR, stagingDir).replace(/\\/g, '/')
+  const stagingRel = path.relative(ctx.paths.notesDir, stagingDir).replace(/\\/g, '/')
   const settings = readSettings()
   const model  = settings.templateModel  || 'claude-opus-4-8'
   const effort = settings.templateEffort || 'max'
@@ -1552,29 +1408,29 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
 
   // The actual shell command is logged by spawnClaude as `[template] $ ...`.
-  templateJobStartMs = Date.now()
+  const jobStartMs = Date.now()
 
   const templateCreateStartedAt = nowIso()
-  templateJobEventId = null
+  let templateJobEventId = null
   try {
     templateJobEventId = dbEvents.startEvent({ jobKind: 'template_create', modelUsed: model, effort, startedAt: templateCreateStartedAt })
   } catch (e) { log(`[db] startEvent(template_create) failed: ${e.message}`) }
 
-  templateJobProc = spawnClaude({
+  const templateJobProc = spawnClaude({
     prompt,
     model,
     effort,
     tag: '',
     label: 'template',
     onClose(code, errText, resultText, resultEvent) {
-      templateJobProc = null
-      const durationMs = Date.now() - templateJobStartMs
+      ctx.stores.jobs.clear()
+      const durationMs = Date.now() - jobStartMs
       logSkillStream('', 'template', resultEvent)
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
-          templateJobEventId = null
+        const evId = ctx.stores.jobs.getEventId() ?? templateJobEventId
+        if (evId != null) {
+          try { dbEvents.finishEvent(evId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
         }
         broadcastTemplateJob({
           status: 'failed',
@@ -1583,16 +1439,14 @@ function spawnTemplateCreation(doctorName, stagingDir) {
           error: 'Claude usage limit reached. Try again once the limit resets.',
           finishedAt: Date.now()
         })
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('service-warning', {
-            title: 'Claude usage limit reached',
-            message: 'Template creation could not complete — try again once the limit resets.'
-          })
-        }
+        ctx.renderer.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Template creation could not complete — try again once the limit resets.'
+        })
         return
       }
 
-      const expectedPath = path.join(TEMPLATES_DIR, `${lastname}.md`)
+      const expectedPath = path.join(ctx.paths.templatesDir, `${lastname}.md`)
       if (code === 0 && fs.existsSync(expectedPath)) {
         // Register the doctor in DB (and keep settings.json in sync for backward compat)
         let doctorId = null
@@ -1607,7 +1461,6 @@ function spawnTemplateCreation(doctorName, stagingDir) {
 
         if (templateJobEventId != null) {
           try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), relatedDoctorId: doctorId, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
-          templateJobEventId = null
         }
 
         // Delete staging folder after success
@@ -1630,7 +1483,6 @@ function spawnTemplateCreation(doctorName, stagingDir) {
       } else {
         if (templateJobEventId != null) {
           try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: code === 0 ? `Template file not found at ${expectedPath}` : `Exit code ${code}`, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
-          templateJobEventId = null
         }
         broadcastTemplateJob({
           status: 'failed',
@@ -1645,10 +1497,9 @@ function spawnTemplateCreation(doctorName, stagingDir) {
       }
     },
     onError(err) {
-      templateJobProc = null
+      ctx.stores.jobs.clear()
       if (templateJobEventId != null) {
         try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) onError failed: ${e.message}`) }
-        templateJobEventId = null
       }
       broadcastTemplateJob({
         status: 'failed',
@@ -1662,11 +1513,13 @@ function spawnTemplateCreation(doctorName, stagingDir) {
     }
   })
 
+  ctx.stores.jobs.start('create', templateJobProc, templateJobEventId)
+
   broadcastTemplateJob({
     status: 'running',
     doctorName,
     lastname,
-    startedAt: templateJobStartMs,
+    startedAt: jobStartMs,
     model,
     effort
   })
@@ -1688,32 +1541,31 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
   const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}. CorrectionsFile: ${safeCorrectionsFile}. Samples: ${safeSamplesDir}`
 
   // The actual shell command is logged by spawnClaude as `[template-update] $ ...`.
-  templateJobStartMs = Date.now()
+  const updateJobStartMs = Date.now()
 
   const doctorForUpdate = dbDoctors.getDoctorByLastname(lastname)
   const doctorIdForUpdate = doctorForUpdate?.id || null
 
   const templateUpdateStartedAt = nowIso()
-  templateJobEventId = null
+  let templateUpdateJobEventId = null
   try {
-    templateJobEventId = dbEvents.startEvent({ jobKind: 'template_update', relatedDoctorId: doctorIdForUpdate, modelUsed: model, effort, startedAt: templateUpdateStartedAt })
+    templateUpdateJobEventId = dbEvents.startEvent({ jobKind: 'template_update', relatedDoctorId: doctorIdForUpdate, modelUsed: model, effort, startedAt: templateUpdateStartedAt })
   } catch (e) { log(`[db] startEvent(template_update) failed: ${e.message}`) }
 
-  templateJobProc = spawnClaude({
+  const templateUpdateProc = spawnClaude({
     prompt,
     model,
     effort,
     tag: '',
     label: 'template-update',
     onClose(code, errText, resultText, resultEvent) {
-      templateJobProc = null
-      const durationMs = Date.now() - templateJobStartMs
+      ctx.stores.jobs.clear()
+      const durationMs = Date.now() - updateJobStartMs
       logSkillStream('', 'template-update', resultEvent)
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
-          templateJobEventId = null
+        if (templateUpdateJobEventId != null) {
+          try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         }
         broadcastTemplateJob({
           type: 'update',
@@ -1723,19 +1575,16 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
           error: 'Claude usage limit reached. Try again once the limit resets.',
           finishedAt: Date.now()
         })
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('service-warning', {
-            title: 'Claude usage limit reached',
-            message: 'Template update could not complete — try again once the limit resets.'
-          })
-        }
+        ctx.renderer.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Template update could not complete — try again once the limit resets.'
+        })
         return
       }
 
       if (code === 0) {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
-          templateJobEventId = null
+        if (templateUpdateJobEventId != null) {
+          try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         }
 
         // Extract the Step 7 changes report — everything from "Updated:" to end of output
@@ -1762,9 +1611,8 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
 
         notifyUser('Template updated', `Profile for ${doctorName} updated.`)
       } else {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
-          templateJobEventId = null
+        if (templateUpdateJobEventId != null) {
+          try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         }
         broadcastTemplateJob({
           type: 'update',
@@ -1778,10 +1626,9 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
       }
     },
     onError(err) {
-      templateJobProc = null
-      if (templateJobEventId != null) {
-        try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) onError failed: ${e.message}`) }
-        templateJobEventId = null
+      ctx.stores.jobs.clear()
+      if (templateUpdateJobEventId != null) {
+        try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) onError failed: ${e.message}`) }
       }
       broadcastTemplateJob({
         type: 'update',
@@ -1796,12 +1643,14 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     }
   })
 
+  ctx.stores.jobs.start('update', templateUpdateProc, templateUpdateJobEventId)
+
   broadcastTemplateJob({
     type: 'update',
     status: 'running',
     doctorName,
     lastname,
-    startedAt: templateJobStartMs,
+    startedAt: updateJobStartMs,
     model,
     effort
   })
@@ -1894,6 +1743,7 @@ function resolveTemplateFromSoapNote(caseDir) {
     if (match) return match.templatePath
   }
 
+  const activeDoctorId = ctx?.stores.session.get().doctorId
   if (activeDoctorId) {
     const active = doctors.find(d => d.id === activeDoctorId)
     if (active && active.templatePath && fs.existsSync(active.templatePath)) return active.templatePath
@@ -1909,7 +1759,7 @@ function buildCombinedAttachment(filePaths) {
       return
     }
     const tmp = path.join(os.tmpdir(), `prechart_${Date.now()}_${process.pid}.md`)
-    const proc = spawn(PYTHON, [
+    const proc = spawn(ctx.python, [
       path.join(__dirname, 'python', 'extract_attachments.py'),
       '--output', tmp,
       '--inputs', ...filePaths
@@ -1949,16 +1799,16 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
   const promptText  = `edit note. Case: ${safeCase}. Template: ${safeTpl}. Attachment: ${safeAttach}. Instructions: ${safeInstr}`
 
   // The actual shell command is logged by spawnClaude as `[prechart] $ ...`.
-  templateJobStartMs = Date.now()
+  const prechartJobStartMs = Date.now()
 
   // Look up the case DB id by folder path so we can bump revision + write backup_path
   let prechartCaseId = null
   try { prechartCaseId = dbCases.getCaseIdByDir(caseDir) } catch (_) {}
 
   const prechartStartedAt = nowIso()
-  templateJobEventId = null
+  let prechartEventId = null
   try {
-    templateJobEventId = dbEvents.startEvent({ caseId: prechartCaseId, jobKind: 'prechart', modelUsed: model, effort: 'high', startedAt: prechartStartedAt })
+    prechartEventId = dbEvents.startEvent({ caseId: prechartCaseId, jobKind: 'prechart', modelUsed: model, effort: 'high', startedAt: prechartStartedAt })
   } catch (e) { log(`[db] startEvent(prechart) failed: ${e.message}`) }
 
   const cleanupAttachment = () => {
@@ -1972,22 +1822,21 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     }
   }
 
-  templateJobProc = spawnClaude({
+  const prechartProc = spawnClaude({
     prompt: promptText,
     model,
     effort: 'high',
     tag: '',
     label: `prechart][${patientLabel}`,
     onClose(code, errText, resultText, resultEvent) {
-      templateJobProc = null
+      ctx.stores.jobs.clear()
       cleanupAttachment()
-      const durationMs = Date.now() - templateJobStartMs
+      const durationMs = Date.now() - prechartJobStartMs
       logSkillStream('', `prechart][${patientLabel}`, resultEvent)
 
       if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
-          templateJobEventId = null
+        if (prechartEventId != null) {
+          try { dbEvents.finishEvent(prechartEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
         }
         broadcastTemplateJob({
           type: 'prechart',
@@ -1998,12 +1847,10 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
           error: 'Claude usage limit reached. Try again once the limit resets.',
           finishedAt: Date.now()
         })
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('service-warning', {
-            title: 'Claude usage limit reached',
-            message: 'Pre-chart could not complete — try again once the limit resets.'
-          })
-        }
+        ctx.renderer.send('service-warning', {
+          title: 'Claude usage limit reached',
+          message: 'Pre-chart could not complete — try again once the limit resets.'
+        })
         return
       }
 
@@ -2024,9 +1871,8 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
           } catch (_) {}
         }
 
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), backupPath, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
-          templateJobEventId = null
+        if (prechartEventId != null) {
+          try { dbEvents.finishEvent(prechartEventId, { status: 'success', ...extractUsage(resultEvent), backupPath, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
         }
         try { dbCases.bumpCaseRevision(prechartCaseId) } catch (e) { log(`[db] prechart bumpRevision failed: ${e.message}`) }
 
@@ -2057,9 +1903,8 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
         })
         notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
       } else {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
-          templateJobEventId = null
+        if (prechartEventId != null) {
+          try { dbEvents.finishEvent(prechartEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
         }
         broadcastTemplateJob({
           type: 'prechart',
@@ -2074,11 +1919,10 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       }
     },
     onError(err) {
-      templateJobProc = null
+      ctx.stores.jobs.clear()
       cleanupAttachment()
-      if (templateJobEventId != null) {
-        try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) onError failed: ${e.message}`) }
-        templateJobEventId = null
+      if (prechartEventId != null) {
+        try { dbEvents.finishEvent(prechartEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) onError failed: ${e.message}`) }
       }
       broadcastTemplateJob({
         type: 'prechart',
@@ -2100,9 +1944,11 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     doctorName: patientLabel,
     lastname: patientLabel,
     caseDir,
-    startedAt: templateJobStartMs,
+    startedAt: prechartJobStartMs,
     model
   })
+
+  ctx.stores.jobs.start('prechart', prechartProc, prechartEventId)
 }
 
 // After a git pull that brought new commits: run npm install (picks up new/changed
@@ -2162,8 +2008,9 @@ function runPostUpdateSetup(onDone) {
   })
 }
 
-function checkForUpdates() {
+function checkForUpdates(appCtx) {
   // Run git pull --ff-only in background — no blocking, no crash on failure
+  const _ctx = appCtx || ctx
   const gitPull = spawn('git', ['pull', '--ff-only'], {
     cwd: __dirname,
     stdio: 'pipe',
@@ -2187,9 +2034,11 @@ function checkForUpdates() {
     if (output === 'Already up to date.') return
 
     // New commits were pulled — re-sync skills immediately from updated code
-    if (NOTES_DIR) {
-      copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-      ensureMcpConfig(NOTES_DIR)
+    const notesDir = _ctx?.paths?.notesDir
+    if (notesDir) {
+      const claudeConfigSrc = path.join(__dirname, 'notes-claude')
+      copyDirSync(claudeConfigSrc, path.join(notesDir, '.claude'))
+      writeMcpConfig(notesDir, p => _ctx?.platform?.hideInternal(p), log)
       log('[update] Skills re-synced from updated code')
     }
 
@@ -2198,8 +2047,8 @@ function checkForUpdates() {
     // both steps complete (or if either fails — the safety net dialog handles
     // the restart-too-early case).
     runPostUpdateSetup(() => {
-      const stagingTag = isStagingBuild() ? ' (staging)' : ''
-      if (tray) tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
+      const stagingTag = _ctx?.platform?.isStaging() ? ' (staging)' : ''
+      if (_ctx?.tray) _ctx.tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
       log('[update] Notifying user to restart')
       const { Notification } = require('electron')
       if (Notification.isSupported()) {
@@ -2228,126 +2077,9 @@ function copyDirSync(src, dest) {
   }
 }
 
-// Project-scope MCP config — written to <NOTES_DIR>/.mcp.json so the `claude -p`
-// invocations (cwd: NOTES_DIR) always have the ICD-10 connector available,
-// even if the user's personal ~/.claude.json doesn't already have it. Re-written
-// on every sync alongside the .claude/ skills copy so an upstream tweak to the
-// connector URL propagates without a manual fix.
-const MCP_CONFIG = {
-  mcpServers: {
-    icd10: {
-      type: 'http',
-      url: 'https://hcls.mcp.claude.com/icd10_codes/mcp'
-    }
-  }
-}
-
-function ensureMcpConfig(notesDir) {
-  if (!notesDir) return
-  const target = path.join(notesDir, '.mcp.json')
-  const desired = JSON.stringify(MCP_CONFIG, null, 2) + '\n'
-
-  // Fast path: if the file already has the right content, do nothing. Avoids
-  // the Windows EPERM entirely on every launch after the first — the file is
-  // hidden (attrib +h via hideNotesDirInternals), and fs.writeFileSync with
-  // the default 'w' flag cannot open a hidden file for writing on Windows
-  // (throws EPERM). Most launches hit this branch since the config is static.
-  try {
-    if (fs.existsSync(target) && fs.readFileSync(target, 'utf8') === desired) return
-  } catch { /* fall through to the write path */ }
-
-  // A write is genuinely needed (first launch, or the config changed). On
-  // Windows, clear the hidden attribute first so the open() succeeds, write,
-  // then re-hide. attrib is synchronous via execSync so the ordering holds.
-  if (process.platform === 'win32' && fs.existsSync(target)) {
-    try { require('child_process').execSync(`attrib -h "${target}"`) } catch { /* best effort */ }
-  }
-  try {
-    fs.writeFileSync(target, desired)
-    hideFileFromUser(target)   // re-hide on Windows (no-op elsewhere)
-  } catch (err) {
-    log(`[mcp] failed to write .mcp.json: ${err.message}`)
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Recording status tracking
+// Recording status tracking — all shims defined at top of file; delegate to ctx store
 // ---------------------------------------------------------------------------
-
-function addRecordingEntry(caseTag, displayName) {
-  sessionRecordings.push({
-    caseTag,
-    displayName: displayName || (caseTag ? caseTag.replace(/_/g, ' ') : 'Unnamed'),
-    startedAt: Date.now(),
-    status: 'transcribing'
-  })
-  broadcastRecordingStatus()
-}
-
-function updateRecordingStatus(caseTag, status) {
-  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-  if (entry) {
-    entry.status = status
-    broadcastRecordingStatus()
-  }
-}
-
-function setRecordingPatients(caseTag, patients) {
-  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-  if (entry) {
-    entry.patients = patients
-    broadcastRecordingStatus()
-  }
-}
-
-function updatePatientStatus(caseTag, patientFolderName, status) {
-  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-  if (!entry || !entry.patients) return
-  const patient = entry.patients.find(p => p.folderName === patientFolderName)
-  if (patient) {
-    patient.status = status
-    const allDone = entry.patients.every(p => p.status === 'completed' || p.status === 'failed')
-    if (allDone) {
-      entry.status = entry.patients.some(p => p.status === 'failed') ? 'failed' : 'completed'
-    }
-    broadcastRecordingStatus()
-  }
-}
-
-// Merge a CDI field update onto the single-patient recording entry and rebroadcast.
-// The CDI fields are decorative on top of the main status state machine — they
-// drive the Open CDI Review button + the approval-required badge in the popup
-// without affecting the recording's primary status transitions.
-function setRecordingCdi(caseTag, cdiUpdate) {
-  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-  if (!entry || !cdiUpdate) return
-  Object.assign(entry, cdiUpdate)
-  broadcastRecordingStatus()
-}
-
-// Same, but for one child in a multi-patient recording.
-function setPatientCdi(caseTag, patientFolderName, cdiUpdate) {
-  const entry = sessionRecordings.find(r => r.caseTag === caseTag)
-  if (!entry || !entry.patients || !cdiUpdate) return
-  const patient = entry.patients.find(p => p.folderName === patientFolderName)
-  if (!patient) return
-  Object.assign(patient, cdiUpdate)
-  broadcastRecordingStatus()
-}
-
-function broadcastRecordingStatus() {
-  const payload = sessionRecordings.map(r => ({
-    ...r,
-    statusLabel: STATUS_LABELS[r.status] || r.status,
-    patients: r.patients ? r.patients.map(p => ({ ...p, statusLabel: STATUS_LABELS[p.status] || p.status })) : null
-  }))
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('recording-status-update', payload)
-  }
-  if (statusWin && !statusWin.isDestroyed()) {
-    statusWin.webContents.send('recording-status-update', payload)
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Single-instance guard
@@ -2361,200 +2093,26 @@ if (!gotTheLock) {
 }
 
 app.on('second-instance', () => {
-    if (win) {
-      if (!win.isVisible()) win.show()
-      win.focus()
-    }
-  })
+  if (ctx?.win) {
+    if (!ctx.win.isVisible()) ctx.win.show()
+    ctx.win.focus()
+  }
+})
 
 // ---------------------------------------------------------------------------
 // App ready
 // ---------------------------------------------------------------------------
 
 app.whenReady().then(async () => {
-  // No dock icon on macOS
-  app.dock?.hide()
-
-  // better-sqlite3 is a native addon — if it didn't load, show a recovery dialog
-  // and quit. The user needs to run reinstall.ps1 to rebuild the binary for this
-  // Electron version. checkForUpdates() does this automatically going forward.
-  if (_dbStartupError) {
-    dialog.showErrorBox(
-      'AI Medical Scribe — reinstall required',
-      'A required component (database module) could not load.\n\n' +
-      'This usually means the app updated but the native module was not yet rebuilt.\n\n' +
-      'Fix: run "reinstall.ps1" from the app folder (or re-run the original installer), then restart.\n\n' +
-      `Detail: ${_dbStartupError.message}`
-    )
-    app.quit()
-    return
-  }
-
-  // Load notes directory from .env if already configured
   const env = readEnv()
-  const savedPath = env.NOTES_DIR_PATH && env.NOTES_DIR_PATH.trim()
-  if (savedPath) {
-    loadPaths(savedPath)
-    fs.mkdirSync(CASES_DIR, { recursive: true })
-    fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
-    copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-    ensureMcpConfig(NOTES_DIR)
-    log('.claude config synced to AI Medical Notes')
-    hideNotesDirInternals()
-    hideExistingCaseMdFiles()
+  const notesDir = env.NOTES_DIR_PATH && env.NOTES_DIR_PATH.trim() || null
 
-    // Clean up any stale template job from a prior crash/restart — the child
-    // process died with the app, so a 'running' status in the file is orphaned.
-    const staleJob = readTemplateJob()
-    if (staleJob && staleJob.status === 'running') {
-      writeTemplateJob({
-        status: 'failed',
-        doctorName: staleJob.doctorName,
-        lastname: staleJob.lastname,
-        error: 'Job was interrupted by an app restart. Please retry.',
-        finishedAt: Date.now()
-      })
-      log('[template] Cleared stale running job state from previous run')
-    }
-
-    // Open (or create) the SQLite metadata DB.
-    try {
-      const db = initDb(savedPath)
-      if (db) {
-        const s = readSettings()
-        const doctors = s.doctors || []
-        if (doctors.length > 0) {
-          migrateDoctorsFromSettings(db, doctors,
-            (patch) => writeSettings({ ...readSettings(), ...patch }),
-            savedPath, extractLastname)
-        } else {
-          tryRestoreDoctorsFromBackup(db, savedPath,
-            (patch) => writeSettings({ ...readSettings(), ...patch }),
-            extractLastname)
-        }
-        log('[db] Database ready')
-      }
-    } catch (e) {
-      log(`[db] WARNING: database init failed — running without DB: ${e.message}`)
-    }
-  }
-  // If no path set, the renderer will show the folder setup view
-
-
-  log('App started')
-
-  // Auto-update: pull latest code from GitHub silently on startup
-  checkForUpdates()
-
-  // Startup diagnostics
-  log('=== Diagnostics ===')
-  log(`OS: ${process.platform} ${os.release()} (${os.arch()})`)
-  log(`Electron: ${process.versions.electron}`)
-  log(`Node: ${process.version}`)
-
-  const pyResolved = resolvePythonCommand()
-  if (pyResolved) {
-    PYTHON = pyResolved.cmd
-    log(`Python: ${pyResolved.version} (via ${PYTHON})`)
-  } else {
-    log('WARNING: Python 3 not found — tried py, python, python3')
-  }
-
-  log(`Build: ${isStagingBuild() ? 'STAGING' : 'production'} (branch=${getCurrentBranch()})`)
-
-  try {
-    const ffVer = execSync('ffmpeg -version', { stdio: 'pipe' }).toString().split('\n')[0].trim()
-    log(`ffmpeg: ${ffVer}`)
-  } catch {
-    log('WARNING: ffmpeg not found — MP3 conversion via pydub may fail')
-  }
-
-  // Log audio device list in background (Windows only — macOS uses BlackHole)
-  if (process.platform === 'win32') {
-    const devProc = spawn(PYTHON, [
-      path.join(__dirname, 'python', 'record.py'), '--list-devices'
-    ], { cwd: __dirname, stdio: 'pipe' })
-    let devOut = ''
-    devProc.stdout.on('data', d => { devOut += d.toString() })
-    devProc.on('close', code => {
-      if (code === 0) {
-        try {
-          const info = JSON.parse(devOut.trim())
-          log(`Default output: ${info.defaultOutput}`)
-          info.devices.forEach(d => log(`  Loopback [${d.index}]: ${d.name}${d.isDefault ? ' (default)' : ''}`))
-        } catch { /* ignore parse errors */ }
-      }
-    })
-  }
-
-  log('=== End Diagnostics ===')
-
-  // Create tray
-  tray = new Tray(path.join(__dirname, 'assets', 'tray-icon.png'))
-  tray.setToolTip('AI Medical Scribe')
-
-  // Right-click context menu
-  const contextMenu = Menu.buildFromTemplate([
-    { label: 'Quit', click: () => app.quit() }
-  ])
-  tray.on('right-click', () => tray.popUpContextMenu(contextMenu))
-  tray.on('click', () => togglePopup())
-
-  // Create main window
-  win = new BrowserWindow({
-    width: 280,
-    height: 420,
-    show: false,
-    frame: false,
-    resizable: false,
-    alwaysOnTop: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
+  ctx = await bootstrap({
+    notesDir,
+    dbStartupError: _dbStartupError,
+    registerIpcHandlers,
+    checkForUpdates,
   })
-
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
-  win.once('ready-to-show', () => win.show())
-
-  ipcMain.handle('hide-window', () => { if (win && !win.isDestroyed()) win.minimize() })
-
-  // Minimize to taskbar instead of closing; real quit comes from tray → Quit
-  win.on('close', e => {
-    if (!isQuitting) {
-      e.preventDefault()
-      win.minimize()
-    }
-  })
-
-  // macOS BlackHole check
-  if (process.platform === 'darwin') {
-    try {
-      execSync(
-        `${PYTHON} -c "import sounddevice as sd; assert any('BlackHole' in d['name'] for d in sd.query_devices())"`,
-        { stdio: 'pipe' }
-      )
-      log('BlackHole detected')
-    } catch {
-      const msg = 'BlackHole not found. Install: brew install blackhole-2ch'
-      log(`WARNING: ${msg}`)
-      win.webContents.on('did-finish-load', () => {
-        if (win && !win.isDestroyed()) win.webContents.send('setup-warning', msg)
-      })
-    }
-  }
-
-  // Clean up recording process on quit
-  app.on('before-quit', () => {
-    isQuitting = true
-    if (recordingProcess) {
-      log('Killing recording process before quit')
-      recordingProcess.kill()
-    }
-  })
-
-  registerIpcHandlers()
 })
 
 // ---------------------------------------------------------------------------
@@ -2575,13 +2133,16 @@ function waitForExit(proc) {
 // IPC Handlers
 // ---------------------------------------------------------------------------
 
-function registerIpcHandlers() {
+function registerIpcHandlers(appCtx) {
+  // ---- hide-window ----
+  ipcMain.handle('hide-window', () => { if (appCtx.win && !appCtx.win.isDestroyed()) appCtx.win.minimize() })
+
   // ---- get-state ----
-  ipcMain.handle('get-state', () => currentState)
+  ipcMain.handle('get-state', () => appCtx.stores.state.getState())
 
   // ---- get-build-info ----
   ipcMain.handle('get-build-info', () => ({
-    isStaging: isStagingBuild(),
+    isStaging: appCtx.platform.isStaging(),
     branch:    getCurrentBranch()
   }))
 
@@ -2595,35 +2156,33 @@ function registerIpcHandlers() {
       return { ok: false, error: 'no-doctors' }
     }
 
+    let selectedId
     if (doctors.length === 1) {
-      activeDoctorId = doctors[0].id
+      selectedId = doctors[0].id
       log(`Auto-selected doctor: ${doctors[0].name}`)
     } else {
       // Multiple doctors — ask renderer to pick
-      const selectedId = await new Promise(resolve => {
-        doctorPickerResolver = resolve
-        if (win && !win.isDestroyed()) win.webContents.send('pick-doctor', doctors)
-      })
+      appCtx.renderer.send('pick-doctor', doctors)
+      selectedId = await appCtx.stores.session.awaitDoctorPick()
 
       if (!selectedId) {
         log('start-session cancelled: no doctor selected')
         return { ok: false, error: 'cancelled' }
       }
-
-      activeDoctorId = selectedId
       log(`Selected doctor ID: ${selectedId}`)
     }
 
-    activeSessionDir = createSessionFolder()
-    sessionRecordings = []
-    broadcastRecordingStatus()
+    appCtx.stores.session.setDoctor(selectedId)
+    const sessionDir = createSessionFolder()
+    appCtx.stores.recordings.clear()
 
+    let sessionId = null
     try {
-      activeSessionId = dbSessions.startSession({ sessionFolder: activeSessionDir, doctorId: activeDoctorId })
+      sessionId = dbSessions.startSession({ sessionFolder: sessionDir, doctorId: selectedId })
     } catch (e) {
       log(`[db] startSession insert failed: ${e.message}`)
-      activeSessionId = null
     }
+    appCtx.stores.session.setSession(sessionId, sessionDir)
 
     setState(STATE.SESSION_ACTIVE)
     return { ok: true }
@@ -2632,35 +2191,34 @@ function registerIpcHandlers() {
   // ---- stop-session ----
   ipcMain.handle('stop-session', async () => {
     log('stop-session')
-    if (doctorPickerResolver) {
-      doctorPickerResolver(null)
-      doctorPickerResolver = null
-    }
+    appCtx.stores.session.cancelDoctorPick()
 
     try {
-      if (activeSessionId) dbSessions.endSession(activeSessionId)
+      const { sessionId } = appCtx.stores.session.get()
+      if (sessionId) dbSessions.endSession(sessionId)
     } catch (e) {
       log(`[db] endSession failed: ${e.message}`)
     }
 
-    activeDoctorId = null
-    activeSessionId = null
-    activeSessionDir = null
     // If somehow recording when session is stopped, kill the process
-    if (recordingProcess) {
-      recordingProcess.kill()
-      await waitForExit(recordingProcess)
-      recordingProcess = null
+    if (appCtx.stores.recorder.isRecording()) {
+      const proc = appCtx.stores.recorder.getProcess()
+      const tmpMp3 = appCtx.stores.recorder.getTempMp3Path()
+      appCtx.stores.recorder.clearProcess()
+      if (proc) {
+        proc.kill()
+        await waitForExit(proc)
+      }
+      if (tmpMp3 && fs.existsSync(tmpMp3)) {
+        try { fs.unlinkSync(tmpMp3) } catch {}
+      }
     }
-    if (tempMp3Path && fs.existsSync(tempMp3Path)) {
-      try { fs.unlinkSync(tempMp3Path) } catch {}
+    appCtx.stores.recorder.cancelPatientName()
+    if (appCtx.statusWin && !appCtx.statusWin.isDestroyed()) {
+      appCtx.statusWin.close()
     }
-    tempMp3Path = null
-    patientNameResolver = null
-    if (statusWin && !statusWin.isDestroyed()) {
-      statusWin.close()
-    }
-    sessionRecordings = []
+    appCtx.stores.session.clear()
+    appCtx.stores.recordings.clear()
     setState(STATE.IDLE)
     return true
   })
@@ -2668,44 +2226,45 @@ function registerIpcHandlers() {
   // ---- start-recording ----
   ipcMain.handle('start-recording', () => {
     log('start-recording')
-    tempMp3Path = path.join(os.tmpdir(), `rec_${Date.now()}.mp3`)
-    log(`Temp MP3: ${tempMp3Path}`)
+    const tmpMp3 = path.join(os.tmpdir(), `rec_${Date.now()}.mp3`)
+    log(`Temp MP3: ${tmpMp3}`)
 
     const settings = readSettings()
     const recordArgs = [
       path.join(__dirname, 'python', 'record.py'),
-      '--output', tempMp3Path
+      '--output', tmpMp3
     ]
     if (settings.manualDeviceSelection && settings.selectedDeviceIndex != null) {
       recordArgs.push('--device', String(settings.selectedDeviceIndex))
       log(`Using manual device index: ${settings.selectedDeviceIndex}`)
     }
 
-    pendingAudioDuration = null
-    recordingProcess = spawn(PYTHON, recordArgs, { cwd: __dirname })
+    const recProc = spawn(appCtx.python, recordArgs, { cwd: __dirname })
+    appCtx.stores.recorder.setProcess(recProc, tmpMp3)
 
-    recordingProcess.stdout.on('data', d => {
+    recProc.stdout.on('data', d => {
       const msg = d.toString().trim()
       log(`[record.py] ${msg}`)
       const m = msg.match(/DURATION_SECONDS:\s*([\d.]+)/)
-      if (m) pendingAudioDuration = parseFloat(m[1])
+      if (m) appCtx.stores.recorder.setPendingDuration(parseFloat(m[1]))
     })
-    recordingProcess.stderr.on('data', d => {
+    recProc.stderr.on('data', d => {
       const msg = d.toString().trim()
       if (!msg) return
       log(`[record.py ERR] ${msg}`)
       // Surface BlackHole / setup errors to renderer
       if (msg.includes('ERROR')) {
-        if (win && !win.isDestroyed()) win.webContents.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
+        appCtx.renderer.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
       }
     })
-    recordingProcess.on('exit', code => {
+    recProc.on('exit', code => {
       log(`record.py exited ${code}`)
-      // recordingProcess is nulled by stop-recording before it awaits exit,
-      // so a non-null value here means Python died on its own — recover to SESSION_ACTIVE.
-      if ((currentState === STATE.RECORDING || currentState === STATE.PAUSED) && recordingProcess !== null) {
+      // isRecording() returns false if stop-recording already cleared the process —
+      // so a true here means Python died on its own — recover to SESSION_ACTIVE.
+      const curState = appCtx.stores.state.getState()
+      if ((curState === STATE.RECORDING || curState === STATE.PAUSED) && appCtx.stores.recorder.isRecording()) {
         log('record.py exited unexpectedly — returning to SESSION_ACTIVE')
-        recordingProcess = null
+        appCtx.stores.recorder.clearProcess()
         setState(STATE.SESSION_ACTIVE)
       }
     })
@@ -2719,23 +2278,12 @@ function registerIpcHandlers() {
     log('stop-recording')
 
     let exitPromise = Promise.resolve()
-    if (recordingProcess) {
-      // Null recordingProcess BEFORE awaiting exit so the exit handler (registered in
-      // start-recording) knows this is an intentional stop and doesn't fire the
-      // "exited unexpectedly" recovery path.
-      const procToStop = recordingProcess
-      recordingProcess = null
-      // Signal Python to stop cleanly via stdin (reliable on Windows).
-      // Python flushes the WAV and converts to MP3 before exiting.
-      // Do NOT use kill() here — TerminateProcess() on Windows gives Python
-      // no chance to run cleanup code.
-      try {
-        procToStop.stdin.write('stop\n')
-        procToStop.stdin.end()
-      } catch (e) {
-        log(`stdin write failed (process may have already exited): ${e.message}`)
-      }
-      exitPromise = waitForExit(procToStop)
+    const tempMp3Path = appCtx.stores.recorder.getTempMp3Path()
+    if (appCtx.stores.recorder.isRecording()) {
+      // stop() nulls _proc internally so the exit handler sees isRecording()=false
+      // and skips the "exited unexpectedly" recovery path. Returns the proc ref.
+      const procToStop = appCtx.stores.recorder.stop()
+      if (procToStop) exitPromise = waitForExit(procToStop)
     } else {
       log('WARNING: stop-recording called but recordingProcess already gone')
     }
@@ -2743,12 +2291,12 @@ function registerIpcHandlers() {
     // Update UI immediately — don't wait for Python's WAV→MP3 conversion first.
     // This stops the timer and shows PROCESSING state right when Save is clicked.
     setState(STATE.PROCESSING)
-    if (win && !win.isDestroyed()) win.webContents.send('show-patient-form')
+    appCtx.renderer.send('show-patient-form')
 
     // Wait for patient name entry and Python's WAV→MP3 conversion concurrently.
     // The scribe can name the case while the conversion runs in the background.
     const [name] = await Promise.all([
-      new Promise(resolve => { patientNameResolver = resolve }),
+      appCtx.stores.recorder.awaitPatientName(),
       exitPromise
     ])
 
@@ -2760,7 +2308,8 @@ function registerIpcHandlers() {
     const transcriptDest = path.join(caseDir, 'transcript.md')
     const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
 
-    const _stopDoctor = dbDoctors.getDoctor(activeDoctorId) || getAllDoctors().find(d => d.id === activeDoctorId)
+    const { doctorId: _stopDoctorId } = appCtx.stores.session.get()
+    const _stopDoctor = dbDoctors.getDoctor(_stopDoctorId) || getAllDoctors().find(d => d.id === _stopDoctorId)
     const _stopTemplatePath = _stopDoctor?.templatePath || null
 
     if (fs.existsSync(tempMp3Path)) {
@@ -2770,7 +2319,6 @@ function registerIpcHandlers() {
         log(`MP3 moved to: ${mp3Dest}`)
       } catch (e) {
         log(`ERROR moving MP3 from ${tempMp3Path} to ${mp3Dest}: ${e.message}`)
-        tempMp3Path = null
         setState(STATE.SESSION_ACTIVE)
         notifyUser('Recording failed', 'Could not save the recording. Check the log.')
         return false
@@ -2779,18 +2327,17 @@ function registerIpcHandlers() {
       log(`WARNING: temp MP3 not found at ${tempMp3Path} — recording may have failed`)
     }
 
-    // Capture audio metadata before nulling the duration var
-    const capturedDuration = pendingAudioDuration
-    pendingAudioDuration = null
-    tempMp3Path = null
+    // Capture audio metadata before clearing the recorder state
+    const capturedDuration = appCtx.stores.recorder.consumePendingDuration()
 
     // Create the case DB row now that the MP3 is in its final location.
+    const { doctorId: _caseDoctorId, sessionId: _caseSessionId } = appCtx.stores.session.get()
     let caseId = null
     try {
       caseId = dbCases.createCase({
         patientName:  name || null,
-        doctorId:     activeDoctorId,
-        sessionId:    activeSessionId,
+        doctorId:     _caseDoctorId,
+        sessionId:    _caseSessionId,
         caseDir,
         source:       'recording',
         mp3Path:      mp3Dest,
@@ -2813,8 +2360,8 @@ function registerIpcHandlers() {
     setState(STATE.SESSION_ACTIVE)
 
     // If auto-record is enabled, tell the renderer to trigger a new recording
-    if (readSettings().autoRecord && win && !win.isDestroyed()) {
-      win.webContents.send('auto-start-recording')
+    if (readSettings().autoRecord) {
+      appCtx.renderer.send('auto-start-recording')
     }
 
     return true
@@ -2823,13 +2370,7 @@ function registerIpcHandlers() {
   // ---- pause-recording ----
   ipcMain.handle('pause-recording', () => {
     log('pause-recording')
-    if (recordingProcess) {
-      try {
-        recordingProcess.stdin.write('pause\n')
-      } catch (e) {
-        log(`stdin write failed: ${e.message}`)
-      }
-    }
+    appCtx.stores.recorder.pause()
     setState(STATE.PAUSED)
     return true
   })
@@ -2837,13 +2378,7 @@ function registerIpcHandlers() {
   // ---- resume-recording ----
   ipcMain.handle('resume-recording', () => {
     log('resume-recording')
-    if (recordingProcess) {
-      try {
-        recordingProcess.stdin.write('resume\n')
-      } catch (e) {
-        log(`stdin write failed: ${e.message}`)
-      }
-    }
+    appCtx.stores.recorder.resume()
     setState(STATE.RECORDING)
     return true
   })
@@ -2852,41 +2387,37 @@ function registerIpcHandlers() {
   ipcMain.handle('discard-recording', async () => {
     log('discard-recording')
 
-    if (recordingProcess) {
-      const procToStop = recordingProcess
-      recordingProcess = null
-      const mp3ToDelete = tempMp3Path
-      tempMp3Path = null
-      try {
-        procToStop.stdin.write('stop\n')
-        procToStop.stdin.end()
-      } catch (e) {
-        log(`stdin write failed (process may have already exited): ${e.message}`)
-      }
+    if (appCtx.stores.recorder.isRecording()) {
+      const mp3ToDelete = appCtx.stores.recorder.getTempMp3Path()
+      // discard() nulls _proc + _tempMp3Path internally then sends stop\n
+      const procToStop = appCtx.stores.recorder.discard()
       // Update UI immediately — stop the timer without waiting for Python's conversion.
       setState(STATE.SESSION_ACTIVE)
       // Clean up temp files in background after Python exits.
       // Also delete the WAV in case Python hadn't converted it yet.
-      waitForExit(procToStop).then(() => {
-        const wavPath = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_tmp.wav') : null
-        for (const p of [mp3ToDelete, wavPath]) {
-          if (p && fs.existsSync(p)) {
-            try { fs.unlinkSync(p) } catch (e) { log(`Failed to delete temp file: ${e.message}`) }
+      if (procToStop) {
+        waitForExit(procToStop).then(() => {
+          const wavPath = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_tmp.wav') : null
+          for (const p of [mp3ToDelete, wavPath]) {
+            if (p && fs.existsSync(p)) {
+              try { fs.unlinkSync(p) } catch (e) { log(`Failed to delete temp file: ${e.message}`) }
+            }
           }
-        }
-      }).catch(() => {})
+        }).catch(() => {})
+      }
       return true
     }
 
-    if (tempMp3Path && fs.existsSync(tempMp3Path)) {
+    const tmpMp3 = appCtx.stores.recorder.getTempMp3Path()
+    if (tmpMp3 && fs.existsSync(tmpMp3)) {
       try {
-        fs.unlinkSync(tempMp3Path)
-        log(`Discarded temp MP3: ${tempMp3Path}`)
+        fs.unlinkSync(tmpMp3)
+        log(`Discarded temp MP3: ${tmpMp3}`)
       } catch (e) {
         log(`Failed to delete temp MP3: ${e.message}`)
       }
     }
-    tempMp3Path = null
+    appCtx.stores.recorder.clearProcess()
 
     setState(STATE.SESSION_ACTIVE)
     return true
@@ -2894,10 +2425,7 @@ function registerIpcHandlers() {
 
   // ---- submit-patient-name (registered once at startup) ----
   ipcMain.handle('submit-patient-name', (_, name) => {
-    if (patientNameResolver) {
-      patientNameResolver(sanitizeName(name))
-      patientNameResolver = null
-    }
+    appCtx.stores.recorder.resolvePatientName(sanitizeName(name))
     return true
   })
 
@@ -2929,7 +2457,7 @@ function registerIpcHandlers() {
     const trimmed = (name || '').trim()
     if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
 
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: `Select Template for ${trimmed}`,
       properties: ['openFile'],
       filters: [{ name: 'Markdown Files', extensions: ['md'] }]
@@ -2940,7 +2468,7 @@ function registerIpcHandlers() {
     }
 
     const srcPath = result.filePaths[0]
-    const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
+    const destPath = path.join(appCtx.paths.templatesDir, path.basename(srcPath))
     fs.copyFileSync(srcPath, destPath)
     const doctor = { id: String(Date.now()), name: trimmed, templatePath: destPath, lastname: extractLastname(trimmed) || trimmed.toLowerCase() }
     try {
@@ -2958,7 +2486,7 @@ function registerIpcHandlers() {
     const doctor = dbDoctors.getDoctor(id) || getAllDoctors().find(d => d.id === id)
     if (!doctor) return { ok: false, error: 'Doctor not found' }
 
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: `Select Template for ${doctor.name}`,
       properties: ['openFile'],
       filters: [{ name: 'Markdown Files', extensions: ['md'] }]
@@ -2969,7 +2497,7 @@ function registerIpcHandlers() {
     }
 
     const srcPath = result.filePaths[0]
-    const destPath = path.join(TEMPLATES_DIR, path.basename(srcPath))
+    const destPath = path.join(appCtx.paths.templatesDir, path.basename(srcPath))
     fs.copyFileSync(srcPath, destPath)
     try {
       dbDoctors.updateDoctorTemplate(id, destPath)
@@ -2988,7 +2516,7 @@ function registerIpcHandlers() {
   // ---- browse-notes-files ----
   // Multi-select file picker for sample notes + supporting documents.
   ipcMain.handle('browse-notes-files', async () => {
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select sample notes and supporting documents',
       properties: ['openFile', 'multiSelections'],
       filters: [
@@ -3009,14 +2537,14 @@ function registerIpcHandlers() {
     if (!Array.isArray(filePaths) || filePaths.length === 0) {
       return { ok: false, error: 'At least one source file is required' }
     }
-    if (templateJobProc) {
+    if (appCtx.stores.jobs.isRunning()) {
       return { ok: false, error: 'A template creation job is already running' }
     }
 
     const lastname = extractLastname(name)
     if (!lastname) return { ok: false, error: 'Doctor name produced an empty identifier' }
 
-    const stagingDir = path.join(NOTES_DIR, 'Templates', '_staging', lastname)
+    const stagingDir = path.join(appCtx.paths.notesDir, 'Templates', '_staging', lastname)
     try {
       // Fresh staging folder — wipe any leftovers from a prior failed run
       if (fs.existsSync(stagingDir)) {
@@ -3041,7 +2569,7 @@ function registerIpcHandlers() {
 
   // ---- browse-corrections-file ----
   ipcMain.handle('browse-corrections-file', async () => {
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select corrections file',
       properties: ['openFile'],
       filters: [
@@ -3064,7 +2592,7 @@ function registerIpcHandlers() {
     if (!hasCorrections && !hasCorrectionsFile && !hasSamples) {
       return 'Provide corrections text, a corrections file, or sample notes.'
     }
-    if (templateJobProc) return 'A template job is already running.'
+    if (appCtx.stores.jobs.isRunning()) return 'A template job is already running.'
 
     const doctor = getAllDoctors().find(d => d.name === name)
     if (!doctor || !doctor.templatePath) {
@@ -3079,7 +2607,7 @@ function registerIpcHandlers() {
     if (hasSamples) {
       const lastname = extractLastname(name) || name.toLowerCase()
       const ts = Date.now()
-      samplesDir = path.join(NOTES_DIR, 'Templates', '_staging_update', `${lastname}_${ts}`)
+      samplesDir = path.join(appCtx.paths.notesDir, 'Templates', '_staging_update', `${lastname}_${ts}`)
       try {
         fs.mkdirSync(samplesDir, { recursive: true })
         for (const src of sampleFiles) {
@@ -3117,13 +2645,13 @@ function registerIpcHandlers() {
 
   // ---- cancel-template-creation ----
   ipcMain.handle('cancel-template-creation', () => {
-    if (!templateJobProc) return { ok: false, error: 'No job running' }
+    if (!appCtx.stores.jobs.isRunning()) return { ok: false, error: 'No job running' }
     try {
-      if (templateJobEventId != null) {
-        try { dbEvents.finishEvent(templateJobEventId, { status: 'cancelled', durationMs: Date.now() - templateJobStartMs, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(cancel) failed: ${e.message}`) }
-        templateJobEventId = null  // onClose fires after kill — null ID makes finishEvent a no-op
+      const evId = appCtx.stores.jobs.getEventId()
+      if (evId != null) {
+        try { dbEvents.finishEvent(evId, { status: 'cancelled', durationMs: appCtx.stores.jobs.elapsedMs(), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(cancel) failed: ${e.message}`) }
       }
-      templateJobProc.kill()
+      appCtx.stores.jobs.cancel()
       log('[template] Cancellation requested')
       return { ok: true }
     } catch (e) {
@@ -3139,7 +2667,7 @@ function registerIpcHandlers() {
   // Multi-select picker for attachment files (prechart docs, prior visit notes, etc.).
   // Same formats the edit-note skill knows how to read.
   ipcMain.handle('browse-prechart-files', async () => {
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select attachment files',
       properties: ['openFile', 'multiSelections'],
       filters: [
@@ -3152,15 +2680,15 @@ function registerIpcHandlers() {
   })
 
   // ---- list-recent-patient-cases ----
-  ipcMain.handle('list-recent-patient-cases', () => findRecentPatientCases(NOTES_DIR, 30))
+  ipcMain.handle('list-recent-patient-cases', () => findRecentPatientCases(appCtx.paths.notesDir, 30))
 
   // ---- browse-patient-case-folder ----
   // Folder picker scoped to <NOTES_DIR>/Cases/. Validates the picked folder
   // contains a *_soap_note.md (excluding backup files).
   ipcMain.handle('browse-patient-case-folder', async () => {
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select patient case folder',
-      defaultPath: CASES_DIR,
+      defaultPath: appCtx.paths.casesDir,
       properties: ['openDirectory']
     })
     if (result.canceled || !result.filePaths.length) return { ok: false, error: 'cancelled' }
@@ -3173,7 +2701,7 @@ function registerIpcHandlers() {
 
   // ---- start-prechart-job ----
   ipcMain.handle('start-prechart-job', async (_, doctorId, caseDir, instructions, attachmentPaths) => {
-    if (templateJobProc) return { ok: false, error: 'Another job is already running.' }
+    if (appCtx.stores.jobs.isRunning()) return { ok: false, error: 'Another job is already running.' }
 
     const allDocs = getAllDoctors()
     log(`[prechart] doctorId received: ${JSON.stringify(doctorId)}`)
@@ -3232,7 +2760,7 @@ function registerIpcHandlers() {
 
       if (tp) {
         const othersUsingTemplate = dbDoctors.listDoctors().some(d => d.id !== id && d.templatePath === tp)
-        if (!othersUsingTemplate && tp.startsWith(TEMPLATES_DIR) && fs.existsSync(tp)) {
+        if (!othersUsingTemplate && tp.startsWith(appCtx.paths.templatesDir) && fs.existsSync(tp)) {
           try {
             fs.unlinkSync(tp)
             log(`Template file removed: ${tp}`)
@@ -3270,10 +2798,7 @@ function registerIpcHandlers() {
 
   // ---- select-doctor (resolves picker shown during start-session) ----
   ipcMain.handle('select-doctor', (_, id) => {
-    if (doctorPickerResolver) {
-      doctorPickerResolver(id)
-      doctorPickerResolver = null
-    }
+    appCtx.stores.session.resolveDoctorPick(id)
     return true
   })
 
@@ -3304,12 +2829,9 @@ function registerIpcHandlers() {
   // ---- save-settings ----
   ipcMain.handle('save-settings', (_, settings) => {
     try {
-      const current = readSettings()
-      const merged = { ...current, ...settings }
-      // CDI on ⟹ ICD on (CDI needs ICD codes in the note). Persist the corrected value.
-      if (merged.enableCdi) merged.enableIcd = true
-      writeSettings(merged)
-      log(`Settings saved: ${JSON.stringify(merged)}`)
+      // CDI⟹ICD invariant is enforced by createSettingsStore.save() automatically.
+      writeSettings(settings)
+      log(`Settings saved: ${JSON.stringify(readSettings())}`)
       return { ok: true }
     } catch (e) {
       log(`ERROR saving settings: ${e.message}`)
@@ -3320,7 +2842,7 @@ function registerIpcHandlers() {
   // ---- list-audio-devices ----
   ipcMain.handle('list-audio-devices', () => {
     return new Promise(resolve => {
-      const proc = spawn(PYTHON, [
+      const proc = spawn(appCtx.python, [
         path.join(__dirname, 'python', 'record.py'),
         '--list-devices'
       ], { cwd: __dirname, stdio: 'pipe' })
@@ -3345,7 +2867,7 @@ function registerIpcHandlers() {
 
   // ---- browse-audio-file ----
   ipcMain.handle('browse-audio-file', async () => {
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select Audio File',
       properties: ['openFile'],
       filters: [
@@ -3378,7 +2900,8 @@ function registerIpcHandlers() {
       return false
     }
 
-    const _uploadDoctor = dbDoctors.getDoctor(activeDoctorId) || getAllDoctors().find(d => d.id === activeDoctorId)
+    const { doctorId: _uploadDoctorId, sessionId: _uploadSessionId } = appCtx.stores.session.get()
+    const _uploadDoctor = dbDoctors.getDoctor(_uploadDoctorId) || getAllDoctors().find(d => d.id === _uploadDoctorId)
     const _uploadTemplatePath = _uploadDoctor?.templatePath || null
 
     // Create the case DB row
@@ -3387,8 +2910,8 @@ function registerIpcHandlers() {
     try {
       caseId = dbCases.createCase({
         patientName:  name || null,
-        doctorId:     activeDoctorId,
-        sessionId:    activeSessionId,
+        doctorId:     _uploadDoctorId,
+        sessionId:    _uploadSessionId,
         caseDir,
         source:       'upload',
         mp3Path:      audioDest,
@@ -3404,7 +2927,7 @@ function registerIpcHandlers() {
     // Probe audio duration via pydub (already a required dep) — non-blocking
     if (caseId && fs.existsSync(audioDest)) {
       const probeProc = spawn(
-        PYTHON,
+        appCtx.python,
         [path.join(__dirname, 'python', 'probe_duration.py'), audioDest],
         { stdio: ['ignore', 'pipe', 'pipe'] }
       )
@@ -3432,12 +2955,12 @@ function registerIpcHandlers() {
   })
 
   // ---- get-notes-dir ----
-  ipcMain.handle('get-notes-dir', () => NOTES_DIR)
+  ipcMain.handle('get-notes-dir', () => appCtx.paths.notesDir)
 
   // ---- change-notes-dir ----
   ipcMain.handle('change-notes-dir', async (_, mode = 'new') => {
     const isExisting = mode === 'existing'
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog(appCtx.win, {
       title: isExisting ? 'Select your existing AI Medical Notes folder' : 'Choose where to store your AI Medical Notes',
       buttonLabel: 'Select Folder',
       properties: ['openDirectory', 'createDirectory']
@@ -3445,19 +2968,23 @@ function registerIpcHandlers() {
     if (result.canceled || !result.filePaths.length) return { ok: false }
     const newNotesDir = isExisting ? result.filePaths[0] : path.join(result.filePaths[0], 'AI Medical Notes')
 
-    const oldNotesDir     = NOTES_DIR
-    const oldTemplatesDir = TEMPLATES_DIR
+    const oldNotesDir     = appCtx.paths.notesDir
+    const oldTemplatesDir = appCtx.paths.templatesDir
     const oldSettings     = readSettings()
 
     writeEnvKey('NOTES_DIR_PATH', newNotesDir)
-    loadPaths(newNotesDir)
-    fs.mkdirSync(CASES_DIR, { recursive: true })
-    fs.mkdirSync(TEMPLATES_DIR, { recursive: true })
+
+    // Compute new paths for dir/file ops before re-pointing ctx
+    const newCasesDir     = path.join(newNotesDir, 'Cases')
+    const newTemplatesDir = path.join(newNotesDir, 'Templates')
+
+    fs.mkdirSync(newCasesDir,     { recursive: true })
+    fs.mkdirSync(newTemplatesDir, { recursive: true })
 
     if (oldTemplatesDir &&
-        oldTemplatesDir !== TEMPLATES_DIR &&
+        oldTemplatesDir !== newTemplatesDir &&
         fs.existsSync(oldTemplatesDir)) {
-      copyDirSync(oldTemplatesDir, TEMPLATES_DIR)
+      copyDirSync(oldTemplatesDir, newTemplatesDir)
     }
 
     const migratedSettings = {
@@ -3466,30 +2993,43 @@ function registerIpcHandlers() {
         if (!d || typeof d.templatePath !== 'string') return d
         if (oldNotesDir && d.templatePath.startsWith(oldNotesDir + path.sep)) {
           const rel = path.relative(oldNotesDir, d.templatePath)
-          return { ...d, templatePath: path.join(NOTES_DIR, rel) }
+          return { ...d, templatePath: path.join(newNotesDir, rel) }
         }
         return d
       })
     }
 
+    // Re-point ctx to the new dir by re-creating it via createAppContext.
+    // bootstrapNotesDir handles skills sync, MCP config, hide internals, and DB init.
+    const { createAppContext } = require('./context/appContext')
+    const newCtx = createAppContext(newNotesDir)
+    // Transfer window/tray references from the old ctx.
+    newCtx.win   = appCtx.win
+    newCtx.tray  = appCtx.tray
+    newCtx.python = appCtx.python
+    newCtx.setStatusSend = appCtx.setStatusSend
+    newCtx.statusWin = appCtx.statusWin
+    newCtx.attachWindows(appCtx.renderer, (ch, ...a) => appCtx.sendStatus(ch, ...a))
+    ctx = newCtx
+    Object.assign(appCtx, newCtx)  // shallow-copy new ctx into the local reference
+
+    const { bootstrapNotesDir } = require('./startup/bootstrapNotesDir')
+    await bootstrapNotesDir(newNotesDir, ctx)
     writeSettings(migratedSettings)
-    copyDirSync(CLAUDE_CONFIG_SRC, path.join(NOTES_DIR, '.claude'))
-    ensureMcpConfig(NOTES_DIR)
-    hideNotesDirInternals()
-    hideExistingCaseMdFiles()
 
     // Reset DB connection to point at the new location.
     try {
-      const db = resetDb(NOTES_DIR)
+      const db = resetDb(newNotesDir)
       if (db) {
+        ctx.setDb(db)
         const s = readSettings()
         const doctors = s.doctors || []
         if (doctors.length > 0) {
           migrateDoctorsFromSettings(db, doctors,
             (patch) => writeSettings({ ...readSettings(), ...patch }),
-            NOTES_DIR, extractLastname)
+            newNotesDir, extractLastname)
         } else {
-          tryRestoreDoctorsFromBackup(db, NOTES_DIR,
+          tryRestoreDoctorsFromBackup(db, newNotesDir,
             (patch) => writeSettings({ ...readSettings(), ...patch }),
             extractLastname)
         }
@@ -3499,26 +3039,20 @@ function registerIpcHandlers() {
       log(`[db] WARNING: database init failed after dir change: ${e.message}`)
     }
 
-    log(`Notes directory set to: ${NOTES_DIR} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)
-    return { ok: true, path: NOTES_DIR }
+    log(`Notes directory set to: ${newNotesDir} (migrated ${migratedSettings.doctors?.length || 0} doctor template paths)`)
+    return { ok: true, path: newNotesDir }
   })
 
   // ---- get-session-recordings ----
-  ipcMain.handle('get-session-recordings', () => {
-    return sessionRecordings.map(r => ({
-      ...r,
-      statusLabel: STATUS_LABELS[r.status] || r.status,
-      patients: r.patients ? r.patients.map(p => ({ ...p, statusLabel: STATUS_LABELS[p.status] || p.status })) : null
-    }))
-  })
+  ipcMain.handle('get-session-recordings', () => appCtx.stores.recordings.getAll())
 
   // ---- open-status-window ----
   ipcMain.handle('open-status-window', () => {
-    if (statusWin && !statusWin.isDestroyed()) {
-      statusWin.focus()
+    if (appCtx.statusWin && !appCtx.statusWin.isDestroyed()) {
+      appCtx.statusWin.focus()
       return
     }
-    const mainBounds = win.getBounds()
+    const mainBounds = appCtx.win.getBounds()
     const statusWidth = 300
     const statusHeight = 380
     const { workArea } = screen.getPrimaryDisplay()
@@ -3526,7 +3060,7 @@ function registerIpcHandlers() {
     let sy = mainBounds.y
     sx = Math.max(workArea.x, Math.min(sx, workArea.x + workArea.width - statusWidth))
     sy = Math.max(workArea.y, Math.min(sy, workArea.y + workArea.height - statusHeight))
-    statusWin = new BrowserWindow({
+    const statusWin = new BrowserWindow({
       width: statusWidth,
       height: statusHeight,
       x: sx,
@@ -3541,22 +3075,30 @@ function registerIpcHandlers() {
         nodeIntegration: false
       }
     })
+    appCtx.statusWin = statusWin
+    appCtx.setStatusSend((ch, ...a) => {
+      if (!statusWin.isDestroyed()) statusWin.webContents.send(ch, ...a)
+    })
     statusWin.loadFile(path.join(__dirname, 'renderer', 'status.html'))
-    statusWin.on('closed', () => { statusWin = null })
+    statusWin.on('closed', () => {
+      appCtx.statusWin = null
+      appCtx.setStatusSend(null)
+    })
   })
 
   // ---- close-status-window ----
   ipcMain.handle('close-status-window', () => {
-    if (statusWin && !statusWin.isDestroyed()) statusWin.close()
+    if (appCtx.statusWin && !appCtx.statusWin.isDestroyed()) appCtx.statusWin.close()
   })
 
   // ---- open-soap-note ----
   ipcMain.handle('open-soap-note', async (_, filePath) => {
     const { shell } = require('electron')
-    // Confine to CASES_DIR so the renderer cannot open arbitrary paths.
+    // Confine to casesDir so the renderer cannot open arbitrary paths.
     const normalized = path.resolve(filePath)
-    if (!CASES_DIR || !normalized.startsWith(path.resolve(CASES_DIR) + path.sep)) {
-      log(`open-soap-note: path outside CASES_DIR rejected: ${filePath}`)
+    const casesDir = appCtx.paths.casesDir
+    if (!casesDir || !normalized.startsWith(path.resolve(casesDir) + path.sep)) {
+      log(`open-soap-note: path outside casesDir rejected: ${filePath}`)
       return ''
     }
     return shell.openPath(normalized)
