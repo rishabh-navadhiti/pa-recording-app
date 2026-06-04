@@ -2134,8 +2134,8 @@ function waitForExit(proc) {
 // ---------------------------------------------------------------------------
 
 function registerIpcHandlers(appCtx) {
-  // ---- hide-window ----
-  ipcMain.handle('hide-window', () => { if (appCtx.win && !appCtx.win.isDestroyed()) appCtx.win.minimize() })
+  // Note: hide-window is registered inside createMainWindow() (windows/mainWindow.js),
+  // not here — it's a window lifecycle concern, not a domain IPC handler.
 
   // ---- get-state ----
   ipcMain.handle('get-state', () => appCtx.stores.state.getState())
