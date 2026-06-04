@@ -35,6 +35,10 @@ const {
   DURATION_SECONDS: DURATION_RE,
 } = require('./src/llm/skill-io/markers')
 const { bootstrapLogger }    = require('./log/logger')
+const { buildPrompt }        = require('./src/llm/skill-io/prompts')
+const { runCaseChain, runMultiPatientChain } = require('./src/pipeline/chain')
+const { runEngine }          = require('./src/engines/engineRunner')
+const icdEngine              = require('./src/engines/icd')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
@@ -383,17 +387,10 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   const relTranscript = path.relative(ctx.paths.notesDir, transcriptAbsPath).replace(/\\/g, '/')
-  let prompt
-  if (templatePath) {
-    const relTemplate = path.relative(ctx.paths.notesDir, templatePath).replace(/\\/g, '/')
-    prompt = `generate a note using template "${relTemplate}" and transcript "${relTranscript}"`
-  } else {
-    prompt = `generate a note using transcript "${relTranscript}"`
-  }
+  const relTemplate   = templatePath ? path.relative(ctx.paths.notesDir, templatePath).replace(/\\/g, '/') : null
 
   const soapModel = readSettings().soapModel
   if (isRetry) log(`${tag}[soap] retry attempt`)
-  // The actual shell command is logged by spawnClaude as `[soap] $ ...`.
 
   const startedAt = nowIso()
   let eventId = null
@@ -401,838 +398,113 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     eventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: soapModel, startedAt })
   } catch (e) { log(`[db] startEvent(soap) failed: ${e.message}`) }
 
-  spawnClaude({
-    prompt,
+  // Provider seam: arg-array spawn via ctx.llm (claudeCliProvider) — no shell injection.
+  ctx.llm.runSkill({
+    prompt: buildPrompt('generate-note', { templateRel: relTemplate, transcriptRel: relTranscript }),
     model: soapModel,
     tag,
     label: 'soap',
-    onClose(code, errText, resultText, resultEvent) {
-      const isRateLimited = CLAUDE_RATE_LIMITED.test(resultText + errText)
-      if (isRateLimited) {
-        try {
-          dbEvents.finishEvent(eventId, {
-            status: 'rate_limited',
-            ...extractUsage(resultEvent),
-            errorMessage: 'Claude usage limit reached',
-            finishedAt: nowIso()
-          })
-          dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-        } catch (e) { log(`[db] soap rate-limited update failed: ${e.message}`) }
-        ctx.renderer.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.`
-        })
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        return
-      }
-      if (code !== 0) {
-        try {
-          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
-          dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-        } catch (e) { log(`[db] soap failure update failed: ${e.message}`) }
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        return
-      }
+  }).then(async (runResult) => {
+    const { code, text: resultText, resultEvent, errText } = runResult
 
-      // Always log the full stream-json wrapper as a single grep-able line.
-      // This is the canonical source of truth for the run — contains the model's
-      // `result` text plus usage / cost / duration / permission_denials / etc.
-      logSkillStream(log, tag, 'soap', resultEvent)
-
-      // Claude exited 0 — parse the JSON manifest from the skill's final assistant text.
-      const manifest = parseSkillManifest(resultText)
-      if (!manifest) {
-        log(`${tag}[soap] ERROR: could not parse JSON manifest from skill output`)
-        try {
-          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'manifest parse failed', finishedAt: nowIso() })
-          dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-        } catch (e) { log(`[db] soap manifest-parse update failed: ${e.message}`) }
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        return
-      }
-
-      // Log the parsed manifest separately on one line for grep. Semantically
-      // distinct from [soap][stream] above — the stream's `result` field is
-      // the raw text; this is the parsed structure driving DB + UI writes.
-      try { log(`${tag}[soap][manifest] ${JSON.stringify(manifest)}`) } catch {}
-
-      if (manifest.schema_version !== 1) {
-        log(`${tag}[soap] ERROR: unsupported manifest schema_version=${manifest.schema_version}; this app only knows v1`)
-        try {
-          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `unsupported manifest schema_version=${manifest.schema_version}`, finishedAt: nowIso() })
-          dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-        } catch {}
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        return
-      }
-
-      if (manifest.status === 'failed' || !Array.isArray(manifest.cases) || manifest.cases.length === 0) {
-        log(`${tag}[soap] manifest status=${manifest.status || '?'} cases=${(manifest.cases || []).length} — marking case failed`)
-        try {
-          dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `manifest status=${manifest.status || '?'}`, finishedAt: nowIso() })
-          dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-        } catch {}
-        if (caseTag) updateRecordingStatus(caseTag, 'failed')
-        return
-      }
-
-      // Manifest is usable — record SOAP event success now; per-case file work happens below.
+    const isRateLimited = CLAUDE_RATE_LIMITED.test(resultText + errText)
+    if (isRateLimited) {
       try {
-        dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() })
-      } catch (e) { log(`[db] soap success finishEvent failed: ${e.message}`) }
-
-      if (!manifest.multi_patient) {
-        applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPath: soapNoteMdPath })
-      } else {
-        applyMultiPatientManifest({ manifest, parentCaseId: caseId, caseTag, expectedSoapPath: soapNoteMdPath })
-      }
-    },
-    onError(err) {
-      try {
-        dbEvents.finishEvent(eventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() })
+        dbEvents.finishEvent(eventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() })
         dbCases.setCaseStatus(caseId, 'failed')
         dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-      } catch (e) { log(`[db] soap onError update failed: ${e.message}`) }
-      if (err.code === 'ENOENT') {
-        ctx.renderer.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
-      }
+      } catch (e) { log(`[db] soap rate-limited update failed: ${e.message}`) }
+      ctx.renderer.send('service-warning', { title: 'Claude usage limit reached', message: `Your recording has been saved. Notes could not be generated — try again once the limit resets.` })
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      return
     }
+    if (code !== 0) {
+      try {
+        dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() })
+        dbCases.setCaseStatus(caseId, 'failed')
+        dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
+      } catch (e) { log(`[db] soap failure update failed: ${e.message}`) }
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      return
+    }
+
+    logSkillStream(log, tag, 'soap', resultEvent)
+
+    const manifest = parseSkillManifest(resultText)
+    if (!manifest) {
+      log(`${tag}[soap] ERROR: could not parse JSON manifest from skill output`)
+      try { dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: 'manifest parse failed', finishedAt: nowIso() }); dbCases.setCaseStatus(caseId, 'failed'); dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true }) } catch {}
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      return
+    }
+
+    try { log(`${tag}[soap][manifest] ${JSON.stringify(manifest)}`) } catch {}
+
+    if (manifest.schema_version !== 1) {
+      log(`${tag}[soap] ERROR: unsupported manifest schema_version=${manifest.schema_version}`)
+      try { dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `unsupported schema_version=${manifest.schema_version}`, finishedAt: nowIso() }); dbCases.setCaseStatus(caseId, 'failed'); dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true }) } catch {}
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      return
+    }
+
+    if (manifest.status === 'failed' || !Array.isArray(manifest.cases) || manifest.cases.length === 0) {
+      log(`${tag}[soap] manifest status=${manifest.status || '?'} cases=${(manifest.cases || []).length} — marking failed`)
+      try { dbEvents.finishEvent(eventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: `manifest status=${manifest.status || '?'}`, finishedAt: nowIso() }); dbCases.setCaseStatus(caseId, 'failed'); dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true }) } catch {}
+      if (caseTag) updateRecordingStatus(caseTag, 'failed')
+      return
+    }
+
+    try { dbEvents.finishEvent(eventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() }) } catch (e) { log(`[db] soap success finishEvent failed: ${e.message}`) }
+
+    if (!manifest.multi_patient) {
+      // Single-patient: validate soap .md on disk, update DB, then run ICD→CDI→docx chain.
+      const c = manifest.cases[0] || {}
+      if (c.status === 'failed' || !c.soap_note_md) {
+        log(`${tag}[soap] single-patient status=${c.status || '?'} or no soap_note_md — marking failed`)
+        try { dbCases.setCaseStatus(caseId, 'failed'); dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true }) } catch {}
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
+      }
+      const soapPath = c.soap_note_md
+      if (!fs.existsSync(soapPath)) {
+        log(`${tag}[soap] WARNING: manifest declared ${soapPath} but file not on disk — marking failed`)
+        try { dbCases.setCaseStatus(caseId, 'failed'); dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true }) } catch {}
+        if (caseTag) updateRecordingStatus(caseTag, 'failed')
+        return
+      }
+      log(`${tag}[soap] SOAP note confirmed: ${soapPath}`)
+      try { dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapPath }) } catch (e) { log(`[db] soap path update failed: ${e.message}`) }
+
+      const doctorId = ctx.stores.session.get().doctorId
+      let doctor = null
+      try { doctor = dbDoctors?.getDoctor(doctorId) || null } catch {}
+      await runCaseChain(ctx, {
+        caseId, caseTag,
+        patientFolderName: null,
+        doctor,
+        soapNoteMdPath: soapPath,
+        caseDir: path.dirname(soapPath),
+      }, spawnDocxConversion)
+    } else {
+      // Multi-patient: chain.runMultiPatientChain handles child folders + ICD→CDI→docx per child.
+      const doctorId = ctx.stores.session.get().doctorId
+      let doctor = null
+      try { doctor = dbDoctors?.getDoctor(doctorId) || null } catch {}
+      await runMultiPatientChain(ctx, {
+        caseTag,
+        parentCaseId: caseId,
+        manifest,
+        recordingFolder: path.dirname(soapNoteMdPath),
+        doctor,
+      }, spawnDocxConversion)
+    }
+  }).catch(err => {
+    log(`${tag}[soap ERR] runSkill failed: ${err.message}`)
+    try { dbEvents.finishEvent(eventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }); dbCases.setCaseStatus(caseId, 'failed'); dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true }) } catch {}
+    if (err.code === 'ENOENT') ctx.renderer.send('setup-warning', 'Claude is not installed — note generation unavailable. Install the Claude CLI to enable SOAP notes.')
   })
 }
 
-// Single-patient manifest: verify the declared .md exists, update the existing case row,
-// hand off to docx. Behaviour-equivalent to the pre-manifest single-patient flow.
-function applySinglePatientManifest({ manifest, caseId, caseTag, expectedSoapPath }) {
-  const tag = caseTag ? `[${caseTag}] ` : ''
-  const c = manifest.cases[0] || {}
-
-  if (c.status === 'failed' || !c.soap_note_md) {
-    log(`${tag}[soap] single-patient case status=${c.status || '?'} or no soap_note_md — marking failed`)
-    try {
-      dbCases.setCaseStatus(caseId, 'failed')
-      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-    } catch {}
-    if (caseTag) updateRecordingStatus(caseTag, 'failed')
-    return
-  }
-
-  const soapPath = c.soap_note_md
-  if (!fs.existsSync(soapPath)) {
-    log(`${tag}[soap] WARNING: manifest declared ${soapPath} but file is not on disk`)
-    try {
-      dbCases.setCaseStatus(caseId, 'failed')
-      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-    } catch {}
-    if (caseTag) updateRecordingStatus(caseTag, 'failed')
-    return
-  }
-
-  if (soapPath !== expectedSoapPath) {
-    log(`${tag}[soap] note: manifest path ${soapPath} differs from expected ${expectedSoapPath}; using manifest path`)
-  }
-
-  log(`${tag}[soap] SOAP note confirmed: ${soapPath}`)
-  try {
-    dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapPath })
-  } catch (e) { log(`[db] soap path update failed: ${e.message}`) }
-
-  // Per-case post-processing chain: ICD → CDI → docx(soap) + docx(cdi).
-  // Each step is best-effort; failures resolve cleanly and the chain continues.
-  // The SOAP docx transition flips the row to 'completed' (primary deliverable);
-  // the CDI docx populates cdi_docx_path so the Open CDI Review button can appear.
-  const _singleActiveDoctorId = ctx.stores.session.get().doctorId
-  const soapDoctor = dbDoctors?.getDoctor(_singleActiveDoctorId) || null
-  const caseDir = path.dirname(soapPath)
-  spawnIcdCoding({ soapNoteMdPath: soapPath, caseId, caseTag, doctorId: _singleActiveDoctorId })
-    .then(() => spawnCdiReview({ caseDir, caseId, caseTag, doctor: soapDoctor }))
-    .then(cdiResult => {
-      if (caseTag) updateRecordingStatus(caseTag, 'converting')
-      spawnDocxConversion(soapPath, caseTag, null, caseId)
-      if (cdiResult && cdiResult.ok && cdiResult.mdPath) {
-        spawnDocxConversion(cdiResult.mdPath, caseTag, null, caseId)
-      }
-    })
-}
-
-// Multi-patient manifest: for each ok/partial case the skill wrote into the recording
-// folder, create a per-patient child folder next to it (matching the single-patient
-// folder convention), copy the MP3 + transcript + transcript.docx in with single-patient
-// naming, copy the .md in with the single-patient naming, hide the audit .md on Windows,
-// insert a child cases row, and spawn docx on the copied .md. Finally mark the parent
-// (recording) row as a completed audit row with soap_note_path=NULL.
-async function applyMultiPatientManifest({ manifest, parentCaseId, caseTag, expectedSoapPath }) {
-  const tag = caseTag ? `[${caseTag}] ` : ''
-  log(`${tag}[soap] Multi-patient manifest: ${manifest.cases.length} cases declared`)
-
-  const recordingFolder = path.dirname(expectedSoapPath)
-  if (manifest.recording_folder && manifest.recording_folder !== recordingFolder) {
-    log(`${tag}[soap] note: manifest recording_folder=${manifest.recording_folder} differs from expected=${recordingFolder}`)
-  }
-
-  const sessionDir = path.dirname(recordingFolder)
-
-  // Pull the parent's recorded_at + doctor_id from DB so children inherit them
-  // (same audio source ⇒ same recording timestamp; same doctor as the session).
-  let parentRecordedAt = nowIso()
-  let parentDoctorId = ctx.stores.session.get().doctorId
-  let parentMp3Path = null
-  try {
-    const row = dbCases.getCaseRow(parentCaseId)
-    if (row) {
-      parentRecordedAt = row.recorded_at || parentRecordedAt
-      parentDoctorId   = row.doctor_id   || parentDoctorId
-      parentMp3Path    = row.mp3_path    || null
-    }
-  } catch (e) { log(`[db] getCaseRow(parent) failed: ${e.message}`) }
-
-  // Fall back to a filesystem probe if the DB didn't carry the mp3 path.
-  if (!parentMp3Path) {
-    try {
-      const found = fs.readdirSync(recordingFolder).find(f => f.toLowerCase().endsWith('.mp3'))
-      if (found) parentMp3Path = path.join(recordingFolder, found)
-    } catch {}
-  }
-
-  // Look up the doctor record once — all children in this run share the same
-  // doctor (same recording, same session). Used by spawnCdiReview to build the
-  // skill prompt's Specialty + Doctor fields.
-  let childDoctor = null
-  try { childDoctor = parentDoctorId ? (dbDoctors.getDoctor(parentDoctorId) || null) : null } catch {}
-
-  const parentTranscript     = path.join(recordingFolder, 'transcript.md')
-  const parentTranscriptDocx = path.join(recordingFolder, 'transcript.docx')
-  const datestamp = new Date().toISOString().slice(0, 10)
-
-  // --- Pass 1: plan all children up-front so the status popup can show every
-  // patient immediately, before the (sequential) per-child ICD coding starts.
-  // Skips failed-by-manifest and missing-on-disk cases. Slug + folder collision
-  // handling happens here so each planned child has a stable target identity.
-  const slugsUsed = new Set()
-  const planned   = []
-
-  for (let i = 0; i < manifest.cases.length; i++) {
-    const c = manifest.cases[i]
-    const labelName = c.patient_name || `unknown_${i + 1}`
-
-    if (c.status === 'failed' || !c.soap_note_md) {
-      log(`${tag}[soap] case ${i + 1} (${labelName}) status=${c.status || '?'} — skipping post-process; .md stays in recording folder for debugging`)
-      continue
-    }
-    if (!fs.existsSync(c.soap_note_md)) {
-      log(`${tag}[soap] case ${i + 1} (${labelName}) declared ${c.soap_note_md} but file is not on disk — skipping`)
-      continue
-    }
-
-    // Slug + collision handling against earlier patients in this same run.
-    let baseSlug = sanitizeName(c.patient_name) || `unknown_${i + 1}`
-    let slug = baseSlug
-    let n = 2
-    while (slugsUsed.has(slug)) {
-      slug = `${baseSlug}_${n}`
-      n++
-    }
-    slugsUsed.add(slug)
-
-    // Target folder: <sessionDir>/<slug>_<YYYY-MM-DD>/ with suffix on filesystem collision.
-    let folderName = `${slug}_${datestamp}`
-    let targetDir  = path.join(sessionDir, folderName)
-    let suffix = 2
-    while (fs.existsSync(targetDir)) {
-      folderName = `${slug}_${datestamp}_${suffix}`
-      targetDir  = path.join(sessionDir, folderName)
-      suffix++
-    }
-
-    planned.push({ i, c, slug, folderName, targetDir })
-  }
-
-  // Publish the full patient list to the status UI BEFORE any per-child await
-  // so every patient appears immediately when SOAP closes. Each entry starts
-  // as 'queued'; spawnIcdCoding will flip the current child to 'coding_icd'
-  // when its turn comes, then spawnDocxConversion flips to 'converting' →
-  // 'completed' (or 'failed').
-  const patientsUi = planned.map(p => ({
-    name: p.c.patient_name || p.slug.replace(/_/g, ' '),
-    folderName: p.folderName,
-    status: 'queued'
-  }))
-  if (caseTag) setRecordingPatients(caseTag, patientsUi)
-
-  // --- Pass 2: per child, do the on-disk work and run the post-processing
-  // chain (ICD → docx). ICD runs sequentially across children so the MCP
-  // connector + Anthropic quota aren't hit in parallel; docx is fire-and-forget.
-  let childrenCreated = 0
-
-  for (const p of planned) {
-    const { i, c, slug, folderName, targetDir } = p
-    const labelName = c.patient_name || `unknown_${i + 1}`
-
-    try {
-      fs.mkdirSync(targetDir, { recursive: true })
-    } catch (e) {
-      log(`${tag}[soap] case ${i + 1} (${labelName}): mkdir ${targetDir} failed: ${e.message}`)
-      updatePatientStatus(caseTag, folderName, 'failed')
-      continue
-    }
-
-    // MP3: copy parent's into the child folder, renamed <slug>.mp3 to match single-patient layout.
-    let childMp3 = null
-    if (parentMp3Path && fs.existsSync(parentMp3Path)) {
-      childMp3 = path.join(targetDir, `${slug}.mp3`)
-      try {
-        fs.copyFileSync(parentMp3Path, childMp3)
-      } catch (e) {
-        log(`${tag}[soap] case ${i + 1}: mp3 copy failed: ${e.message}`)
-        childMp3 = null
-      }
-    }
-
-    // transcript.md and transcript.docx: same filenames in child folder.
-    const childTranscript = path.join(targetDir, 'transcript.md')
-    try {
-      if (fs.existsSync(parentTranscript)) fs.copyFileSync(parentTranscript, childTranscript)
-    } catch (e) { log(`${tag}[soap] case ${i + 1}: transcript.md copy failed: ${e.message}`) }
-
-    const childTranscriptDocx = path.join(targetDir, 'transcript.docx')
-    let transcriptDocxOk = false
-    try {
-      if (fs.existsSync(parentTranscriptDocx)) {
-        fs.copyFileSync(parentTranscriptDocx, childTranscriptDocx)
-        transcriptDocxOk = true
-      }
-    } catch (e) { log(`${tag}[soap] case ${i + 1}: transcript.docx copy failed: ${e.message}`) }
-
-    // SOAP .md: copy the audit file from the recording folder into the child folder, renamed
-    // to <folderName>_soap_note.md to match the single-patient on-disk convention.
-    const childSoapMd = path.join(targetDir, `${folderName}_soap_note.md`)
-    try {
-      fs.copyFileSync(c.soap_note_md, childSoapMd)
-    } catch (e) {
-      log(`${tag}[soap] case ${i + 1}: SOAP .md copy failed: ${e.message}`)
-      updatePatientStatus(caseTag, folderName, 'failed')
-      continue
-    }
-
-    // Hide the audit .md in the recording folder (Windows). The copy in the child folder
-    // will get hidden by spawnDocxConversion's success path after conversion runs.
-    hideFileFromUser(c.soap_note_md)
-
-    // Insert child DB row with status='converting' — docx success path flips to 'completed'
-    // + soap_docx_path + completed_at, mirroring the single-patient progression.
-    let childCaseId = null
-    try {
-      childCaseId = dbCases.createChildCase({
-        patientName:        slug,
-        doctorId:           parentDoctorId,
-        sessionId:          ctx.stores.session.get().sessionId,
-        caseDir:            targetDir,
-        source:             'recording',
-        mp3Path:            childMp3,
-        transcriptPath:     fs.existsSync(childTranscript) ? childTranscript : null,
-        transcriptDocxPath: transcriptDocxOk ? childTranscriptDocx : null,
-        soapNotePath:       childSoapMd,
-        recordedAt:         parentRecordedAt
-      })
-    } catch (e) { log(`[db] createChildCase failed: ${e.message}`) }
-
-    // Per-child post-processing chain: ICD → CDI → docx(soap) + docx(cdi).
-    // Sequential across children so the MCP connector + Anthropic quota aren't
-    // hit in parallel and the per-case log block stays readable. ICD modifies
-    // childSoapMd in place — must complete before docx so the .docx contains
-    // the appended codes. CDI runs after ICD so it sees codes in the note
-    // (drives the ICD-aware validation behavior in cdi-review/SKILL.md §A).
-    // spawnIcdCoding flips this patient's status from 'queued' to 'coding_icd';
-    // spawnCdiReview flips to 'running_cdi' (no-op if CDI is globally off).
-    await spawnIcdCoding({ soapNoteMdPath: childSoapMd, caseId: childCaseId, caseTag, patientFolderName: folderName, doctorId: parentDoctorId })
-    const cdiResult = await spawnCdiReview({ caseDir: targetDir, caseId: childCaseId, caseTag, patientFolderName: folderName, doctor: childDoctor })
-    if (caseTag) updatePatientStatus(caseTag, folderName, 'converting')
-    spawnDocxConversion(childSoapMd, caseTag, folderName, childCaseId)
-    if (cdiResult && cdiResult.ok && cdiResult.mdPath) {
-      spawnDocxConversion(cdiResult.mdPath, caseTag, folderName, childCaseId)
-    }
-    childrenCreated++
-  }
-
-  if (childrenCreated === 0) {
-    log(`${tag}[soap] WARNING: no child cases created from manifest — marking parent failed`)
-    try {
-      dbCases.setCaseStatus(parentCaseId, 'failed')
-      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-    } catch {}
-    if (caseTag) updateRecordingStatus(caseTag, 'failed')
-    return
-  }
-
-  // Parent is now an audit row: soap_note_path stays NULL by design.
-  try {
-    dbCases.updateCasePaths(parentCaseId, { status: 'completed', completed_at: nowIso() })
-  } catch (e) { log(`[db] parent multi-patient status update failed: ${e.message}`) }
-}
-
-// ---------------------------------------------------------------------------
-// ICD-10 coding — runs after the SOAP .md is in its final on-disk location
-// (single-patient: parent case folder; multi-patient: each child folder), and
-// BEFORE the .docx conversion. Appends an "## ICD-10-CM Codes" table to the
-// SOAP .md in-place via the add-icd-codes skill (which uses the claude.ai
-// ICD-10 MCP connector). Best-effort: any failure logs + emits a
-// service-warning IPC + records a processing_events row, but the pipeline
-// always continues to spawnDocxConversion — a note without codes is still
-// useful.
-//
-// Calls go through the shared spawnClaude wrapper so token usage, cost,
-// and duration are captured for free.
-//
-// Returns a Promise that resolves once the ICD step completes (success OR
-// failure). The caller is expected to `await` this promise before kicking
-// off the per-case spawnDocxConversion, so the docx sees the appended codes.
-// The promise never rejects — failures resolve cleanly so callers stay
-// linear.
-// ---------------------------------------------------------------------------
-function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patientFolderName = null, doctorId = null }) {
-  return new Promise(resolve => {
-    const tag = caseTag ? `[${caseTag}] ` : ''
-
-    // Gate — global enableIcd off. No spawn, no codes appended, no status flip.
-    // (CDI on ⟹ ICD on is enforced in readSettings, so a disabled ICD can never
-    // strand an enabled CDI.)
-    if (!readSettings().enableIcd) {
-      log(`${tag}[icd] SKIPPED: disabled`)
-      resolve()
-      return
-    }
-
-    if (patientFolderName) {
-      updatePatientStatus(caseTag, patientFolderName, 'coding_icd')
-    } else if (caseTag) {
-      updateRecordingStatus(caseTag, 'coding_icd')
-    }
-
-    if (!soapNoteMdPath || !fs.existsSync(soapNoteMdPath)) {
-      log(`${tag}[icd] SKIPPED: soap note not found at ${soapNoteMdPath}`)
-      try {
-        const evId = dbEvents.startEvent({ caseId, jobKind: 'icd', relatedDoctorId: doctorId, startedAt: nowIso() })
-        if (evId != null) dbEvents.finishEvent(evId, { status: 'failed', errorMessage: 'soap note missing before icd', finishedAt: nowIso() })
-      } catch (e) { log(`${tag}[db] icd missing-soap event failed: ${e.message}`) }
-      resolve()
-      return
-    }
-
-    const relSoap = path.relative(ctx.paths.notesDir, soapNoteMdPath).replace(/\\/g, '/')
-    const prompt = `add ICD codes. Soap note: "${relSoap}".`
-    const soapModel = readSettings().soapModel
-    // The actual shell command is logged by spawnClaude as `[icd] $ ...`.
-
-    const startedAt = nowIso()
-    const wallStart = Date.now()
-    let eventId = null
-    try {
-      eventId = dbEvents.startEvent({ caseId, jobKind: 'icd', relatedDoctorId: doctorId, modelUsed: soapModel, startedAt })
-    } catch (e) { log(`${tag}[db] startEvent(icd) failed: ${e.message}`) }
-
-    spawnClaude({
-      prompt,
-      model: soapModel,
-      tag,
-      label: 'icd',
-      onClose(code, errText, resultText, resultEvent) {
-        const durationMs = Date.now() - wallStart
-        logSkillStream(log, tag, 'icd', resultEvent)
-        const combined = (resultText || '') + '\n' + (errText || '')
-        const isMcpError    = MCP_AUTH_ERROR.test(combined)
-        const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
-        const isSkipped     = /ICD_SKIPPED/i.test(combined)
-
-        // Map exit + signals to a processing_events status. Skipped (no diagnoses
-        // found) is still recorded as 'success' — the skill ran to completion and
-        // exited 0 by design.
-        let eventStatus
-        if (isMcpError)        eventStatus = 'failed'
-        else if (isRateLimited) eventStatus = 'rate_limited'
-        else if (code === 0)    eventStatus = 'success'
-        else                    eventStatus = 'failed'
-
-        if (eventId != null) {
-          try {
-            dbEvents.finishEvent(eventId, {
-              status: eventStatus,
-              ...extractUsage(resultEvent),
-              durationMs,
-              errorMessage: code === 0 ? null : (errText || '').slice(0, 1024),
-              finishedAt: nowIso()
-            })
-          } catch (e) { log(`${tag}[db] finishEvent(icd) failed: ${e.message}`) }
-        }
-
-        if (isMcpError) {
-          ctx.renderer.send('service-warning', {
-            title: 'ICD-10 connector unavailable',
-            message: 'Could not look up ICD-10 codes — the note was generated without codes. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled.'
-          })
-        } else if (isRateLimited) {
-          ctx.renderer.send('service-warning', {
-            title: 'Claude usage limit reached',
-            message: 'ICD codes could not be added — try again once the limit resets. The note has been saved without codes.'
-          })
-        }
-
-        if (isSkipped) log(`${tag}[icd] No diagnoses found in note — proceeding without codes`)
-        resolve()
-      },
-      onError(err) {
-        log(`${tag}[icd ERR] failed to spawn claude: ${err.message}`)
-        if (eventId != null) {
-          try { dbEvents.finishEvent(eventId, { status: 'failed', durationMs: Date.now() - wallStart, errorMessage: err.message, finishedAt: nowIso() }) } catch {}
-        }
-        resolve()
-      }
-    })
-  })
-}
-
-// ---------------------------------------------------------------------------
-// CDI review — runs after ICD-10 coding has appended codes to the SOAP .md
-// (or skipped/failed), and BEFORE the .docx conversion. Invokes the
-// cdi-review skill which produces <case_stem>_cdi.json + <case_stem>_cdi.md
-// in the same case folder. Best-effort: any failure logs + emits a
-// service-warning IPC + records a processing_events row, but the pipeline
-// always continues to spawnDocxConversion — a SOAP note without a CDI review
-// is still useful.
-//
-// Returns a Promise that resolves with { ok, jsonPath, mdPath } once the
-// skill exits. On failure or skip, jsonPath/mdPath are populated only if
-// the skill wrote a stub file (which it always tries to). The promise never
-// rejects — the caller stays linear.
-//
-// Gating: three gates BEFORE we spawn Claude (saves tokens + latency):
-//   1. Global `enableCdi` setting must be on.
-//   2. `doctor.specialty` must be non-empty.
-//   3. The standards file `<NOTES_DIR>/.claude/standards/specialties/
-//      <specialty>.md` must exist.
-// All three are simple JS checks — no need to round-trip through Claude
-// to discover the same outcome. The skill's own Step 0b stays as a
-// defensive backstop for direct `claude -p` invocations (testing, etc.).
-// ---------------------------------------------------------------------------
-
-function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor }) {
-  return new Promise(resolve => {
-    const tag = caseTag ? `[${caseTag}] ` : ''
-    const settings = readSettings()
-
-    // Gate 1 — global enableCdi off. No spawn, no DB writes, no UI. CDI
-    // simply doesn't exist for this run.
-    if (!settings.enableCdi) {
-      resolve({ ok: false, jsonPath: null, mdPath: null, skipped: 'disabled' })
-      return
-    }
-
-    if (!caseDir || !fs.existsSync(caseDir)) {
-      log(`${tag}[cdi] SKIPPED: case dir not found at ${caseDir}`)
-      try {
-        const evId = dbEvents.startEvent({ caseId, jobKind: 'cdi', relatedDoctorId: doctor?.id || null, startedAt: nowIso() })
-        if (evId != null) dbEvents.finishEvent(evId, { status: 'failed', errorMessage: 'case_dir missing before cdi', finishedAt: nowIso() })
-      } catch (e) { log(`${tag}[db] cdi missing-case-dir event failed: ${e.message}`) }
-      resolve({ ok: false, jsonPath: null, mdPath: null })
-      return
-    }
-
-    const mode = settings.cdiMode || 'balanced'
-    const specialty = (doctor?.specialty || '').toLowerCase()
-    const doctorName = doctor?.name || ''
-    const standardsAbs = path.join(ctx.paths.notesDir, '.claude', 'standards')
-
-    // Gates 2 + 3 are pure no-ops on disk — no _cdi.* files are created when
-    // CDI doesn't apply. The case-row's cdi_status='skipped' is the only audit
-    // trail; the popup shows the skip reason; the user sees nothing in the
-    // case folder. The skill's own Step 0b stays as a defensive backstop for
-    // direct `claude -p` invocations (testing, debugging) — but in normal
-    // pipeline operation those gates never reach the skill because main.js
-    // catches them here.
-    const markSkipped = (reason, uiReason, skippedTag) => {
-      log(`${tag}[cdi] SKIPPED: ${reason}`)
-      try { dbCases.updateCaseCdi(caseId, { cdi_status: 'skipped', cdi_mode: mode }) } catch (e) {
-        log(`${tag}[db] updateCaseCdi(${skippedTag}) failed: ${e.message}`)
-      }
-      const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: uiReason }
-      if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
-      else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-      resolve({ ok: false, jsonPath: null, mdPath: null, status: 'skipped', skipped: skippedTag })
-    }
-
-    // Gate 2 — no specialty set on the doctor.
-    if (!specialty) {
-      markSkipped(
-        `specialty not set for ${doctorName || 'this doctor'}`,
-        `specialty not set for ${doctorName || 'this doctor'}`,
-        'no_specialty'
-      )
-      return
-    }
-
-    // Gate 3 — specialty is set but the standards file doesn't exist (e.g.,
-    // user picked 'cardiology' but only orthopedics.md ships in v1).
-    const specialtyFile = path.join(standardsAbs, 'specialties', `${specialty}.md`)
-    if (!fs.existsSync(specialtyFile)) {
-      markSkipped(
-        `unsupported specialty '${specialty}' — no standards file at specialties/${specialty}.md`,
-        `unsupported specialty '${specialty}'`,
-        'unsupported_specialty'
-      )
-      return
-    }
-
-    // Prompt signature matches notes-claude/skills/cdi-review/SKILL.md Step 0a.
-    // The skill parses by ordered markers (`Case:` `Specialty:` `Mode:`
-    // `Doctor:` `Standards:`) — keep the field order stable.
-    const prompt = [
-      'review cdi.',
-      `Case: ${caseDir}.`,
-      `Specialty: ${specialty}.`,
-      `Mode: ${mode}.`,
-      `Doctor: ${doctorName}.`,
-      `Standards: ${standardsAbs}`
-    ].join(' ')
-
-    const soapModel = settings.soapModel
-    // The actual shell command is logged by spawnClaude as `[cdi] $ ...`.
-
-    // Surface the running stage in the popup. Mirror spawnIcdCoding's pattern.
-    if (patientFolderName) {
-      updatePatientStatus(caseTag, patientFolderName, 'running_cdi')
-    } else if (caseTag) {
-      updateRecordingStatus(caseTag, 'running_cdi')
-    }
-
-    // Mark the case row as running CDI; record the mode + transition to 'running'.
-    try { dbCases.updateCaseCdi(caseId, { cdi_status: 'running', cdi_mode: mode }) } catch (e) {
-      log(`${tag}[db] updateCaseCdi(running) failed: ${e.message}`)
-    }
-
-    const startedAt = nowIso()
-    const wallStart = Date.now()
-    let eventId = null
-    try {
-      eventId = dbEvents.startEvent({ caseId, jobKind: 'cdi', relatedDoctorId: doctor?.id || null, modelUsed: soapModel, effort: 'high', startedAt })
-    } catch (e) { log(`${tag}[db] startEvent(cdi) failed: ${e.message}`) }
-
-    spawnClaude({
-      prompt,
-      model: soapModel,
-      effort: 'high',
-      tag,
-      label: 'cdi',
-      onClose(code, errText, resultText, resultEvent) {
-        const durationMs = Date.now() - wallStart
-        logSkillStream(log, tag, 'cdi', resultEvent)
-        const combined = (resultText || '') + '\n' + (errText || '')
-        const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
-
-        // --- Inner helper: turn a CDI manifest (real or filesystem-synthesized)
-        // into the DB + UI writes for a successful run. Both the happy path and
-        // the filesystem-fallback path call this with the same shape.
-        // Returns { jsonPath, mdPath, flagCount, qScore, approval } so the caller
-        // can resolve() with mdPath for the docx step.
-        const applyCdiSuccess = (manifest) => {
-          const jsonPathResult = manifest.json_path || null
-          const mdPathResult   = manifest.md_path   || null
-          const flagCount      = manifest.flag_count != null ? manifest.flag_count : 0
-          const qScore         = manifest.quality_score != null ? Number(manifest.quality_score) : null
-          const approval       = !!manifest.clinician_approval_required
-
-          try {
-            dbCases.updateCaseCdi(caseId, {
-              cdi_status:                       'completed',
-              cdi_json_path:                    jsonPathResult,
-              cdi_md_path:                      mdPathResult,
-              cdi_quality_score:                qScore,
-              cdi_medical_necessity:            manifest.medical_necessity_status || null,
-              cdi_claim_defense_readiness:      manifest.claim_defense_readiness || null,
-              cdi_clinician_approval_required:  approval ? 1 : 0
-            })
-          } catch (e) { log(`${tag}[db] updateCaseCdi(ok) failed: ${e.message}`) }
-
-          // Read the full _cdi.json from disk for the per-flag detail. The manifest
-          // carries only the summary; per-flag rows come from the file.
-          if (jsonPathResult && fs.existsSync(jsonPathResult)) {
-            try {
-              const fullJson = JSON.parse(fs.readFileSync(jsonPathResult, 'utf8'))
-              if (Array.isArray(fullJson.flags) && fullJson.flags.length > 0) {
-                try { dbCdiFlags.insertFlags(caseId, eventId, fullJson.flags) } catch (e) {
-                  log(`${tag}[db] insertFlags failed: ${e.message}`)
-                }
-              }
-            } catch (e) {
-              log(`${tag}[cdi] WARNING: failed to read full _cdi.json for flag inserts: ${e.message}`)
-            }
-            hideFileFromUser(jsonPathResult)
-          }
-
-          // Surface to the popup so the Open CDI Review button can appear
-          // (once the cdi docx is generated) and the badge can show.
-          const cdiUi = {
-            cdiStatus:                       'completed',
-            cdiFlagCount:                    flagCount,
-            cdiQualityScore:                 qScore,
-            cdiClinicianApprovalRequired:    approval
-          }
-          if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
-          else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-
-          log(`${tag}[cdi] success: ${flagCount} flags, quality ${qScore != null ? qScore : '?'}/100${approval ? ' (approval required)' : ''}${manifest.icd_validated ? ' · ICD validated' : ''}`)
-          return { jsonPath: jsonPathResult, mdPath: mdPathResult }
-        }
-
-        // --- Inner helper: synthesize a manifest from the on-disk _cdi.json
-        // when the model's manifest line was missing or unparseable. Returns
-        // null if the file doesn't exist or has the wrong shape.
-        const synthesizeManifestFromDisk = () => {
-          // Find the expected json/md stems anchored on the existing soap note.
-          let fileStem = path.basename(caseDir)
-          try {
-            const soapMd = fs.readdirSync(caseDir).find(f => f.endsWith('_soap_note.md'))
-            if (soapMd) fileStem = soapMd.replace(/_soap_note\.md$/, '')
-          } catch {}
-          const jsonOnDisk = path.join(caseDir, `${fileStem}_cdi.json`)
-          const mdOnDisk   = path.join(caseDir, `${fileStem}_cdi.md`)
-
-          if (!fs.existsSync(jsonOnDisk)) return null
-          try {
-            const full = JSON.parse(fs.readFileSync(jsonOnDisk, 'utf8'))
-            if (!full || !full.summary || !Array.isArray(full.flags)) {
-              log(`${tag}[cdi] fallback: _cdi.json present but malformed (missing summary/flags)`)
-              return null
-            }
-            const s = full.summary
-            return {
-              schema_version: 1,
-              skill: 'cdi-review',
-              status: 'ok',
-              summary: `Recovered from on-disk _cdi.json (manifest miss). ${full.flags.length} flags.`,
-              json_path: jsonOnDisk,
-              md_path:   fs.existsSync(mdOnDisk) ? mdOnDisk : null,
-              flag_count: full.flags.length,
-              flag_counts: s.flag_counts || { critical: 0, warning: 0, suggestion: 0, opportunity: 0 },
-              quality_score: s.overall_quality_score != null ? s.overall_quality_score : null,
-              medical_necessity_status: s.medical_necessity_status || null,
-              claim_defense_readiness: s.claim_defense_readiness || null,
-              clinician_approval_required: !!s.clinician_approval_required,
-              icd_validated: !!full.code_validation,
-              skipped_reason: null,
-              error: null
-            }
-          } catch (e) {
-            log(`${tag}[cdi] fallback parse failed: ${e.message}`)
-            return null
-          }
-        }
-
-        // --- Inner helper: mark the run as failed and surface a service-warning.
-        // Used when neither the manifest nor the on-disk _cdi.json can be recovered.
-        const markFailed = (reason) => {
-          log(`${tag}[cdi] FAILED: ${reason}`)
-          try { dbCases.updateCaseCdi(caseId, { cdi_status: 'failed' }) } catch (e) {
-            log(`${tag}[db] updateCaseCdi(failed) failed: ${e.message}`)
-          }
-          const cdiUi = { cdiStatus: 'failed' }
-          if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
-          else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-
-          if (isRateLimited) {
-            ctx.renderer.send('service-warning', {
-              title: 'Claude usage limit reached',
-              message: 'CDI review could not be completed — try again once the limit resets. The SOAP note has been saved.'
-            })
-          } else {
-            ctx.renderer.send('service-warning', {
-              title: 'CDI review failed',
-              message: 'The CDI review skill exited with an error. The SOAP note is unaffected — check app.log for details.'
-            })
-          }
-        }
-
-        // --- Try the manifest first (fast happy path).
-        const manifest = parseSkillManifest(resultText)
-        const manifestValid = manifest && manifest.schema_version === 1 && manifest.skill === 'cdi-review' && typeof manifest.status === 'string'
-
-        if (manifestValid) {
-          try { log(`${tag}[cdi][manifest] ${JSON.stringify(manifest)}`) } catch {}
-        } else if (manifest) {
-          log(`${tag}[cdi] WARNING: manifest present but wrong shape (schema_version=${manifest.schema_version} skill=${manifest.skill}); falling back to on-disk _cdi.json`)
-        } else {
-          log(`${tag}[cdi] WARNING: manifest unparseable from result text; falling back to on-disk _cdi.json`)
-        }
-
-        let eventStatus = 'failed'
-        let result      = { ok: false, jsonPath: null, mdPath: null, status: 'failed' }
-
-        if (manifestValid && manifest.status === 'ok') {
-          // Happy path — manifest says ok. Trust it; still read disk for the flag detail.
-          eventStatus = isRateLimited ? 'rate_limited' : 'success'
-          const applied = applyCdiSuccess(manifest)
-          result = { ok: true, jsonPath: applied.jsonPath, mdPath: applied.mdPath, status: 'completed' }
-        } else if (manifestValid && manifest.status === 'skipped') {
-          // Skill ran a gate (Step 0b etc.). No spawn-side work to apply, just record state.
-          eventStatus = 'success'
-          const reason = manifest.skipped_reason || 'skipped'
-          log(`${tag}[cdi] skipped: ${reason}`)
-          try { dbCases.updateCaseCdi(caseId, {
-            cdi_status:    'skipped',
-            cdi_json_path: manifest.json_path || null,
-            cdi_md_path:   manifest.md_path   || null
-          }) } catch (e) { log(`${tag}[db] updateCaseCdi(skipped) failed: ${e.message}`) }
-          if (manifest.json_path) hideFileFromUser(manifest.json_path)
-          const cdiUi = { cdiStatus: 'skipped', cdiSkipReason: reason }
-          if (patientFolderName) setPatientCdi(caseTag, patientFolderName, cdiUi)
-          else if (caseTag)      setRecordingCdi(caseTag, cdiUi)
-          result = { ok: false, jsonPath: manifest.json_path || null, mdPath: manifest.md_path || null, status: 'skipped' }
-        } else {
-          // Manifest says failed, OR no manifest at all, OR wrong shape.
-          // Try the filesystem fallback — model may have written a perfectly good
-          // _cdi.json but forgotten to emit the manifest line.
-          const synthesized = synthesizeManifestFromDisk()
-          if (synthesized) {
-            log(`${tag}[cdi] manifest miss; recovered from on-disk _cdi.json`)
-            eventStatus = isRateLimited ? 'rate_limited' : 'success'
-            const applied = applyCdiSuccess(synthesized)
-            result = { ok: true, jsonPath: applied.jsonPath, mdPath: applied.mdPath, status: 'completed', recovered: 'filesystem' }
-          } else {
-            // Genuinely failed — manifest unparseable AND no usable _cdi.json on disk.
-            eventStatus = isRateLimited ? 'rate_limited' : 'failed'
-            const reason = manifestValid ? (manifest.error || 'manifest status=failed') : 'manifest unparseable, no on-disk _cdi.json'
-            markFailed(reason)
-            result = { ok: false, jsonPath: null, mdPath: null, status: 'failed' }
-          }
-        }
-
-        if (eventId != null) {
-          try {
-            dbEvents.finishEvent(eventId, {
-              status: eventStatus,
-              ...extractUsage(resultEvent),
-              durationMs,
-              errorMessage: eventStatus === 'success' ? null : (errText || '').slice(0, 1024) || null,
-              finishedAt: nowIso()
-            })
-          } catch (e) { log(`${tag}[db] finishEvent(cdi) failed: ${e.message}`) }
-        }
-
-        resolve(result)
-      },
-      onError(err) {
-        log(`${tag}[cdi ERR] failed to spawn claude: ${err.message}`)
-        if (eventId != null) {
-          try { dbEvents.finishEvent(eventId, { status: 'failed', durationMs: Date.now() - wallStart, errorMessage: err.message, finishedAt: nowIso() }) } catch {}
-        }
-        try { dbCases.updateCaseCdi(caseId, { cdi_status: 'failed' }) } catch {}
-        resolve({ ok: false, jsonPath: null, mdPath: null, status: 'failed' })
-      }
-    })
-  })
-}
 
 function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
@@ -1859,8 +1131,10 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
         // best-effort — failures fall through to docx.
         const updatedNote = findExistingSoapNote(caseDir)
         if (updatedNote) {
-          spawnIcdCoding({ soapNoteMdPath: updatedNote, caseId: prechartCaseId, caseTag: null })
-            .then(() => spawnDocxConversion(updatedNote, null, null, prechartCaseId))
+          runEngine(icdEngine, ctx, {
+            caseId: prechartCaseId, caseTag: null, patientFolderName: null,
+            soapNoteMdPath: updatedNote, caseDir, doctor: null,
+          }).then(() => spawnDocxConversion(updatedNote, null, null, prechartCaseId))
         } else {
           log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
         }
