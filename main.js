@@ -26,6 +26,7 @@ try {
   _dbStartupError = e
 }
 const { parseSkillManifest } = require('./src/llm/skill-io/manifest')
+const { extractUsage, logSkillStream } = require('./src/llm/usage')
 const {
   CLAUDE_RATE_LIMITED,
   ELEVENLABS_RATE_LIMITED,
@@ -239,38 +240,8 @@ function validateElevenLabsKey(apiKey) {
   })
 }
 
-// Extract token + cost fields from a Claude stream-json result event for DB writes.
-function extractUsage(ev) {
-  if (!ev) return {}
-  const u = ev.usage || {}
-  return {
-    inputTokens:         u.input_tokens          ?? null,
-    outputTokens:        u.output_tokens          ?? null,
-    cacheReadTokens:     u.cache_read_input_tokens ?? null,
-    cacheCreatedTokens:  u.cache_creation_input_tokens ?? null,
-    costUsd:             ev.total_cost_usd        ?? null,
-    numTurns:            ev.num_turns             ?? null,
-    durationMs:          ev.duration_ms           ?? null
-  }
-}
-
-// Log a skill's final stream-json `result` event as one grep-able line.
-// resultEvent is the parsed stream-json wrapper captured by spawnClaude — it
-// already contains `result` (the model's final text), `usage`, `total_cost_usd`,
-// `duration_api_ms`, `num_turns`, `permission_denials`, etc. Single source of
-// truth — no need to log the result text separately. Pipe through `jq` later
-// if you want pretty-printing.
-function logSkillStream(tag, kind, resultEvent) {
-  if (!resultEvent) {
-    log(`${tag}[${kind}][stream] (no result event captured)`)
-    return
-  }
-  try {
-    log(`${tag}[${kind}][stream] ${JSON.stringify(resultEvent)}`)
-  } catch (e) {
-    log(`${tag}[${kind}][stream] (stringify failed: ${e.message})`)
-  }
-}
+// extractUsage and logSkillStream imported from src/llm/usage.js above.
+// logSkillStream call sites pass log as first arg: logSkillStream(log, tag, kind, ev)
 
 function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
@@ -468,7 +439,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
       // Always log the full stream-json wrapper as a single grep-able line.
       // This is the canonical source of truth for the run — contains the model's
       // `result` text plus usage / cost / duration / permission_denials / etc.
-      logSkillStream(tag, 'soap', resultEvent)
+      logSkillStream(log, tag, 'soap', resultEvent)
 
       // Claude exited 0 — parse the JSON manifest from the skill's final assistant text.
       const manifest = parseSkillManifest(resultText)
@@ -870,7 +841,7 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
       label: 'icd',
       onClose(code, errText, resultText, resultEvent) {
         const durationMs = Date.now() - wallStart
-        logSkillStream(tag, 'icd', resultEvent)
+        logSkillStream(log, tag, 'icd', resultEvent)
         const combined = (resultText || '') + '\n' + (errText || '')
         const isMcpError    = MCP_AUTH_ERROR.test(combined)
         const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
@@ -1056,7 +1027,7 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
       label: 'cdi',
       onClose(code, errText, resultText, resultEvent) {
         const durationMs = Date.now() - wallStart
-        logSkillStream(tag, 'cdi', resultEvent)
+        logSkillStream(log, tag, 'cdi', resultEvent)
         const combined = (resultText || '') + '\n' + (errText || '')
         const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
 
@@ -1432,7 +1403,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
     onClose(code, errText, resultText, resultEvent) {
       ctx.stores.jobs.clear()
       const durationMs = Date.now() - jobStartMs
-      logSkillStream('', 'template', resultEvent)
+      logSkillStream(log, '', 'template', resultEvent)
 
       if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
         const evId = ctx.stores.jobs.getEventId() ?? templateJobEventId
@@ -1568,7 +1539,7 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     onClose(code, errText, resultText, resultEvent) {
       ctx.stores.jobs.clear()
       const durationMs = Date.now() - updateJobStartMs
-      logSkillStream('', 'template-update', resultEvent)
+      logSkillStream(log, '', 'template-update', resultEvent)
 
       if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
         if (templateUpdateJobEventId != null) {
@@ -1839,7 +1810,7 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       ctx.stores.jobs.clear()
       cleanupAttachment()
       const durationMs = Date.now() - prechartJobStartMs
-      logSkillStream('', `prechart][${patientLabel}`, resultEvent)
+      logSkillStream(log, '', `prechart][${patientLabel}`, resultEvent)
 
       if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
         if (prechartEventId != null) {
