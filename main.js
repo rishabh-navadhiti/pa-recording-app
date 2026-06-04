@@ -2142,8 +2142,7 @@ function registerIpcHandlers(appCtx) {
 
   // ---- get-build-info ----
   ipcMain.handle('get-build-info', () => ({
-    isStaging: appCtx.platform.isStaging(),
-    branch:    getCurrentBranch()
+    isStaging: appCtx.platform.isStaging()
   }))
 
   // ---- start-session ----
