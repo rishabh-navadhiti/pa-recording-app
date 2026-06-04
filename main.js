@@ -26,6 +26,13 @@ try {
   _dbStartupError = e
 }
 const { parseSkillManifest } = require('./src/llm/skill-io/manifest')
+const {
+  CLAUDE_RATE_LIMITED,
+  ELEVENLABS_RATE_LIMITED,
+  MCP_AUTH_ERROR,
+  ELEVENLABS_AUTH_ERROR,
+  DURATION_SECONDS: DURATION_RE,
+} = require('./src/llm/skill-io/markers')
 const { bootstrapLogger }    = require('./log/logger')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
@@ -307,12 +314,12 @@ function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, temp
       } catch (e) { log(`[db] transcribe failure update failed: ${e.message}`) }
       if (caseTag) updateRecordingStatus(caseTag, 'failed')
       const stderr = stderrChunks.join('')
-      if (/401|invalid.api.key|unauthorized/i.test(stderr)) {
+      if (ELEVENLABS_AUTH_ERROR.test(stderr)) {
         ctx.renderer.send('service-warning', {
           title: 'ElevenLabs API key invalid',
           message: 'Your API key was rejected. Update it in Settings to resume transcription.'
         })
-      } else if (/429|quota.exceeded|rate.limit|insufficient.credit/i.test(stderr)) {
+      } else if (ELEVENLABS_RATE_LIMITED.test(stderr)) {
         ctx.renderer.send('service-warning', {
           title: 'ElevenLabs quota exceeded',
           message: 'Your ElevenLabs usage limit has been reached. Transcription could not complete.'
@@ -429,7 +436,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     tag,
     label: 'soap',
     onClose(code, errText, resultText, resultEvent) {
-      const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)
+      const isRateLimited = CLAUDE_RATE_LIMITED.test(resultText + errText)
       if (isRateLimited) {
         try {
           dbEvents.finishEvent(eventId, {
@@ -865,8 +872,8 @@ function spawnIcdCoding({ soapNoteMdPath, caseId = null, caseTag = null, patient
         const durationMs = Date.now() - wallStart
         logSkillStream(tag, 'icd', resultEvent)
         const combined = (resultText || '') + '\n' + (errText || '')
-        const isMcpError    = /Needs authentication|unauthorized|\b401\b|MCP.*(connect|connection).*(fail|error|refused)/i.test(combined)
-        const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(combined)
+        const isMcpError    = MCP_AUTH_ERROR.test(combined)
+        const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
         const isSkipped     = /ICD_SKIPPED/i.test(combined)
 
         // Map exit + signals to a processing_events status. Skipped (no diagnoses
@@ -1051,7 +1058,7 @@ function spawnCdiReview({ caseDir, caseId, caseTag, patientFolderName, doctor })
         const durationMs = Date.now() - wallStart
         logSkillStream(tag, 'cdi', resultEvent)
         const combined = (resultText || '') + '\n' + (errText || '')
-        const isRateLimited = /rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(combined)
+        const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
 
         // --- Inner helper: turn a CDI manifest (real or filesystem-synthesized)
         // into the DB + UI writes for a successful run. Both the happy path and
@@ -1427,7 +1434,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
       const durationMs = Date.now() - jobStartMs
       logSkillStream('', 'template', resultEvent)
 
-      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+      if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
         const evId = ctx.stores.jobs.getEventId() ?? templateJobEventId
         if (evId != null) {
           try { dbEvents.finishEvent(evId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
@@ -1563,7 +1570,7 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
       const durationMs = Date.now() - updateJobStartMs
       logSkillStream('', 'template-update', resultEvent)
 
-      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+      if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
         if (templateUpdateJobEventId != null) {
           try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
         }
@@ -1834,7 +1841,7 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
       const durationMs = Date.now() - prechartJobStartMs
       logSkillStream('', `prechart][${patientLabel}`, resultEvent)
 
-      if (/rate.limit|usage.limit|too.many.requests|RateLimitError|overloaded|Claude.AI.usage.limit/i.test(resultText + errText)) {
+      if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
         if (prechartEventId != null) {
           try { dbEvents.finishEvent(prechartEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
         }
@@ -2244,7 +2251,7 @@ function registerIpcHandlers(appCtx) {
     recProc.stdout.on('data', d => {
       const msg = d.toString().trim()
       log(`[record.py] ${msg}`)
-      const m = msg.match(/DURATION_SECONDS:\s*([\d.]+)/)
+      const m = msg.match(DURATION_RE)
       if (m) appCtx.stores.recorder.setPendingDuration(parseFloat(m[1]))
     })
     recProc.stderr.on('data', d => {
@@ -2934,7 +2941,7 @@ function registerIpcHandlers(appCtx) {
       probeProc.stdout.on('data', d => { probeBuf += d.toString() })
       probeProc.on('close', code => {
         if (code === 0) {
-          const m = probeBuf.match(/DURATION_SECONDS:\s*([\d.]+)/)
+          const m = probeBuf.match(DURATION_RE)
           if (m) {
             try { dbCases.updateCaseAudio(caseId, { durationSeconds: parseFloat(m[1]), sizeBytes: audioSizeBytes }) } catch (_) {}
             log(`[upload] Duration: ${m[1]}s`)
