@@ -2357,8 +2357,10 @@ const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
   app.quit()
-} else {
-  app.on('second-instance', () => {
+  return  // second instance — nothing to do
+}
+
+app.on('second-instance', () => {
     if (win) {
       if (!win.isVisible()) win.show()
       win.focus()
@@ -3560,5 +3562,3 @@ function registerIpcHandlers() {
     return shell.openPath(normalized)
   })
 }
-
-} // end single-instance else block
