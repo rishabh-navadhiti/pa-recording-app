@@ -14,6 +14,7 @@ const { createSessionStore }  = require('./sessionStore')
 const { createRecordingsStore } = require('./recordingsStore')
 const { createRecorderController } = require('./recorderController')
 const { createJobRunner }     = require('../jobs/jobRunner')
+const { createClaudeCliProvider } = require('../src/llm/claudeCliProvider')
 
 /**
  * Atomic file write with EPERM/EBUSY retry (shared across config modules).
@@ -96,6 +97,11 @@ function createAppContext(notesDir) {
   const recorder = createRecorderController()
   const jobRunner = createJobRunner({ jobState, log })
 
+  // LLM provider — claudeCliProvider (arg-array spawn, no shell:true).
+  // cwd is set to notesDir so skills run with the right working directory.
+  // Replaced by a future agentSdkProvider.js by swapping this one line.
+  const llm = createClaudeCliProvider({ cwd: notesDir, log })
+
   // ---- context object -------------------------------------------------------
   const ctx = {
     paths,
@@ -105,6 +111,7 @@ function createAppContext(notesDir) {
     config,
     secrets,
     jobState,
+    llm,
 
     get db() { return _db },
     setDb(db) { _db = db },
