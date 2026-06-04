@@ -62,24 +62,8 @@ function resolvePythonCommand () {
   return null
 }
 
-const STATE = {
-  IDLE: 'IDLE',
-  SESSION_ACTIVE: 'SESSION_ACTIVE',
-  RECORDING: 'RECORDING',
-  PAUSED: 'PAUSED',
-  PROCESSING: 'PROCESSING'
-}
-
-const STATUS_LABELS = {
-  transcribing:    'Transcribing...',
-  generating_note: 'Generating note...',
-  queued:          'Queued',
-  coding_icd:      'Adding ICD codes...',
-  running_cdi:     'Running CDI review...',
-  converting:      'Converting...',
-  completed:       'Completed',
-  failed:          'Failed'
-}
+const { STATE }        = require('./src/shared/state')
+const { STATUS_LABELS } = require('./src/shared/pipeline-status')
 
 // ---------------------------------------------------------------------------
 // Module-level state
