@@ -42,8 +42,21 @@ notes-claude/                   Bundled Claude Code workspace — copied at runt
   settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
-src/shared/                   Single-sourced enums (STATE, STATUS_LABELS, CHANNELS, DOCTOR_SPECIALTIES) imported by main.js; Phase 4 wires renderer too
-src/llm/skill-io/manifest.js  Manifest parser + validateManifest (canonical location)
+src/                          Modular app code (Phases 0-3). main.js is now a thin bootstrap + shims + a deps-assembling registerIpcHandlers.
+  shared/                       Single-sourced enums: state.js, pipeline-status.js, ipc-channels.js (CHANNELS), specialties.js — imported by main.js + preload; Phase 4 wires renderer
+  llm/                          LLM seam: provider.js (interface) + claudeCliProvider.js (arg-array spawn, no shell:true), childRunner.js, usage.js; skill-io/{prompts,markers,manifest}.js
+  engines/                      soap/icd/cdi descriptors + registry.js + engineRunner.js (the 7-step shared runner)
+  pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js, docx.js, multiPatient.js, caseStatus.js, artifacts.js
+  jobs/                         jobDispatcher.js (single-flight lock + abort) + templateCreate/templateUpdate/prechart descriptors
+  ipc/                          envelope.js + 8 per-domain registrars (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status) — 43 handlers
+  update/autoUpdate.js          git-pull updater (Phase 6 → electron-updater)
+context/                      appContext.js (the ctx) + stateMachine, sessionStore, recordingsStore, recorderController
+config/                       paths, settings (cached), secrets, jobState, mcp
+platform/                     index.js + windows.js / macos.js (the platform seam)
+windows/                      mainWindow.js (guarded send facade), statusWindow.js, tray.js
+startup/                      bootstrap.js (ordered whenReady steps) + bootstrapNotesDir.js
+log/logger.js                 levels + redact(PII)
+db/                           hardened: transactional migrations, withDb.js, injectable getDb
 install.ps1, setup.ps1,
 uninstall*.ps1                Windows installer / launcher scripts
 ```

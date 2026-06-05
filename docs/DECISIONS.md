@@ -342,3 +342,25 @@ Every other skill writes `.md` only and lets `main.js → spawnDocxConversion �
 6. **`src/shared/` enums: main.js wired, renderer deferred to Phase 4.** `STATE` and `STATUS_LABELS` are now imported from `src/shared/` by main.js. `renderer/renderer.js` retains its own copies until Phase 4 restructures it; the drift test in `tests/unit/shared-drift.test.js` catches divergence in CI.
 
 7. **`parseSkillManifest.js` forwarding shim.** The canonical location is now `src/llm/skill-io/manifest.js`. The root-level `parseSkillManifest.js` is a `module.exports = require(...)` shim. Shim deleted in Phase 3 when all callers are updated.
+
+---
+
+## 2026-06-05 — Phase 3: pipeline + jobs + IPC + update modularization (rs)
+
+**Context:** Third refactor phase (`docs/refactor/`). Moves the orchestration out of main.js now that the seams (Phase 1 ctx, Phase 2 LLM provider + engine framework) exist. main.js: ~3,080 → ~620 lines.
+
+**Decisions:**
+
+1. **`spawnClaude` deleted — the last `shell:true` is gone.** Template-create/update/prechart were the final 3 callers; they now go through `ctx.llm.runSkill` (arg-array spawn) via `src/jobs/jobDispatcher.js` + per-job descriptors. Shell injection is fixed across every AI call path. The only remaining `shell:true` is `electron-rebuild` in autoUpdate (a static binary path, no user input; replaced wholesale in Phase 6).
+
+2. **Job dispatcher owns the single-flight lock + abort.** `runJob` acquires `ctx.stores.jobs` synchronously before the first await, registers an abort-proc so `cancel-template-creation` SIGTERMs the in-flight run (via a new `signal` param on `claudeCliProvider.runSkill`), and releases in a `finally`. Descriptors never touch the lock. `onSuccess` returns `{ok?, error?, eventFields?}` so the dispatcher writes exactly ONE `finishEvent` — `finishEvent` is a full-column UPDATE, so a second call clobbers status/usage to NULL.
+
+3. **IPC: 904-line `registerIpcHandlers` → 8 per-domain registrars** under `src/ipc/` (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status), 43 handlers moved verbatim. Each `register(ipcMain, appCtx, deps)` destructures the main.js helpers it needs from a `deps` object so handler bodies stay byte-identical. `change-notes-dir` re-points the module `ctx` via a `deps.setGlobalCtx` setter; `__dirname`-dependent handlers receive `deps.appRoot`. Return shapes preserved (mixed {ok,error}/raw — `envelope.js` is opt-in). Drift test asserts every preload channel has a handler.
+
+4. **CHANNELS single-sourced.** preload.js (52 invoke/on) + the 8 registrars (43 handle) import `src/shared/ipc-channels.js`. A renamed value propagates to both sides; a typo'd constant is a load-time error.
+
+5. **Adversarial review caught 4 real regressions** in the Group 7 job refactor (samples-staging leak, finishEvent clobber, dropped service-warning toast, lost backup_path) — all fixed before Group 8, with DB-backed tests.
+
+6. **The chain.test.js "node:test hang" was a bad fixture, not a tooling bug.** An `existsFn` of `(p)=>p.includes('john')` matched the candidate child folder, spinning `planChildCases`'s collision loop forever. Fixed the fixture (exact match) + two latent wrong assertions; the file now exits cleanly under `node --test`.
+
+**Test posture:** 171 unit + 12 integration tests green. `--test-force-exit` added to the test scripts/CI. Headless boot smoke (stubbed electron) confirms main.js loads + all registrars register; GUI boot is the manual gate.
