@@ -62,7 +62,10 @@ function ingestAudio(opts) {
   try {
     const { dbCases } = requireDb()
     caseId = dbCases.createCase({
-      patientName:  patientName || null,
+      // Unnamed recording/upload → fall back to the auto-generated folder name
+      // (e.g. recording_2026-06-05_11-56-07) instead of storing NULL, so the case
+      // is identifiable in the DB + status popup and matches the folder on disk.
+      patientName:  patientName || folderName,
       doctorId:     doctorId || null,
       sessionId:    sessionId || null,
       caseDir,
@@ -108,7 +111,9 @@ function ingestAudio(opts) {
   // ---- 5. Recordings store entry -------------------------------------------
   ctx.stores.recordings.add({
     caseTag:     folderName,
-    displayName: patientName ? patientName.replace(/_/g, ' ') : null,
+    // Unnamed → show the folder default (recording_<date>_<time>) in the status
+    // popup rather than a blank name. Named → prettify the slug for display.
+    displayName: patientName ? patientName.replace(/_/g, ' ') : folderName,
   })
 
   // ---- 6. Start transcription chain ----------------------------------------

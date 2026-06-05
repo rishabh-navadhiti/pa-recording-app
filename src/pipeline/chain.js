@@ -158,7 +158,9 @@ async function runMultiPatientChain(ctx, opts) {
     let childCaseId = null
     try {
       childCaseId = dbCases.createCase({
-        patientName:  c.patient_name || null,
+        // Unnamed child → fall back to its folder name (slug/unknown_N default)
+        // rather than NULL, mirroring the single-patient ingest behaviour.
+        patientName:  c.patient_name || folderName,
         doctorId:     parentDoctorId,
         sessionId:    ctx.stores.session.get().sessionId,
         caseDir:      targetDir,
