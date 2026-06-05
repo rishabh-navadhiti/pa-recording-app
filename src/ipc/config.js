@@ -129,13 +129,11 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
 
     writeEnvKey('NOTES_DIR_PATH', newNotesDir)
 
-    // Compute new paths for dir/file ops before re-pointing ctx
-    const newCasesDir     = path.join(newNotesDir, 'Cases')
+    // Cases/ and Templates/ are created by bootstrapNotesDir below; copyDirSync
+    // self-creates its dest. So no explicit mkdir is needed here (dedup, Group 12).
     const newTemplatesDir = path.join(newNotesDir, 'Templates')
 
-    fs.mkdirSync(newCasesDir,     { recursive: true })
-    fs.mkdirSync(newTemplatesDir, { recursive: true })
-
+    // Migrate the user's existing doctor templates into the new location.
     if (oldTemplatesDir &&
         oldTemplatesDir !== newTemplatesDir &&
         fs.existsSync(oldTemplatesDir)) {

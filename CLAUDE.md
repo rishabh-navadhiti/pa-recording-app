@@ -43,7 +43,7 @@ notes-claude/                   Bundled Claude Code workspace — copied at runt
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
 src/shared/                   Single-sourced enums (STATE, STATUS_LABELS, CHANNELS, DOCTOR_SPECIALTIES) imported by main.js; Phase 4 wires renderer too
-src/llm/skill-io/manifest.js  Manifest parser + validateManifest (canonical; parseSkillManifest.js at root is a forwarding shim)
+src/llm/skill-io/manifest.js  Manifest parser + validateManifest (canonical location)
 install.ps1, setup.ps1,
 uninstall*.ps1                Windows installer / launcher scripts
 ```
