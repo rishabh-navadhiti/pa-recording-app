@@ -12,6 +12,38 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-05 (rs) — `cdi-costigan`: a procedure-checklist CDI variant + connector-validated procedure rubric packs
+
+**Context:** Dr. Costigan (Cedars-Sinai spine/interventional pain) had interventional-procedure claims denied; Cedars went through a Medicare TPE audit (MAC Noridian, J-E) on **CPT 64483** (transforaminal epidural) — 30 claims pre-payment reviewed, **23.3% error rate**, 7 denied, CAP required. Cedars' CRI team produced per-procedure medical-necessity checklists derived from the governing LCDs. We want a skill that checks a complete Costigan note against those checklists so the documentation survives audit — sharper and more measurable than general CDI. Skill + standards only (no UI/pipeline — that's deferred to the refactor; skills live in `notes-claude/`, which the refactor leaves untouched, so this is safe to build now).
+
+**Decision:** A new standalone skill **`cdi-costigan`** (`notes-claude/skills/cdi-costigan/`) — a **CDI *variant***: complete-note input, evidence extraction with verbatim quotes, ICD-10 MCP connector validation of every code, a single-line JSON manifest (`schema_version:1`, `skill:"cdi-costigan"`) as the final response line + a deterministically-rendered markdown report, parsed by the existing `parseSkillManifest()` with the same on-disk fallback `cdi-review` uses. Its output is **checklist-style, not flag-style** (a deliberate divergence from `cdi-review` — different consumer, different shape). Flow: detect which procedure(s) are performed *or requested* → load the matching rubric pack(s) → evaluate each checklist item **met / not-met / unclear** with a verbatim evidence quote and a specific fix → per-procedure **verdict** (audit-ready / needs-edits / likely-denied + denial reason). Two validation layers per procedure: **(A)** clinical medical-necessity (named scale at baseline + same scale at follow-up; functional index; enumerated conservative care w/ duration; concordant imaging; for repeats % relief with specific dates; image guidance + contrast) and **(B)** coding correctness (covered ICD-10 ↔ CPT mapping; level/laterality; **KX** on diagnostic facet/SI — its omission silently erodes the therapeutic cap; **-50** bilateral; rolling-12-month frequency caps).
+
+The substance is five **structured rubric packs** (`notes-claude/standards/procedures/{esi,facet,tpi,si,pva}.md` + `README.md`), one per procedure, with verbatim checklist items, thresholds, caps, CPT, covered ICD-10, exclusions, modifiers. ESI is the fullest (the audited + highest-volume procedure). Output files per case: `<case>_costigan.{json,md}`. Future app prompt signature: `check costigan procedures. Case: <abs-case-dir>. Standards: <abs-standards-dir>.`
+
+**Input reality (drove the design):** the 89 sample notes are Workers'-Comp **follow-up/consult reports (PR-1/PR-2)** that *request authorization* for a future injection — so the skill is a **pre-authorization medical-necessity check** (does the note carry what survives review?), and a *recommendation* counts as the procedure being "in play." The signature gap: prior-injection **dates** are well documented (HPI prose + Past Surgical History table) but **relief % and same-scale follow-up are usually absent** — exactly what fails the repeat-procedure necessity test. The skill surfaces that specifically.
+
+**Connector findings (every rubric code validated against the live ICD-10 MCP connector before being written — the De Quervain discipline applied up front):**
+- Facet covered ranges all billable: **M47.812–.817**, **M47.892–.897**, **M48.12–.17**, **M53.82–.87** (cyst). Bare `M47.81`/`M47.89`/`M48.1`/`M53.8` are **non-billable headers**.
+- PVA Group 1 (osteoporotic): **M80.08XA/XS, M80.88XA/XS**; Group 2 (malignant, **requires two codes** — a CXX.XX + M84.58Xx): **C41.2, C79.51, C79.52, C90.00–.02, M84.58XA/XS** — all billable.
+- TPI: **G44.201/.209/.211/.219/.221/.229** + **M79.10/.11/.12/.18** — all billable (verified `.211`/`.219` sit in a separate `G44.21` sub-branch).
+- SI: **M43.28, M46.1, M47.818, M53.3**; special **M79.18** for the no-fluoro path (CPT 20552). SI RFA (CPT 64625) is **non-covered**.
+- ESI: the LCD/Article publishes **no closed ICD table** — coverage is *narrative* (radiculopathy / stenosis / post-laminectomy / acute zoster). The ESI pack therefore gives connector-validated *representative* codes by indication (**M54.12–.17, M48.061/.062, M51.16, M96.1, B02.2x**) and explicitly does **not** assert a closed allow-list — a real asymmetry vs the other four.
+- **Trap recorded:** **`M51.36`** (lumbar DDD) exists but is **header-only, not billable** — and DDD-without-radiculopathy isn't an ESI indication anyway. Packs note it.
+The connector **wins** over the prose packs on code existence / available specificity — same rule as `cdi-review`.
+
+**Rejected:**
+- *Fold this into `cdi-review` with a "costigan mode."* `cdi-review` is flag-style/severity-scored and specialty-gated; procedure checklists are a different output shape and a different question (medical necessity for a specific CPT, not documentation-integrity flags). A separate skill keeps both clean. They can converge under the refactor's engine framework later.
+- *One mega-pack for all five procedures.* Per-procedure files match how CRI publishes the checklists, keep each rubric focused, and let the skill load only the packs it needs.
+- *Assert a closed ESI covered-code list.* The LCD doesn't publish one; fabricating a closed set would produce false "non-covered" denials. Representative-codes-by-indication is the honest encoding.
+- *Build the app/pipeline/UI wiring now.* Out of scope — deferred to the refactor. Skills + standards are additive and refactor-safe.
+
+**Implications:**
+- New runtime content under `notes-claude/` (synced to `<NOTES_DIR>/.claude/` on launch). No repo-internal `docs/` paths in any of it (those don't sync — same discipline as the earlier `notes-claude/` cleanup).
+- When the app step is built (post-refactor): spawn with the prompt signature above (cwd = `<NOTES_DIR>` so `.mcp.json` loads the connector); consume the manifest via `parseSkillManifest()`; fall back to the on-disk `<case>_costigan.json`. The skill **requires the connector** for code validation.
+- The skill's embedded Python render script + the three worked manifest examples were syntax/JSON-checked at authoring; the render was exercised against needs-edits / no-procedure / likely-denied JSONs.
+- Rubric packs are MAC-specific (Noridian/J-E). If the practice's MAC changes, the LCDs change and the packs need re-sourcing. Re-validate any added/changed code against the connector before committing (see `standards/procedures/README.md` update policy).
+- Plan: `docs/plans/2026-06-05-rs-costigan-procedure-checklist.md`. TESTS spec: `notes-claude/skills/cdi-costigan/TESTS.md` (not executed by the implementing session).
+
 ## 2026-06-02 (sr) — ICD-10 coding gated by a settings toggle; CDI forces ICD on
 
 **Context:** The ICD coding step (`spawnIcdCoding`) ran unconditionally on every case — there was no way to turn it off, unlike CDI (`enableCdi`). Users wanted a switch. CDI is built to run *after* ICD so the note already has codes baked in (ICD-aware validation in `cdi-review`), so CDI logically depends on ICD.
