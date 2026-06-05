@@ -31,9 +31,9 @@ renderer/                     ESM module graph (no bundler — native file:// im
   status.html / statusPanel.js  Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
-  transcribe.py               ElevenLabs scribe_v2 → diarised transcript.md
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
   extract_attachments.py      Combines multiple prechart files (.md/.txt/.docx/.pdf) into a single .md for the edit-note skill
+  (transcribe.py ported to Node in Phase 5 — see src/pipeline/elevenLabs.js)
 notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
   skills/generate-note/           SOAP-note skill, invoked by `claude -p "generate a note ..."`
   skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
@@ -50,7 +50,7 @@ src/                          Modular app code (Phases 0-3). main.js is now a th
   shared/                       Single-sourced enums: state.js, pipeline-status.js, ipc-channels.js (CHANNELS), specialties.js — imported by main.js + preload; Phase 4 wires renderer
   llm/                          LLM seam: provider.js (interface) + claudeCliProvider.js (arg-array spawn, no shell:true), childRunner.js, usage.js; skill-io/{prompts,markers,manifest}.js
   engines/                      soap/icd/cdi descriptors + registry.js + engineRunner.js (the 7-step shared runner)
-  pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js, docx.js, multiPatient.js, caseStatus.js, artifacts.js
+  pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js (+ elevenLabs.js — Node ElevenLabs client/formatter), docx.js, multiPatient.js, caseStatus.js, artifacts.js
   jobs/                         jobDispatcher.js (single-flight lock + abort) + templateCreate/templateUpdate/prechart descriptors
   ipc/                          envelope.js + 8 per-domain registrars (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status) — 43 handlers
   update/autoUpdate.js          git-pull updater (Phase 6 → electron-updater)
@@ -93,7 +93,7 @@ After a recording completes, `stop-recording` returns to `SESSION_ACTIVE` immedi
 2. **Stop Recording** ([main.js:876](main.js#L876)) — write `stop\n` to the Python process's **stdin** (NOT kill — see Decision #1 in `docs/DECISIONS.md`). Python flushes the WAV, converts to MP3, exits 0.
 3. Patient-name form shown; main awaits `submit-patient-name`.
 4. Case folder built: `<NOTES_DIR>/Cases/{patient}_{YYYY-MM-DD}/`. Temp MP3 renamed in.
-5. `spawnTranscription` → `python/transcribe.py` → `transcript.md` (diarised).
+5. `spawnTranscription` → ElevenLabs scribe_v2 via Node (`src/pipeline/elevenLabs.js`, native `fetch`) → `transcript.md` (diarised). No longer a Python child.
 6. On transcribe success: `spawnSoapGeneration` → `claude -p "generate a note using template X and transcript Y"` (cwd = `<NOTES_DIR>`). Skill `generate-note` writes one `.md` per patient into the case folder and ends its final response with a single-line JSON manifest declaring what it wrote (paths, patient names, `multi_patient` flag, per-case status). The skill no longer generates DOCX and no longer creates sub-folders.
 7. On SOAP close: `parseSkillManifest()` reads the manifest from the skill's final assistant text. Then, **per case folder** (single-patient: the parent case folder; multi-patient: each child case folder, sequentially), the app runs the per-case post-processing chain: **ICD coding → CDI review → docx conversion** (`spawnIcdCoding` → `spawnCdiReview` → `spawnDocxConversion` × {soap, cdi}).
    - **Single-patient** (`multi_patient: false`): `spawnIcdCoding` appends an `## ICD-10-CM Codes` table to the declared `.md` (best-effort — failure logs + emits `service-warning` IPC but the pipeline still continues). A single gate short-circuits the spawn before Claude runs: global `enableIcd` off → `[icd] SKIPPED: disabled`, no codes appended, no status flip. Then `spawnCdiReview` runs — three gates short-circuit the spawn before Claude runs (global `enableCdi` off, no doctor specialty set, or no standards file for the specialty); in any of those cases main.js writes the same stub `_cdi.{json,md}` the skill would have, marks `cdi_status='skipped'`, and skips Claude. When the gates pass, the skill produces `<case>_cdi.json` + `<case>_cdi.md` in the same folder; main.js populates `cases.cdi_*` columns + `cdi_flags` rows. Then `spawnDocxConversion` runs against the soap `.md` (now with ICD codes baked in) — generates the `.docx`, hides the `.md` on Windows, updates the existing `cases` row to `completed`. When CDI succeeded, a second `spawnDocxConversion` runs on the cdi `.md` (generates `<case>_cdi.docx`, populates `cdi_docx_path`). `transcript.docx` is generated in parallel after transcription as before.

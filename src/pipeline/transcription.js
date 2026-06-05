@@ -1,12 +1,13 @@
 'use strict'
 
-const path = require('path')
-const { spawn } = require('child_process')
-
 const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../llm/skill-io/markers')
+const { transcribeToFile } = require('./elevenLabs')
 
 /**
- * Spawn transcribe.py against an MP3 and drive the post-transcription chain.
+ * Transcribe an MP3 via ElevenLabs (in-process, Node — see elevenLabs.js) and
+ * drive the post-transcription chain. Kept the name `spawnTranscription` so the
+ * call sites are unchanged; as of Phase 5 it no longer spawns a Python child —
+ * the work is an awaited fetch, fired-and-forgotten here (callers don't await).
  *
  * @param {object}   opts
  * @param {string}   opts.mp3Path          Absolute path to the source MP3.
@@ -22,9 +23,8 @@ const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../llm/skill
  * @param {Function} opts.spawnDocx        spawnDocxConversion(mdPath, caseTag, null, caseId) — for transcript.docx.
  */
 function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId, ctx, onSuccess, spawnDocx }) {
-  const { log, python } = ctx
+  const { log } = ctx
   const tag = caseTag ? `[${caseTag}] ` : ''
-  const stderrChunks = []
   const wallStart = Date.now()
   const startedAt = new Date().toISOString()
 
@@ -34,26 +34,19 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
     eventId = dbEvents.startEvent({ caseId, jobKind: 'transcribe', startedAt })
   } catch (e) { log(`[db] startEvent(transcribe) failed: ${e.message}`) }
 
-  const appRoot = path.join(__dirname, '..', '..')
-  const transcribeProc = spawn(python, [
-    path.join(appRoot, 'python', 'transcribe.py'),
-    '--input',  mp3Path,
-    '--output', transcriptDest,
-  ], { cwd: appRoot, stdio: 'pipe' })
+  log(`${tag}Transcription started for: ${mp3Path}`)
 
-  transcribeProc.stdout.on('data', d => log(`${tag}[transcribe] ${d.toString().trim()}`))
-  transcribeProc.stderr.on('data', d => {
-    const msg = d.toString()
-    stderrChunks.push(msg)
-    log(`${tag}[transcribe ERR] ${msg.trim()}`)
-  })
+  const apiKey = ctx.secrets.getElevenLabsKey()
 
-  transcribeProc.on('close', code => {
-    log(`${tag}[transcribe] exited ${code}`)
-    const durationMs = Date.now() - wallStart
-    const { dbEvents, dbCases, dbSessions } = requireDb()
-
-    if (code === 0) {
+  Promise.resolve()
+    .then(() => {
+      if (!apiKey) throw new Error('ELEVENLABS_API_KEY not configured')
+      return transcribeToFile({ mp3Path, transcriptDest, apiKey })
+    })
+    .then(() => {
+      log(`${tag}[transcribe] completed`)
+      const durationMs = Date.now() - wallStart
+      const { dbEvents, dbCases } = requireDb()
       try {
         dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: new Date().toISOString() })
         dbCases.updateCasePaths(caseId, { status: 'generating_note', transcript_path: transcriptDest })
@@ -61,10 +54,14 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
 
       if (onSuccess) onSuccess(transcriptDest, soapNotePath, caseTag, templatePath, caseId, ctx)
       if (spawnDocx) spawnDocx(transcriptDest, caseTag, null, caseId)
-    } else {
-      const stderr = stderrChunks.join('')
+    })
+    .catch(err => {
+      const errText = (err && err.message) ? err.message : String(err)
+      log(`${tag}[transcribe ERR] ${errText}`)
+      const durationMs = Date.now() - wallStart
+      const { dbEvents, dbCases, dbSessions } = requireDb()
       try {
-        dbEvents.finishEvent(eventId, { status: 'failed', durationMs, errorMessage: stderr.slice(0, 1024), finishedAt: new Date().toISOString() })
+        dbEvents.finishEvent(eventId, { status: 'failed', durationMs, errorMessage: errText.slice(0, 1024), finishedAt: new Date().toISOString() })
         dbCases.setCaseStatus(caseId, 'failed')
         const sessionId = ctx.stores.session.get().sessionId
         if (caseId && sessionId) dbSessions.bumpSessionCounters(sessionId, { failed: true })
@@ -72,12 +69,13 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
 
       if (caseTag) ctx.stores.recordings.updateStatus(caseTag, 'failed')
 
-      if (ELEVENLABS_AUTH_ERROR.test(stderr)) {
+      // Classify via the shared markers (errText carries the HTTP status code).
+      if (ELEVENLABS_AUTH_ERROR.test(errText)) {
         ctx.renderer.send('service-warning', {
           title:   'ElevenLabs API key invalid',
           message: 'Your API key was rejected. Update it in Settings to resume transcription.'
         })
-      } else if (ELEVENLABS_RATE_LIMITED.test(stderr)) {
+      } else if (ELEVENLABS_RATE_LIMITED.test(errText)) {
         ctx.renderer.send('service-warning', {
           title:   'ElevenLabs quota exceeded',
           message: 'Your ElevenLabs usage limit has been reached. Transcription could not complete.'
@@ -85,10 +83,7 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       } else {
         ctx.platform.notify('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
       }
-    }
-  })
-
-  log(`${tag}Transcription started for: ${mp3Path}`)
+    })
 }
 
 let _db = null
