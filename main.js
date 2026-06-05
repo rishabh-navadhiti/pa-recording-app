@@ -40,6 +40,7 @@ const { runCaseChain, runMultiPatientChain } = require('./src/pipeline/chain')
 const { runEngine }          = require('./src/engines/engineRunner')
 const icdEngine              = require('./src/engines/icd')
 const { spawnTranscription } = require('./src/pipeline/transcription')
+const { ingestAudio }        = require('./src/pipeline/ingest')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
@@ -1405,59 +1406,34 @@ function registerIpcHandlers(appCtx) {
 
     log(`Patient name: ${name || '(none)'}`)
 
-    const { caseDir, folderName } = buildCaseFolder(name)
-    const mp3Filename = name ? `${name}.mp3` : 'recording.mp3'
-    const mp3Dest = path.join(caseDir, mp3Filename)
-    const transcriptDest = path.join(caseDir, 'transcript.md')
-    const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
-
     const { doctorId: _stopDoctorId } = appCtx.stores.session.get()
     const _stopDoctor = dbDoctors.getDoctor(_stopDoctorId) || getAllDoctors().find(d => d.id === _stopDoctorId)
     const _stopTemplatePath = _stopDoctor?.templatePath || null
+    const capturedDuration = appCtx.stores.recorder.consumePendingDuration()
 
-    if (fs.existsSync(tempMp3Path)) {
-      try {
-        fs.copyFileSync(tempMp3Path, mp3Dest)
-        fs.unlinkSync(tempMp3Path)
-        log(`MP3 moved to: ${mp3Dest}`)
-      } catch (e) {
-        log(`ERROR moving MP3 from ${tempMp3Path} to ${mp3Dest}: ${e.message}`)
-        setState(STATE.SESSION_ACTIVE)
-        notifyUser('Recording failed', 'Could not save the recording. Check the log.')
-        return false
-      }
-    } else {
+    if (!fs.existsSync(tempMp3Path)) {
       log(`WARNING: temp MP3 not found at ${tempMp3Path} — recording may have failed`)
     }
 
-    // Capture audio metadata before clearing the recorder state
-    const capturedDuration = appCtx.stores.recorder.consumePendingDuration()
-
-    // Create the case DB row now that the MP3 is in its final location.
-    const { doctorId: _caseDoctorId, sessionId: _caseSessionId } = appCtx.stores.session.get()
-    let caseId = null
-    try {
-      caseId = dbCases.createCase({
-        patientName:  name || null,
-        doctorId:     _caseDoctorId,
-        sessionId:    _caseSessionId,
-        caseDir,
-        source:       'recording',
-        mp3Path:      mp3Dest,
-        recordedAt:   nowIso()
-      })
-      if (caseId && (capturedDuration != null || fs.existsSync(mp3Dest))) {
-        dbCases.updateCaseAudio(caseId, {
-          durationSeconds: capturedDuration,
-          sizeBytes:       fs.existsSync(mp3Dest) ? fs.statSync(mp3Dest).size : null
-        })
-      }
-    } catch (e) {
-      log(`[db] createCase failed: ${e.message}`)
+    const mp3Filename = name ? `${name}.mp3` : 'recording.mp3'
+    const { ok: ingestOk } = ingestAudio({
+      audioSrc:          tempMp3Path,
+      audioDestName:     mp3Filename,
+      patientName:       name,
+      source:            'recording',
+      doctorId:          _stopDoctorId,
+      templatePath:      _stopTemplatePath,
+      capturedDuration,
+      moveAudio:         true,
+      probeDuration:     false,
+      ctx:               appCtx,
+      spawnTranscription: _callSpawnTranscription,
+    })
+    if (!ingestOk) {
+      setState(STATE.SESSION_ACTIVE)
+      notifyUser('Recording failed', 'Could not save the recording. Check the log.')
+      return false
     }
-
-    addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
-    _callSpawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath, caseId)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
     setState(STATE.SESSION_ACTIVE)
@@ -1987,70 +1963,30 @@ function registerIpcHandlers(appCtx) {
     const name = sanitizeName(patientName)
     log(`Patient name: ${name || '(none)'}`)
 
-    const { caseDir, folderName } = buildCaseFolder(name)
+    const { doctorId: _uploadDoctorId } = appCtx.stores.session.get()
+    const _uploadDoctor = dbDoctors.getDoctor(_uploadDoctorId) || getAllDoctors().find(d => d.id === _uploadDoctorId)
+    const _uploadTemplatePath = _uploadDoctor?.templatePath || null
     const ext = path.extname(filePath)
     const audioFilename = name ? `${name}${ext}` : `recording${ext}`
-    const audioDest = path.join(caseDir, audioFilename)
-    const transcriptDest = path.join(caseDir, 'transcript.md')
-    const soapNotePath = path.join(caseDir, `${folderName}_soap_note.md`)
 
-    try {
-      fs.copyFileSync(filePath, audioDest)
-      log(`Audio copied to: ${audioDest}`)
-    } catch (e) {
-      log(`ERROR copying audio file: ${e.message}`)
+    setState(STATE.PROCESSING)
+    const { ok: ingestOk } = ingestAudio({
+      audioSrc:          filePath,
+      audioDestName:     audioFilename,
+      patientName:       name,
+      source:            'upload',
+      doctorId:          _uploadDoctorId,
+      templatePath:      _uploadTemplatePath,
+      capturedDuration:  null,
+      moveAudio:         false,
+      probeDuration:     true,
+      ctx:               appCtx,
+      spawnTranscription: _callSpawnTranscription,
+    })
+    if (!ingestOk) {
       setState(STATE.SESSION_ACTIVE)
       return false
     }
-
-    const { doctorId: _uploadDoctorId, sessionId: _uploadSessionId } = appCtx.stores.session.get()
-    const _uploadDoctor = dbDoctors.getDoctor(_uploadDoctorId) || getAllDoctors().find(d => d.id === _uploadDoctorId)
-    const _uploadTemplatePath = _uploadDoctor?.templatePath || null
-
-    // Create the case DB row
-    let caseId = null
-    const audioSizeBytes = fs.existsSync(audioDest) ? fs.statSync(audioDest).size : null
-    try {
-      caseId = dbCases.createCase({
-        patientName:  name || null,
-        doctorId:     _uploadDoctorId,
-        sessionId:    _uploadSessionId,
-        caseDir,
-        source:       'upload',
-        mp3Path:      audioDest,
-        recordedAt:   nowIso()
-      })
-      if (caseId) {
-        dbCases.updateCaseAudio(caseId, { durationSeconds: null, sizeBytes: audioSizeBytes })
-      }
-    } catch (e) {
-      log(`[db] createCase(upload) failed: ${e.message}`)
-    }
-
-    // Probe audio duration via pydub (already a required dep) — non-blocking
-    if (caseId && fs.existsSync(audioDest)) {
-      const probeProc = spawn(
-        appCtx.python,
-        [path.join(__dirname, 'python', 'probe_duration.py'), audioDest],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
-      )
-      let probeBuf = ''
-      probeProc.stdout.on('data', d => { probeBuf += d.toString() })
-      probeProc.on('close', code => {
-        if (code === 0) {
-          const m = probeBuf.match(DURATION_RE)
-          if (m) {
-            try { dbCases.updateCaseAudio(caseId, { durationSeconds: parseFloat(m[1]), sizeBytes: audioSizeBytes }) } catch (_) {}
-            log(`[upload] Duration: ${m[1]}s`)
-          }
-        }
-      })
-      probeProc.on('error', () => {})  // non-fatal — transcription continues regardless
-    }
-
-    addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
-    setState(STATE.PROCESSING)
-    _callSpawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath, caseId)
 
     // Return to SESSION_ACTIVE immediately — pipeline runs in background
     setState(STATE.SESSION_ACTIVE)
