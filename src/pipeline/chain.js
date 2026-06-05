@@ -6,6 +6,7 @@ const path = require('path')
 const { runEngine } = require('../engines/engineRunner')
 const icd = require('../engines/icd')
 const cdi = require('../engines/cdi')
+const { spawnDocxConversion } = require('./docx')
 
 // ---- Single-patient post-SOAP chain ----------------------------------------
 
@@ -21,7 +22,7 @@ const cdi = require('../engines/cdi')
  *                               patientFolderName, doctor, caseDir.
  * @param {Function}    spawnDocx  spawnDocxConversion(mdPath, caseTag, folder, caseId)
  */
-async function runCaseChain(ctx, caseCtx, spawnDocx) {
+async function runCaseChain(ctx, caseCtx) {
   const { caseTag, caseId, soapNoteMdPath, patientFolderName } = caseCtx
 
   // ICD → CDI (sequential: CDI needs ICD codes in the note)
@@ -36,12 +37,12 @@ async function runCaseChain(ctx, caseCtx, spawnDocx) {
   }
 
   // Docx: SOAP (soap.completesCase → this marks the case 'completed')
-  spawnDocx(soapNoteMdPath, caseTag, patientFolderName || null, caseId)
+  spawnDocxConversion(soapNoteMdPath, caseTag, patientFolderName || null, caseId, ctx)
 
   // Docx: CDI (if CDI produced a .md — does NOT change case status)
   const cdiMdPath = cdiResult?.manifest?.md_path || null
   if (cdiMdPath && fs.existsSync(cdiMdPath)) {
-    spawnDocx(cdiMdPath, caseTag, patientFolderName || null, caseId)
+    spawnDocxConversion(cdiMdPath, caseTag, patientFolderName || null, caseId, ctx)
   }
 }
 
@@ -100,7 +101,7 @@ function planChildCases(cases, sessionDir, datestamp, sanitizeName, existsFn = f
  * @param {object}     opts.doctor           Doctor record for the session
  * @param {Function}   spawnDocx
  */
-async function runMultiPatientChain(ctx, opts, spawnDocx) {
+async function runMultiPatientChain(ctx, opts) {
   const { caseTag, parentCaseId, manifest, recordingFolder, doctor } = opts
   const tag = caseTag ? `[${caseTag}] ` : ''
   const log = ctx.log
@@ -225,7 +226,7 @@ async function runMultiPatientChain(ctx, opts, spawnDocx) {
     }
 
     // ICD → CDI → docx (sequential across children — MCP/quota reasons)
-    await runCaseChain(ctx, childCaseCtx, spawnDocx)
+    await runCaseChain(ctx, childCaseCtx)
   }
 
   // Mark parent as audit row (completed, soap_note_path=NULL)

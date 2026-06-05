@@ -39,6 +39,7 @@ const { buildPrompt }        = require('./src/llm/skill-io/prompts')
 const { runCaseChain, runMultiPatientChain } = require('./src/pipeline/chain')
 const { runEngine }          = require('./src/engines/engineRunner')
 const icdEngine              = require('./src/engines/icd')
+const { spawnTranscription } = require('./src/pipeline/transcription')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
@@ -247,64 +248,16 @@ function validateElevenLabsKey(apiKey) {
 // extractUsage and logSkillStream imported from src/llm/usage.js above.
 // logSkillStream call sites pass log as first arg: logSkillStream(log, tag, kind, ev)
 
-function spawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId = null) {
-  const tag = caseTag ? `[${caseTag}] ` : ''
-  const stderrChunks = []
-  const startedAt = nowIso()
-  const wallStart = Date.now()
-
-  let eventId = null
-  try {
-    eventId = dbEvents.startEvent({ caseId, jobKind: 'transcribe', startedAt })
-  } catch (e) { log(`[db] startEvent(transcribe) failed: ${e.message}`) }
-
-  const transcribeProc = spawn(ctx.python, [
-    path.join(__dirname, 'python', 'transcribe.py'),
-    '--input', mp3Path,
-    '--output', transcriptDest
-  ], { cwd: __dirname, stdio: 'pipe' })
-
-  transcribeProc.stdout.on('data', d => log(`${tag}[transcribe] ${d.toString().trim()}`))
-  transcribeProc.stderr.on('data', d => {
-    const msg = d.toString()
-    stderrChunks.push(msg)
-    log(`${tag}[transcribe ERR] ${msg.trim()}`)
+// spawnTranscription — extracted to src/pipeline/transcription.js.
+// This shim delegates to the module, injecting ctx + the downstream chain callers.
+function _callSpawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId) {
+  spawnTranscription({
+    mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId, ctx,
+    onSuccess: (tDest, soapPath, tag, tmpl, cId) =>
+      spawnSoapGeneration(tDest, soapPath, tag, false, tmpl, cId),
+    spawnDocx: (mdPath, tag, folder, cId) =>
+      spawnDocxConversion(mdPath, tag, folder, cId, ctx),
   })
-  transcribeProc.on('close', code => {
-    log(`${tag}[transcribe] exited ${code}`)
-    const durationMs = Date.now() - wallStart
-    if (code === 0) {
-      try {
-        dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: nowIso() })
-        dbCases.updateCasePaths(caseId, { status: 'generating_note', transcript_path: transcriptDest })
-      } catch (e) { log(`[db] transcribe success update failed: ${e.message}`) }
-      spawnSoapGeneration(transcriptDest, soapNotePath, caseTag, false, templatePath, caseId)
-      spawnDocxConversion(transcriptDest, caseTag, null, caseId)
-    } else {
-      try {
-        const stderr = stderrChunks.join('')
-        dbEvents.finishEvent(eventId, { status: 'failed', durationMs, errorMessage: stderr.slice(0, 1024), finishedAt: nowIso() })
-        dbCases.setCaseStatus(caseId, 'failed')
-        if (caseId) dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-      } catch (e) { log(`[db] transcribe failure update failed: ${e.message}`) }
-      if (caseTag) updateRecordingStatus(caseTag, 'failed')
-      const stderr = stderrChunks.join('')
-      if (ELEVENLABS_AUTH_ERROR.test(stderr)) {
-        ctx.renderer.send('service-warning', {
-          title: 'ElevenLabs API key invalid',
-          message: 'Your API key was rejected. Update it in Settings to resume transcription.'
-        })
-      } else if (ELEVENLABS_RATE_LIMITED.test(stderr)) {
-        ctx.renderer.send('service-warning', {
-          title: 'ElevenLabs quota exceeded',
-          message: 'Your ElevenLabs usage limit has been reached. Transcription could not complete.'
-        })
-      } else {
-        notifyUser('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
-      }
-    }
-  })
-  log(`${tag}Transcription started for: ${mp3Path}`)
 }
 
 // Shared wrapper for all claude -p invocations.
@@ -484,7 +437,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         doctor,
         soapNoteMdPath: soapPath,
         caseDir: path.dirname(soapPath),
-      }, spawnDocxConversion)
+      })
     } else {
       // Multi-patient: chain.runMultiPatientChain handles child folders + ICD→CDI→docx per child.
       const doctorId = ctx.stores.session.get().doctorId
@@ -496,7 +449,7 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
         manifest,
         recordingFolder: path.dirname(soapNoteMdPath),
         doctor,
-      }, spawnDocxConversion)
+      })
     }
   }).catch(err => {
     log(`${tag}[soap ERR] runSkill failed: ${err.message}`)
@@ -506,121 +459,11 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
 }
 
 
+// spawnDocxConversion — extracted to src/pipeline/docx.js.
+// This local wrapper injects ctx so call sites remain identical.
 function spawnDocxConversion(mdPath, caseTag, patientFolderName = null, caseId = null) {
-  const tag = caseTag ? `[${caseTag}] ` : ''
-  log(`${tag}[docx] Converting: ${mdPath}`)
-  // Classify the .md so the success path knows which case column to populate:
-  //   'soap'       — updates soap_docx_path AND transitions the row to
-  //                  'completed' (primary deliverable).
-  //   'cdi'        — updates cdi_docx_path; never touches case status.
-  //   'transcript' — updates transcript_docx_path; never touches case status.
-  //
-  // Source of truth: the case row's *_path columns. By the time this function
-  // runs, the relevant column is always populated (transcript_path during
-  // spawnTranscription's onSuccess; soap_note_path in apply*Manifest before
-  // the docx call; cdi_md_path in spawnCdiReview's success branch before docx
-  // fires on the cdi .md). Falls back to filename-suffix matching when the
-  // case row isn't available (e.g., DB unavailable or caseId not passed).
-  const base = path.basename(mdPath)
-  let docxKind = null
-  if (caseId && dbCases) {
-    try {
-      const row = dbCases.getCaseRow(caseId)
-      if (row) {
-        if (mdPath === row.cdi_md_path)            docxKind = 'cdi'
-        else if (mdPath === row.transcript_path)   docxKind = 'transcript'
-        else if (mdPath === row.soap_note_path)    docxKind = 'soap'
-      }
-    } catch (e) { log(`${tag}[docx] getCaseRow lookup failed: ${e.message}`) }
-  }
-  if (!docxKind) {
-    // Filename fallback — same heuristic as before. Only used when the DB row
-    // wasn't decisive (no caseId, no row, or mdPath didn't match any column —
-    // e.g., the row was inserted with a different absolute-path normalisation).
-    const fallback = base === 'transcript.md'
-      ? 'transcript'
-      : base.endsWith('_cdi.md')
-        ? 'cdi'
-        : 'soap'
-    if (caseId) log(`${tag}[docx] WARNING: case row didn't disambiguate ${mdPath}; falling back to filename heuristic → ${fallback}`)
-    docxKind = fallback
-  }
-  const wallStart = Date.now()
-
-  let eventId = null
-  try {
-    eventId = dbEvents.startEvent({ caseId, jobKind: 'docx', startedAt: nowIso() })
-  } catch (e) { log(`[db] startEvent(docx) failed: ${e.message}`) }
-
-  const proc = spawn(ctx.python, [
-    path.join(__dirname, 'python', 'md_to_docx.py'),
-    mdPath
-  ], { cwd: __dirname, stdio: 'pipe' })
-
-  proc.stdout.on('data', d => log(`${tag}[docx] Saved: ${d.toString().trim()}`))
-  proc.stderr.on('data', d => log(`${tag}[docx ERR] ${d.toString().trim()}`))
-  proc.on('close', code => {
-    log(`${tag}[docx] exited ${code}`)
-    const durationMs = Date.now() - wallStart
-    const docxPath = mdPath.replace(/\.md$/, '.docx')
-    if (code === 0) hideFileFromUser(mdPath)
-
-    if (docxKind === 'soap') {
-      if (code === 0) {
-        try {
-          dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: nowIso() })
-          dbCases.updateCasePaths(caseId, { status: 'completed', soap_docx_path: docxPath, completed_at: nowIso() })
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: false })
-        } catch (e) { log(`[db] docx soap success update failed: ${e.message}`) }
-        if (patientFolderName) {
-          const allEntries = ctx.stores.recordings.getAll()
-          const entry = allEntries.find(r => r.caseTag === caseTag)
-          const patient = entry?.patients?.find(p => p.folderName === patientFolderName)
-          ctx.stores.recordings.setDocxPath(caseTag, docxPath)
-          notifyUser('SOAP note ready', patient?.name || patientFolderName.replace(/_/g, ' '))
-          updatePatientStatus(caseTag, patientFolderName, 'completed')
-        } else if (caseTag) {
-          const allEntries = ctx.stores.recordings.getAll()
-          const entry = allEntries.find(r => r.caseTag === caseTag)
-          ctx.stores.recordings.setDocxPath(caseTag, docxPath)
-          notifyUser('SOAP note ready', entry?.displayName || caseTag)
-          updateRecordingStatus(caseTag, 'completed')
-        }
-      } else {
-        try {
-          dbEvents.finishEvent(eventId, { status: 'failed', durationMs, finishedAt: nowIso() })
-          dbCases.setCaseStatus(caseId, 'failed')
-          dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
-        } catch (e) { log(`[db] docx soap failure update failed: ${e.message}`) }
-        if (patientFolderName) {
-          updatePatientStatus(caseTag, patientFolderName, 'failed')
-        } else if (caseTag) {
-          updateRecordingStatus(caseTag, 'failed')
-        }
-      }
-    } else if (docxKind === 'cdi') {
-      // CDI docx — populate cdi_docx_path, surface Open CDI Review button in
-      // status popup, but do NOT change case status (the soap docx owns that).
-      try {
-        dbEvents.finishEvent(eventId, { status: code === 0 ? 'success' : 'failed', durationMs, finishedAt: nowIso() })
-        if (code === 0) dbCases.updateCaseCdi(caseId, { cdi_docx_path: docxPath })
-      } catch (e) { log(`[db] docx cdi update failed: ${e.message}`) }
-      if (code === 0) {
-        if (patientFolderName) {
-          setPatientCdi(caseTag, patientFolderName, { cdiDocxPath: docxPath })
-        } else if (caseTag) {
-          setRecordingCdi(caseTag, { cdiDocxPath: docxPath })
-        }
-      }
-    } else {
-      // transcript docx — just record the path, don't change case status
-      try {
-        dbEvents.finishEvent(eventId, { status: code === 0 ? 'success' : 'failed', durationMs, finishedAt: nowIso() })
-        if (code === 0) dbCases.updateCasePaths(caseId, { transcript_docx_path: docxPath })
-      } catch (e) { log(`[db] docx transcript update failed: ${e.message}`) }
-    }
-  })
-  proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
+  const { spawnDocxConversion: _docx } = require("./src/pipeline/docx")
+  _docx(mdPath, caseTag, patientFolderName, caseId, ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -1614,7 +1457,7 @@ function registerIpcHandlers(appCtx) {
     }
 
     addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
-    spawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath, caseId)
+    _callSpawnTranscription(mp3Dest, transcriptDest, soapNotePath, folderName, _stopTemplatePath, caseId)
 
     // Return to SESSION_ACTIVE so scribe can immediately start the next recording
     setState(STATE.SESSION_ACTIVE)
@@ -2207,7 +2050,7 @@ function registerIpcHandlers(appCtx) {
 
     addRecordingEntry(folderName, name ? name.replace(/_/g, ' ') : null)
     setState(STATE.PROCESSING)
-    spawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath, caseId)
+    _callSpawnTranscription(audioDest, transcriptDest, soapNotePath, folderName, _uploadTemplatePath, caseId)
 
     // Return to SESSION_ACTIVE immediately — pipeline runs in background
     setState(STATE.SESSION_ACTIVE)
