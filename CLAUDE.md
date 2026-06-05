@@ -32,8 +32,7 @@ renderer/                     ESM module graph (no bundler — native file:// im
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
-  extract_attachments.py      Combines multiple prechart files (.md/.txt/.docx/.pdf) into a single .md for the edit-note skill
-  (transcribe.py ported to Node in Phase 5 — see src/pipeline/elevenLabs.js)
+  (transcribe.py + extract_attachments.py ported to Node in Phase 5 — see src/pipeline/elevenLabs.js + src/pipeline/attachments.js)
 notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
   skills/generate-note/           SOAP-note skill, invoked by `claude -p "generate a note ..."`
   skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
@@ -50,7 +49,7 @@ src/                          Modular app code (Phases 0-3). main.js is now a th
   shared/                       Single-sourced enums: state.js, pipeline-status.js, ipc-channels.js (CHANNELS), specialties.js — imported by main.js + preload; Phase 4 wires renderer
   llm/                          LLM seam: provider.js (interface) + claudeCliProvider.js (arg-array spawn, no shell:true), childRunner.js, usage.js; skill-io/{prompts,markers,manifest}.js
   engines/                      soap/icd/cdi descriptors + registry.js + engineRunner.js (the 7-step shared runner)
-  pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js (+ elevenLabs.js — Node ElevenLabs client/formatter), docx.js, multiPatient.js, caseStatus.js, artifacts.js
+  pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js (+ elevenLabs.js — Node ElevenLabs client/formatter), attachments.js (Node prechart combine — mammoth/.docx, pdf-parse/.pdf), docx.js, multiPatient.js, caseStatus.js, artifacts.js
   jobs/                         jobDispatcher.js (single-flight lock + abort) + templateCreate/templateUpdate/prechart descriptors
   ipc/                          envelope.js + 8 per-domain registrars (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status) — 43 handlers
   update/autoUpdate.js          git-pull updater (Phase 6 → electron-updater)
@@ -126,7 +125,7 @@ All three Claude background jobs (template create, template update, pre-chart ed
 **Pre-chart (Record tab → Pre-chart button):**
 1. From SESSION_ACTIVE the user clicks **Pre-chart**, picks an existing patient case (dropdown of recent cases or Browse), types instructions, and optionally attaches one or more files (`.md`/`.txt`/`.docx`/`.pdf`).
 2. `start-prechart-job` — main.js parses `**Doctor:**` from the case's existing `*_soap_note.md` to resolve the doctor's template (falls back to currently-selected doctor).
-3. If files were attached: `python/extract_attachments.py` combines them into a single `prechart_<ts>.md` in OS temp.
+3. If files were attached: `src/pipeline/attachments.js` (Node — `mammoth` for `.docx`, `pdf-parse` for `.pdf`) combines them into a single `prechart_<ts>.md` in OS temp.
 4. `spawnPrechartJob` → `claude -p "edit note. Case: <case>. Template: <tmpl>. Attachment: <combined-or-empty>. Instructions: <text>"` with `--model <soapModel>`, `CLAUDE_CODE_EFFORT_LEVEL=high`.
 5. Skill `edit-note` backs up the existing soap note to `<stem>_soap_note_backup_<ts>.md`, regenerates with the new content, overwrites in place.
 6. On success: temp combined attachment deleted, `spawnDocxConversion` re-runs against the updated soap note.

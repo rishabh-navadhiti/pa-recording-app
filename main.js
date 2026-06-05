@@ -5,9 +5,7 @@ app.setName('Ai medical scribe')
 app.setAppUserModelId('Ai medical scribe')
 const path = require('path')
 const fs = require('fs')
-const os = require('os')
 const https = require('https')
-const { spawn, execSync } = require('child_process')
 // DB modules use better-sqlite3, a native addon that must be compiled for the
 // running Electron version. Wrap in try-catch so a missing/mis-built binary
 // shows a recovery dialog instead of silently crashing. checkForUpdates() handles
@@ -40,6 +38,7 @@ const { runCaseChain, runMultiPatientChain } = require('./src/pipeline/chain')
 const { runEngine }          = require('./src/engines/engineRunner')
 const icdEngine              = require('./src/engines/icd')
 const { spawnTranscription } = require('./src/pipeline/transcription')
+const { buildCombinedAttachment: combineAttachmentFiles } = require('./src/pipeline/attachments')
 const { ingestAudio }        = require('./src/pipeline/ingest')
 const { runJob }             = require('./src/jobs/jobDispatcher')
 const templateCreateJob      = require('./src/jobs/templateCreate')
@@ -455,7 +454,7 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
 //
 // Invoked from the SESSION_ACTIVE "Pre-chart" sub-view. Runs the edit-note
 // skill against an existing patient case folder, optionally with new clinical
-// content (one or more files combined into a single .md by extract_attachments.py)
+// content (one or more files combined into a single .md by src/pipeline/attachments.js)
 // and/or scribe instructions. Shares the templateJobProc lock with template
 // creation/update so only one Claude job runs at a time.
 
@@ -545,36 +544,11 @@ function resolveTemplateFromSoapNote(caseDir) {
   return null
 }
 
+// Combine the Pre-chart attachment files into a single temp .md. As of Phase 5
+// this runs in Node (src/pipeline/attachments.js — mammoth/.docx, pdf-parse/.pdf)
+// instead of spawning python/extract_attachments.py.
 function buildCombinedAttachment(filePaths) {
-  return new Promise((resolve, reject) => {
-    if (!filePaths || filePaths.length === 0) {
-      resolve('')
-      return
-    }
-    const tmp = path.join(os.tmpdir(), `prechart_${Date.now()}_${process.pid}.md`)
-    const proc = spawn(ctx.python, [
-      path.join(__dirname, 'python', 'extract_attachments.py'),
-      '--output', tmp,
-      '--inputs', ...filePaths
-    ], { cwd: __dirname, stdio: 'pipe' })
-
-    let stderr = ''
-    proc.stderr.on('data', d => {
-      const msg = d.toString()
-      stderr += msg
-      log(`[prechart][extract ERR] ${msg.trim()}`)
-    })
-    proc.stdout.on('data', d => log(`[prechart][extract] ${d.toString().trim()}`))
-    proc.on('close', code => {
-      if (code === 0 && fs.existsSync(tmp)) {
-        log(`[prechart][extract] combined ${filePaths.length} file(s) → ${tmp}`)
-        resolve(tmp)
-      } else {
-        reject(new Error(`extract_attachments exited ${code}: ${stderr.trim()}`))
-      }
-    })
-    proc.on('error', err => reject(err))
-  })
+  return combineAttachmentFiles(filePaths, { log })
 }
 
 function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath) {
