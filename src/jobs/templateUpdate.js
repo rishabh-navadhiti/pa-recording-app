@@ -1,5 +1,6 @@
 'use strict'
 
+const fs = require('fs')
 const { parseSkillManifest } = require('../llm/skill-io/manifest')
 
 /** @type {JobDescriptor} */
@@ -19,11 +20,15 @@ const templateUpdate = {
   },
 
   onRateLimit(input, ctx, extra, durationMs) {
+    _cleanupSamples(extra.samplesDir, ctx.log)
     const job = { type: 'update', status: 'failed', doctorName: input.doctorName, lastname: extra.lastname, error: 'Claude usage limit reached. Try again once the limit resets.', finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
+    ctx.renderer.send('service-warning', { title: 'Claude usage limit reached', message: 'Template update could not complete — try again once the limit resets.' })
   },
 
+  // Returns nothing → dispatcher treats as success and writes one finishEvent.
   onSuccess(runResult, input, ctx, extra, { durationMs }) {
+    _cleanupSamples(extra.samplesDir, ctx.log)
 
     // Extract changes report from JSON manifest (B6) or fall back to "Updated:" text marker.
     const updateManifest = parseSkillManifest(runResult.text)
@@ -42,15 +47,27 @@ const templateUpdate = {
   },
 
   onFailure(runResult, input, ctx, extra, durationMs) {
+    _cleanupSamples(extra.samplesDir, ctx.log)
     const job = { type: 'update', status: 'failed', doctorName: input.doctorName, lastname: extra.lastname, error: `Exit ${runResult.code}`, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
     ctx.platform.notify('Template update failed', `${input.doctorName} — check app.log for details`)
   },
 
   onError(err, input, ctx, extra) {
+    _cleanupSamples(extra.samplesDir, ctx.log)
     const job = { type: 'update', status: 'failed', doctorName: input.doctorName, lastname: extra.lastname, error: err.message, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
   },
+}
+
+// Delete the transient samples staging folder (<NOTES_DIR>/Templates/_staging_update/<lastname>_<ts>/).
+// The original spawnTemplateUpdate deleted it on success; we clean on every
+// terminal path since it is throwaway input with no value after the job ends.
+function _cleanupSamples(samplesDir, log) {
+  if (!samplesDir) return
+  try {
+    if (fs.existsSync(samplesDir)) { fs.rmSync(samplesDir, { recursive: true, force: true }); log?.(`[template-update] Samples staging deleted: ${samplesDir}`) }
+  } catch (e) { log?.(`[template-update] WARNING: samples staging delete failed: ${e.message}`) }
 }
 
 module.exports = templateUpdate

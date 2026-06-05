@@ -115,3 +115,68 @@ test('cancel() aborts the in-flight run via the abort-proc', async () => {
   await p
   assert.ok(abortedSignalSeen, 'provider observed the abort signal')
 })
+
+// ---- DB-backed: regression fixes (single finishEvent, status override, eventFields) ----
+
+const Database = require('better-sqlite3')
+const { initDbWith, runMigrations } = require('../../db/init')
+const dbEvents = require('../../db/events')
+
+function dbCtx(llmResult) {
+  const db = new Database(':memory:')
+  db.pragma('journal_mode = WAL')
+  initDbWith(db)
+  runMigrations(db)
+  const jobs = createJobRunner({ jobState: { save(){}, load: () => ({status:'idle'}), clearStaleRunning(){} }, log: () => {} })
+  return {
+    _db: db,
+    log: () => {},
+    config: { get: () => ({ templateModel: 'opus', templateEffort: 'max' }) },
+    paths: { templatesDir: '/tmp/t', notesDir: '/tmp/n' },
+    db,
+    llm: { runSkill: async () => llmResult },
+    renderer: { send: () => {} },
+    sendStatus: () => {},
+    jobState: { save(){}, load: () => ({status:'idle'}), clearStaleRunning(){} },
+    stores: { jobs },
+    platform: { notify: () => {} },
+  }
+}
+
+function descBase() {
+  return {
+    id: 'fake', skillId: 'create-doctor-profile', label: 'fake', jobKind: 'template_create', lockType: 'create',
+    model: (c) => c.templateModel, effort: (c) => c.templateEffort,
+    onRunning(){}, onRateLimit(){}, onFailure(){}, onError(){},
+  }
+}
+
+const OK_RESULT = { code: 0, text: 'ok', resultEvent: { usage: { input_tokens: 500, output_tokens: 100 }, total_cost_usd: 0.01, duration_ms: 1000 }, errText: '' }
+
+test('DB: single finishEvent keeps status=success + usage (no clobber)', async () => {
+  const ctx = dbCtx(OK_RESULT)
+  const desc = { ...descBase(), onSuccess: () => ({ ok: true }) }
+  await runJob(desc, { doctorName: 'X', stagingRel: 's' }, ctx, {})
+  const row = ctx._db.prepare('SELECT status, input_tokens, cost_usd FROM processing_events ORDER BY id DESC LIMIT 1').get()
+  assert.strictEqual(row.status, 'success', 'status must survive')
+  assert.strictEqual(row.input_tokens, 500, 'usage must survive (not clobbered to NULL)')
+  assert.strictEqual(row.cost_usd, 0.01)
+})
+
+test('DB: onSuccess returning {ok:false} writes status=failed', async () => {
+  const ctx = dbCtx(OK_RESULT)
+  const desc = { ...descBase(), onSuccess: () => ({ ok: false, error: 'template file not found' }) }
+  await runJob(desc, { doctorName: 'X', stagingRel: 's' }, ctx, {})
+  const row = ctx._db.prepare('SELECT status, error_message FROM processing_events ORDER BY id DESC LIMIT 1').get()
+  assert.strictEqual(row.status, 'failed', 'descriptor can override status to failed even on exit 0')
+  assert.match(row.error_message, /template file not found/)
+})
+
+test('DB: onSuccess eventFields persist (backupPath)', async () => {
+  const ctx = dbCtx(OK_RESULT)
+  const desc = { ...descBase(), onSuccess: () => ({ eventFields: { backupPath: '/notes/case/backup_123.md' } }) }
+  await runJob(desc, { doctorName: 'X', stagingRel: 's' }, ctx, {})
+  const row = ctx._db.prepare('SELECT status, backup_path FROM processing_events ORDER BY id DESC LIMIT 1').get()
+  assert.strictEqual(row.status, 'success')
+  assert.strictEqual(row.backup_path, '/notes/case/backup_123.md')
+})

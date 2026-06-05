@@ -434,7 +434,9 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     correctionsFile: correctionsFile ? correctionsFile.replace(/\\/g, '/') : '',
     samplesDir:      samplesDir ? samplesDir.replace(/\\/g, '/') : '',
   }
-  runJob(templateUpdateJob, input, ctx, { lastname })
+  // Forward the RAW samplesDir (not the forward-slashed prompt value) so the
+  // descriptor can delete the transient staging folder on every terminal path.
+  runJob(templateUpdateJob, input, ctx, { lastname, samplesDir })
 }
 
 // ---------------------------------------------------------------------------

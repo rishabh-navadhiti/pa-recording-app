@@ -80,8 +80,15 @@ async function runJob(descriptor, input, ctx, extra = {}) {
       _finishEventSafe(eventId, 'rate_limited', durationMs, 'Claude usage limit reached', ctx, { resultEvent })
       descriptor.onRateLimit?.(input, ctx, extra, durationMs)
     } else if (code === 0) {
-      _finishEventSafe(eventId, 'success', durationMs, null, ctx, { resultEvent })
-      descriptor.onSuccess?.(runResult, input, ctx, extra, { eventId, durationMs })
+      // Run the descriptor's side effects FIRST so it can (a) override the
+      // outcome (e.g. template-create marks 'failed' when the file is missing)
+      // and (b) contribute extra event columns (e.g. prechart's backupPath).
+      // The descriptor MUST NOT call finishEvent itself — the dispatcher writes
+      // exactly ONE finishEvent below (finishEvent is a full-column UPDATE, so a
+      // second call would clobber status/usage/cost to NULL).
+      const outcome = (await descriptor.onSuccess?.(runResult, input, ctx, extra, { eventId, durationMs })) || {}
+      const status  = outcome.ok === false ? 'failed' : 'success'
+      _finishEventSafe(eventId, status, durationMs, outcome.error || null, ctx, { resultEvent, fields: outcome.eventFields })
     } else {
       _finishEventSafe(eventId, 'failed', durationMs, errText.slice(0, 1024), ctx, { resultEvent })
       descriptor.onFailure?.(runResult, input, ctx, extra, durationMs)
@@ -92,7 +99,7 @@ async function runJob(descriptor, input, ctx, extra = {}) {
   }
 }
 
-function _finishEventSafe(eventId, status, durationMs, errMsg, ctx, extraFields = {}) {
+function _finishEventSafe(eventId, status, durationMs, errMsg, ctx, opts = {}) {
   if (eventId == null) return
   try {
     const { dbEvents } = requireDb()
@@ -101,7 +108,8 @@ function _finishEventSafe(eventId, status, durationMs, errMsg, ctx, extraFields 
       durationMs,
       errorMessage: errMsg || null,
       finishedAt: new Date().toISOString(),
-      ...(extraFields.resultEvent ? extractUsage(extraFields.resultEvent) : {}),
+      ...(opts.resultEvent ? extractUsage(opts.resultEvent) : {}),
+      ...(opts.fields || {}),   // descriptor-contributed columns (e.g. backupPath)
     })
   } catch (e) { ctx.log?.(`[db] finishEvent failed: ${e.message}`) }
 }

@@ -24,6 +24,7 @@ const prechart = {
     if (extra.combinedAttachmentPath) _cleanup(extra.combinedAttachmentPath, extra.patientLabel, ctx.log)
     const job = { type: 'prechart', status: 'failed', doctorName: extra.patientLabel, caseDir: input.caseDir, error: 'Claude usage limit reached. Try again once the limit resets.', finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
+    ctx.renderer.send('service-warning', { title: 'Claude usage limit reached', message: 'Pre-chart could not complete — try again once the limit resets.' })
   },
 
   onSuccess(runResult, input, ctx, extra, { durationMs }) {
@@ -70,6 +71,10 @@ const prechart = {
     const job = { type: 'prechart', status: 'success', doctorName: patientLabel, caseDir, durationMs, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
     platform.notify('Pre-chart applied', `${patientLabel}'s note has been updated.`)
+
+    // Persist the backup path into the processing_events row (the dispatcher
+    // writes the single finishEvent; we contribute backupPath as an event field).
+    return { eventFields: { backupPath } }
   },
 
   onFailure(runResult, input, ctx, extra, durationMs) {
