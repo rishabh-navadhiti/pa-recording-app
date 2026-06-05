@@ -34,16 +34,10 @@ function collectRegisteredChannels() {
   return channels
 }
 
-const { CHANNELS } = require('../../src/shared/ipc-channels')
-
 function preloadChannels() {
   const src = fs.readFileSync(path.join(__dirname, '../../preload.js'), 'utf8')
+  // preload uses literal channel strings (sandbox-safe — see preload.js header).
   const out = new Set()
-  // preload uses CHANNELS.X constants (Group 9) — resolve them to channel strings.
-  for (const m of src.matchAll(/ipcRenderer\.invoke\(\s*CHANNELS\.([A-Z_]+)/g)) {
-    if (CHANNELS[m[1]]) out.add(CHANNELS[m[1]])
-  }
-  // Tolerate any remaining bare literals.
   for (const m of src.matchAll(/ipcRenderer\.invoke\(\s*'([^']+)'/g)) out.add(m[1])
   return out
 }

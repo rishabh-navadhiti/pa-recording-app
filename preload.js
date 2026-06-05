@@ -1,68 +1,76 @@
 'use strict'
 
+// IMPORTANT: this preload runs SANDBOXED (Electron's default — webPreferences
+// has no `sandbox:false`). A sandboxed preload's require() is a limited polyfill
+// that can ONLY load `electron` + a few builtins — NOT local files. So we must
+// NOT pull in the shared ipc-channels module here (it would throw → window.api
+// never gets exposed → the whole UI silently loses its data). Channel strings are kept
+// as literals; the drift test (tests/unit/shared-drift.test.js) asserts they all
+// exist in the CHANNELS map, which is the single source the main-process side uses.
+// (A bundler in Phase 6 will let the renderer/preload import shared constants.)
+
 const { contextBridge, ipcRenderer } = require('electron')
-const { CHANNELS } = require('./src/shared/ipc-channels')
 
 contextBridge.exposeInMainWorld('api', {
-  getState:          ()     => ipcRenderer.invoke(CHANNELS.GET_STATE),
-  getBuildInfo:      ()     => ipcRenderer.invoke(CHANNELS.GET_BUILD_INFO),
-  startSession:      ()     => ipcRenderer.invoke(CHANNELS.START_SESSION),
-  stopSession:       ()     => ipcRenderer.invoke(CHANNELS.STOP_SESSION),
-  startRecording:    ()     => ipcRenderer.invoke(CHANNELS.START_RECORDING),
-  stopRecording:     ()     => ipcRenderer.invoke(CHANNELS.STOP_RECORDING),
-  pauseRecording:    ()     => ipcRenderer.invoke(CHANNELS.PAUSE_RECORDING),
-  resumeRecording:   ()     => ipcRenderer.invoke(CHANNELS.RESUME_RECORDING),
-  discardRecording:  ()     => ipcRenderer.invoke(CHANNELS.DISCARD_RECORDING),
-  submitPatientName: (name) => ipcRenderer.invoke(CHANNELS.SUBMIT_PATIENT_NAME, name),
+  getState:          ()     => ipcRenderer.invoke('get-state'),
+  getBuildInfo:      ()     => ipcRenderer.invoke('get-build-info'),
+  startSession:      ()     => ipcRenderer.invoke('start-session'),
+  stopSession:       ()     => ipcRenderer.invoke('stop-session'),
+  startRecording:    ()     => ipcRenderer.invoke('start-recording'),
+  stopRecording:     ()     => ipcRenderer.invoke('stop-recording'),
+  pauseRecording:    ()     => ipcRenderer.invoke('pause-recording'),
+  resumeRecording:   ()     => ipcRenderer.invoke('resume-recording'),
+  discardRecording:  ()     => ipcRenderer.invoke('discard-recording'),
+  submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
 
-  getConfigStatus:    ()     => ipcRenderer.invoke(CHANNELS.GET_CONFIG_STATUS),
-  getElevenLabsKey:  ()     => ipcRenderer.invoke(CHANNELS.GET_ELEVENLABS_KEY),
-  saveElevenLabsKey: (key)   => ipcRenderer.invoke(CHANNELS.SAVE_ELEVENLABS_KEY, key),
+  getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
+  getElevenLabsKey:  ()     => ipcRenderer.invoke('get-elevenlabs-key'),
+  saveElevenLabsKey: (key)   => ipcRenderer.invoke('save-elevenlabs-key', key),
 
-  getDoctors:         ()     => ipcRenderer.invoke(CHANNELS.GET_DOCTORS),
-  addDoctor:              (name) => ipcRenderer.invoke(CHANNELS.ADD_DOCTOR, name),
-  updateDoctor:          (id, name) => ipcRenderer.invoke(CHANNELS.UPDATE_DOCTOR, id, name),
-  updateDoctorTemplate:  (id)   => ipcRenderer.invoke(CHANNELS.UPDATE_DOCTOR_TEMPLATE, id),
-  updateDoctorSpecialty: (id, specialty) => ipcRenderer.invoke(CHANNELS.UPDATE_DOCTOR_SPECIALTY, id, specialty),
-  removeDoctor:           (id)   => ipcRenderer.invoke(CHANNELS.REMOVE_DOCTOR, id),
-  selectDoctor:       (id)   => ipcRenderer.invoke(CHANNELS.SELECT_DOCTOR, id),
+  getDoctors:         ()     => ipcRenderer.invoke('get-doctors'),
+  addDoctor:              (name) => ipcRenderer.invoke('add-doctor', name),
+  updateDoctor:          (id, name) => ipcRenderer.invoke('update-doctor', id, name),
+  updateDoctorTemplate:  (id)   => ipcRenderer.invoke('update-doctor-template', id),
+  updateDoctorSpecialty: (id, specialty) => ipcRenderer.invoke('update-doctor-specialty', id, specialty),
+  removeDoctor:           (id)   => ipcRenderer.invoke('remove-doctor', id),
+  selectDoctor:       (id)   => ipcRenderer.invoke('select-doctor', id),
 
-  browseAudioFile:    ()                       => ipcRenderer.invoke(CHANNELS.BROWSE_AUDIO_FILE),
-  processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke(CHANNELS.PROCESS_AUDIO_FILE, filePath, patientName),
+  browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
+  processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
 
-  browseNotesFiles:         ()                                                           => ipcRenderer.invoke(CHANNELS.BROWSE_NOTES_FILES),
-  browseCorrectionsFile:    ()                                                           => ipcRenderer.invoke(CHANNELS.BROWSE_CORRECTIONS_FILE),
-  startTemplateCreation:    (doctorName, filePaths)                                      => ipcRenderer.invoke(CHANNELS.START_TEMPLATE_CREATION, doctorName, filePaths),
-  startTemplateUpdate:      (doctorName, corrections, correctionsFile, sampleFiles)      => ipcRenderer.invoke(CHANNELS.START_TEMPLATE_UPDATE, doctorName, corrections, correctionsFile, sampleFiles),
-  getDoctorsWithTemplates:  ()                           => ipcRenderer.invoke(CHANNELS.GET_DOCTORS_WITH_TEMPLATES),
-  getTemplateJobStatus:     ()                           => ipcRenderer.invoke(CHANNELS.GET_TEMPLATE_JOB_STATUS),
-  cancelTemplateCreation:   ()                           => ipcRenderer.invoke(CHANNELS.CANCEL_TEMPLATE_CREATION),
-  dismissTemplateJob:       ()                           => ipcRenderer.invoke(CHANNELS.DISMISS_TEMPLATE_JOB),
+  browseNotesFiles:         ()                                                           => ipcRenderer.invoke('browse-notes-files'),
+  browseCorrectionsFile:    ()                                                           => ipcRenderer.invoke('browse-corrections-file'),
+  startTemplateCreation:    (doctorName, filePaths)                                      => ipcRenderer.invoke('start-template-creation', doctorName, filePaths),
+  startTemplateUpdate:      (doctorName, corrections, correctionsFile, sampleFiles)      => ipcRenderer.invoke('start-template-update', doctorName, corrections, correctionsFile, sampleFiles),
+  getDoctorsWithTemplates:  ()                           => ipcRenderer.invoke('get-doctors-with-templates'),
+  getTemplateJobStatus:     ()                           => ipcRenderer.invoke('get-template-job-status'),
+  cancelTemplateCreation:   ()                           => ipcRenderer.invoke('cancel-template-creation'),
+  dismissTemplateJob:       ()                           => ipcRenderer.invoke('dismiss-template-job'),
 
-  browsePrechartFiles:      ()                                       => ipcRenderer.invoke(CHANNELS.BROWSE_PRECHART_FILES),
-  listRecentPatientCases:   ()                                       => ipcRenderer.invoke(CHANNELS.LIST_RECENT_PATIENT_CASES),
-  browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke(CHANNELS.BROWSE_PATIENT_CASE_FOLDER),
-  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke(CHANNELS.START_PRECHART_JOB, doctorId, caseDir, instructions, attachmentPaths),
+  browsePrechartFiles:      ()                                       => ipcRenderer.invoke('browse-prechart-files'),
+  listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
+  browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
+  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
 
-  getSettings:        ()          => ipcRenderer.invoke(CHANNELS.GET_SETTINGS),
-  saveSettings:       (settings)  => ipcRenderer.invoke(CHANNELS.SAVE_SETTINGS, settings),
-  listAudioDevices:   ()          => ipcRenderer.invoke(CHANNELS.LIST_AUDIO_DEVICES),
-  getNotesDir:        ()          => ipcRenderer.invoke(CHANNELS.GET_NOTES_DIR),
-  changeNotesDir:     (mode)      => ipcRenderer.invoke(CHANNELS.CHANGE_NOTES_DIR, mode),
+  getSettings:        ()          => ipcRenderer.invoke('get-settings'),
+  saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
+  listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),
+  getNotesDir:        ()          => ipcRenderer.invoke('get-notes-dir'),
+  changeNotesDir:     (mode)      => ipcRenderer.invoke('change-notes-dir', mode),
 
-  hideWindow:             ()   => ipcRenderer.invoke(CHANNELS.HIDE_WINDOW),
+  hideWindow:             ()   => ipcRenderer.invoke('hide-window'),
 
-  getSessionRecordings:    ()           => ipcRenderer.invoke(CHANNELS.GET_SESSION_RECORDINGS),
-  openStatusWindow:        ()           => ipcRenderer.invoke(CHANNELS.OPEN_STATUS_WINDOW),
-  closeStatusWindow:       ()           => ipcRenderer.invoke(CHANNELS.CLOSE_STATUS_WINDOW),
-  openSoapNote:            (filePath)   => ipcRenderer.invoke(CHANNELS.OPEN_SOAP_NOTE, filePath),
+  getSessionRecordings:    ()           => ipcRenderer.invoke('get-session-recordings'),
+  openStatusWindow:        ()           => ipcRenderer.invoke('open-status-window'),
+  closeStatusWindow:       ()           => ipcRenderer.invoke('close-status-window'),
+  openSoapNote:            (filePath)   => ipcRenderer.invoke('open-soap-note', filePath),
 
-  onStateChange:           (cb) => ipcRenderer.on(CHANNELS.STATE_CHANGE,            (_, s)       => cb(s)),
-  onShowPatientForm:       (cb) => ipcRenderer.on(CHANNELS.SHOW_PATIENT_FORM,       ()           => cb()),
-  onSetupWarning:          (cb) => ipcRenderer.on(CHANNELS.SETUP_WARNING,           (_, msg)     => cb(msg)),
-  onAutoStartRecording:    (cb) => ipcRenderer.on(CHANNELS.AUTO_START_RECORDING,    ()           => cb()),
-  onPickDoctor:            (cb) => ipcRenderer.on(CHANNELS.PICK_DOCTOR,             (_, doctors) => cb(doctors)),
-  onServiceWarning:        (cb) => ipcRenderer.on(CHANNELS.SERVICE_WARNING,         (_, data)    => cb(data)),
-  onRecordingStatusUpdate: (cb) => ipcRenderer.on(CHANNELS.RECORDING_STATUS_UPDATE, (_, data)    => cb(data)),
-  onTemplateJobStatus:     (cb) => ipcRenderer.on(CHANNELS.TEMPLATE_JOB_STATUS,     (_, job)     => cb(job))
+  onStateChange:           (cb) => ipcRenderer.on('state-change',            (_, s)       => cb(s)),
+  onShowPatientForm:       (cb) => ipcRenderer.on('show-patient-form',       ()           => cb()),
+  onSetupWarning:          (cb) => ipcRenderer.on('setup-warning',           (_, msg)     => cb(msg)),
+  onAutoStartRecording:    (cb) => ipcRenderer.on('auto-start-recording',    ()           => cb()),
+  onPickDoctor:            (cb) => ipcRenderer.on('pick-doctor',             (_, doctors) => cb(doctors)),
+  onServiceWarning:        (cb) => ipcRenderer.on('service-warning',         (_, data)    => cb(data)),
+  onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data)),
+  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job))
 })

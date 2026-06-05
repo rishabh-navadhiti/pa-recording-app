@@ -94,24 +94,27 @@ test('shared DOCTOR_SPECIALTIES values match the renderer.js literal', () => {
 
 // ---- CHANNELS completeness ----
 
-test('every CHANNELS.X reference in preload.js is a valid CHANNELS key', () => {
+test('every preload.js channel literal exists in the CHANNELS map', () => {
+  // preload uses LITERAL channel strings (not CHANNELS.X) because it runs in a
+  // sandboxed context that cannot require local modules — see the header comment
+  // in preload.js. This test is the consistency guard: every literal must be a
+  // value in the CHANNELS map, so preload and the main-side registrars stay in sync.
   const preloadSrc = fs.readFileSync(
     path.join(__dirname, '../../preload.js'), 'utf8'
   )
-  // preload now uses CHANNELS.X constants (Phase 3 Group 9). A typo'd constant
-  // would be `undefined` at runtime → silent hang. Assert each referenced key exists.
-  const refs = new Set()
-  for (const [, key] of preloadSrc.matchAll(/CHANNELS\.([A-Z_]+)/g)) refs.add(key)
-  assert.ok(refs.size > 0, 'preload.js should reference CHANNELS constants')
-  for (const key of refs) {
-    assert.ok(key in CHANNELS, `preload.js references CHANNELS.${key} which is not defined in ipc-channels.js`)
+  const channelStrings = new Set()
+  for (const [, ch] of preloadSrc.matchAll(/ipcRenderer\.(?:invoke|on)\s*\(\s*'([^']+)'/g)) {
+    channelStrings.add(ch)
+  }
+  assert.ok(channelStrings.size > 0, 'preload.js should reference channel strings')
+  const channelValues = new Set(Object.values(CHANNELS))
+  for (const ch of channelStrings) {
+    assert.ok(channelValues.has(ch), `preload.js channel '${ch}' is not present in src/shared/ipc-channels.js CHANNELS map`)
   }
 
-  // Any remaining bare string literals in invoke/on must also be valid channels.
-  const channelValues = new Set(Object.values(CHANNELS))
-  for (const [, ch] of preloadSrc.matchAll(/ipcRenderer\.(?:invoke|on)\s*\(\s*'([^']+)'/g)) {
-    assert.ok(channelValues.has(ch), `preload.js literal channel '${ch}' is not in CHANNELS map`)
-  }
+  // preload must NOT require the CHANNELS module (sandbox would throw).
+  assert.ok(!/require\(['"][^'"]*ipc-channels['"]\)/.test(preloadSrc),
+    'preload.js must not require ipc-channels.js — it runs sandboxed and the require would throw')
 })
 
 // ---- src/shared/state.js structural check ----
