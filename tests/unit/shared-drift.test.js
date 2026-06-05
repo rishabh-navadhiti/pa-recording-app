@@ -16,8 +16,11 @@ const { STATUS_LABELS } = require('../../src/shared/pipeline-status')
 const { DOCTOR_SPECIALTIES } = require('../../src/shared/specialties')
 const { CHANNELS } = require('../../src/shared/ipc-channels')
 
+// Phase 4: the renderer's enum copies live in renderer/constants.js (ESM).
+// The renderer is sandboxed and can't import src/shared, so these copies are
+// guarded here against drift. Read as text (avoids ESM/CJS require friction).
 const rendererSrc = fs.readFileSync(
-  path.join(__dirname, '../../renderer/renderer.js'), 'utf8'
+  path.join(__dirname, '../../renderer/constants.js'), 'utf8'
 )
 
 // Extract key:'value' pairs from a `const NAME = { ... }` block in a JS file.
