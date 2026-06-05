@@ -23,4 +23,4 @@ jobs:
       # Do NOT run electron-rebuild in CI — that would target the wrong ABI for tests.
       - run: npm ci
 
-      - run: node --test tests/unit/**/*.test.js tests/unit/*.test.js
+      - run: node --test --test-force-exit tests/unit/**/*.test.js tests/unit/*.test.js

@@ -31,7 +31,7 @@ function createClaudeCliProvider({ cwd, log, runner }) {
      * @param {RunSkillOpts} opts
      * @returns {Promise<RunSkillResult>}
      */
-    runSkill({ prompt, model, effort, tag = '', label = 'claude', env }) {
+    runSkill({ prompt, model, effort, tag = '', label = 'claude', env, signal }) {
       return new Promise(resolve => {
         const spawnEnv = {
           ...process.env,
@@ -56,11 +56,15 @@ function createClaudeCliProvider({ cwd, log, runner }) {
         const displayCmd = `claude -p "${prompt}"${model ? ` --model ${model}` : ''} --output-format stream-json --verbose --dangerously-skip-permissions`
         log(`${tag}[${label}] $ ${envPrefix ? envPrefix + ' ' : ''}${displayCmd}`)
 
+        // signal (optional): an AbortSignal that, when aborted, sends SIGTERM
+        // to the child process. Used by the job dispatcher's cancel path so
+        // cancel-template-creation kills the in-flight Claude run.
         const proc = _runner.run(cmd, args, {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: false,
           env: spawnEnv,
+          ...(signal ? { signal } : {}),
         })
 
         let buf = ''

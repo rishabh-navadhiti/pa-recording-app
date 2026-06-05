@@ -56,13 +56,16 @@ function createDoctorProfile({ doctorName, stagingRel }) {
  * @param {string}   input.templatePath    Absolute path to the template .md
  * @param {string}   input.corrections     Free-text corrections (typed by user)
  * @param {string}   [input.correctionsFile]  Path to corrections file (optional)
- * @param {string[]} [input.sampleFiles]    Paths to extra sample notes (optional)
+ * @param {string} [input.correctionsFile]  Absolute path to a corrections file (or '' )
+ * @param {string} [input.samplesDir]        Absolute path to the staged-samples FOLDER (or '')
+ *
+ * NOTE: the update-doctor-profile skill's Step 0 parses by FIXED markers and
+ * reads `Samples:` as a single folder path — so all five markers are ALWAYS
+ * emitted (empty value when absent) and `samplesDir` is a directory, not a list.
+ * See notes-claude/skills/update-doctor-profile/SKILL.md Step 0.
  */
-function updateDoctorProfile({ doctorName, templatePath, corrections, correctionsFile, sampleFiles }) {
-  let prompt = `update doctor profile. Doctor: ${doctorName}. Template: ${templatePath}. Corrections: ${corrections}`
-  if (correctionsFile) prompt += `. CorrectionsFile: ${correctionsFile}`
-  if (sampleFiles && sampleFiles.length) prompt += `. Samples: ${sampleFiles.join(', ')}`
-  return prompt
+function updateDoctorProfile({ doctorName, templatePath, corrections, correctionsFile, samplesDir }) {
+  return `update doctor profile. Doctor: ${doctorName}. Template: ${templatePath}. Corrections: ${corrections}. CorrectionsFile: ${correctionsFile || ''}. Samples: ${samplesDir || ''}`
 }
 
 /**

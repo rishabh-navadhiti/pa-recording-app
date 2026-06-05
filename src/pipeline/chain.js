@@ -6,7 +6,8 @@ const path = require('path')
 const { runEngine } = require('../engines/engineRunner')
 const icd = require('../engines/icd')
 const cdi = require('../engines/cdi')
-const { spawnDocxConversion } = require('./docx')
+// Namespace import (not destructured) so tests can stub docx.spawnDocxConversion.
+const docx = require('./docx')
 const { planChildCases, materializeChild } = require('./multiPatient')
 
 // ---- Single-patient post-SOAP chain ----------------------------------------
@@ -38,12 +39,12 @@ async function runCaseChain(ctx, caseCtx) {
   }
 
   // Docx: SOAP (soap.completesCase → this marks the case 'completed')
-  spawnDocxConversion(soapNoteMdPath, caseTag, patientFolderName || null, caseId, ctx)
+  docx.spawnDocxConversion(soapNoteMdPath, caseTag, patientFolderName || null, caseId, ctx)
 
   // Docx: CDI (if CDI produced a .md — does NOT change case status)
   const cdiMdPath = cdiResult?.manifest?.md_path || null
   if (cdiMdPath && fs.existsSync(cdiMdPath)) {
-    spawnDocxConversion(cdiMdPath, caseTag, patientFolderName || null, caseId, ctx)
+    docx.spawnDocxConversion(cdiMdPath, caseTag, patientFolderName || null, caseId, ctx)
   }
 }
 

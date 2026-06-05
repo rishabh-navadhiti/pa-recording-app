@@ -6,6 +6,12 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
+// Stub docx.spawnDocxConversion BEFORE requiring chain so runCaseChain never
+// spawns the real md_to_docx.py Python process during unit tests.
+const docx = require('../../src/pipeline/docx')
+const _docxCalls = []
+docx.spawnDocxConversion = (mdPath, caseTag, folder, caseId, ctx) => { _docxCalls.push(mdPath) }
+
 const { planChildCases, runCaseChain } = require('../../src/pipeline/chain')
 
 // ---- planChildCases (pure) -------------------------------------------------
@@ -93,14 +99,14 @@ test('runCaseChain calls spawnDocx for the SOAP note', async () => {
   const soapMd = path.join(tmpDir, 'soap.md')
   fs.writeFileSync(soapMd, '# SOAP Note')
   try {
-    const docxCalls = []
+    _docxCalls.length = 0
     const ctx = fakeCtx()
     await runCaseChain(ctx, {
       caseId: 'c1', caseTag: 'jane', patientFolderName: null,
       soapNoteMdPath: soapMd, caseDir: tmpDir,
       doctor: { id: 'doc-1', name: 'Dr. Smith', specialty: '' },
-    }, (mdPath, tag, folder, id) => docxCalls.push(mdPath))
-    assert.ok(docxCalls.includes(soapMd), 'should call spawnDocx with the SOAP md path')
+    })
+    assert.ok(_docxCalls.includes(soapMd), 'should call spawnDocx with the SOAP md path')
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   }
@@ -111,14 +117,15 @@ test('runCaseChain does not call CDI docx when CDI is disabled (gate fires)', as
   const soapMd = path.join(tmpDir, 'soap.md')
   fs.writeFileSync(soapMd, '# SOAP')
   try {
-    const docxCalls = []
+    _docxCalls.length = 0
     const ctx = fakeCtx()
     ctx.config.get = () => ({ enableIcd: true, enableCdi: false })
     await runCaseChain(ctx, {
       caseId: 'c2', caseTag: 'john', patientFolderName: null,
       soapNoteMdPath: soapMd, caseDir: tmpDir,
       doctor: { id: 'doc-1', specialty: '' },
-    }, (mdPath) => docxCalls.push(mdPath))
+    })
+    const docxCalls = _docxCalls
     // Only soap docx should be called, not CDI (CDI gate blocked)
     assert.strictEqual(docxCalls.length, 1)
     assert.strictEqual(docxCalls[0], soapMd)

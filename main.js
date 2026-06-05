@@ -41,6 +41,10 @@ const { runEngine }          = require('./src/engines/engineRunner')
 const icdEngine              = require('./src/engines/icd')
 const { spawnTranscription } = require('./src/pipeline/transcription')
 const { ingestAudio }        = require('./src/pipeline/ingest')
+const { runJob }             = require('./src/jobs/jobDispatcher')
+const templateCreateJob      = require('./src/jobs/templateCreate')
+const templateUpdateJob      = require('./src/jobs/templateUpdate')
+const prechartJob            = require('./src/jobs/prechart')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
@@ -261,82 +265,6 @@ function _callSpawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag,
   })
 }
 
-// Shared wrapper for all claude -p invocations.
-// Adds --output-format stream-json, parses the result event, and logs one usage line per job.
-// onClose(code, errText, resultText, resultEvent) is called on exit;
-// resultEvent is the full parsed { type:'result', usage:{...}, total_cost_usd, num_turns, duration_ms, result:'...' }
-// or null if Claude exited without emitting a result event.
-// onError(err) on spawn failure (optional).
-function spawnClaude({ prompt, model, effort, tag, label, env, onClose, onError }) {
-  const safePrompt = prompt.replace(/"/g, '\\"')
-  const modelFlag = model ? ` --model ${model}` : ''
-  const spawnEnv = { ...process.env, ...(effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}), ...(env || {}) }
-  const shellCmd = `claude -p "${safePrompt}"${modelFlag} --output-format stream-json --verbose --dangerously-skip-permissions`
-
-  // Log the actual command that's about to run — prefix any custom env vars
-  // the way you'd type them in a shell, so the line is copy-pasteable for
-  // debugging (cwd is always NOTES_DIR).
-  const envPrefix = [
-    effort ? `CLAUDE_CODE_EFFORT_LEVEL=${effort}` : null,
-    ...(env ? Object.entries(env).map(([k, v]) => `${k}=${v}`) : [])
-  ].filter(Boolean).join(' ')
-  log(`${tag}[${label}] $ ${envPrefix ? envPrefix + ' ' : ''}${shellCmd}`)
-
-  const proc = spawn(
-    shellCmd,
-    [],
-    { cwd: ctx.paths.notesDir, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }
-  )
-
-  let buf = ''
-  let resultText = ''
-  let resultEvent = null
-  const errChunks = []
-
-  const processLine = line => {
-    if (!line.trim()) return
-    try {
-      const ev = JSON.parse(line)
-      if (ev.type === 'result') {
-        resultEvent = ev
-        resultText = ev.result || ''
-        const u = ev.usage || {}
-        const cost = ev.total_cost_usd != null ? `$${ev.total_cost_usd.toFixed(4)}` : 'n/a'
-        log(`${tag}[${label}][usage] input=${u.input_tokens || 0} output=${u.output_tokens || 0} cache_read=${u.cache_read_input_tokens || 0} cache_created=${u.cache_creation_input_tokens || 0} cost=${cost} turns=${ev.num_turns || '?'} time=${Math.round((ev.duration_ms || 0) / 1000)}s`)
-      }
-    } catch (_) {
-      if (line.trim()) log(`${tag}[${label}] ${line.trim()}`)
-    }
-  }
-
-  proc.stdout.on('data', chunk => {
-    buf += chunk.toString()
-    const lines = buf.split('\n')
-    buf = lines.pop()
-    for (const line of lines) processLine(line)
-  })
-
-  proc.stderr.on('data', d => {
-    const msg = d.toString()
-    errChunks.push(msg)
-    log(`${tag}[${label} ERR] ${msg.trim()}`)
-  })
-
-  proc.on('close', code => {
-    if (buf.trim()) processLine(buf)
-    log(`${tag}[${label}] claude exited ${code}`)
-    onClose(code, errChunks.join(''), resultText, resultEvent)
-  })
-
-  proc.on('error', err => {
-    log(`${tag}[${label} ERR] failed to spawn claude: ${err.message}`)
-    if (onError) onError(err)
-    else onClose(null, '', '')
-  })
-
-  return proc
-}
-
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null, caseId = null) {
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
@@ -486,274 +414,27 @@ function writeTemplateJob(job) {
   if (ctx) ctx.jobState.save(job)
 }
 
-function broadcastTemplateJob(job) {
-  writeTemplateJob(job)
-  ctx?.renderer.send('template-job-status', job)
-  ctx?.sendStatus('template-job-status', job)
-}
-
 function spawnTemplateCreation(doctorName, stagingDir) {
   const lastname = extractLastname(doctorName) || 'doctor'
   const stagingRel = path.relative(ctx.paths.notesDir, stagingDir).replace(/\\/g, '/')
-  const settings = readSettings()
-  const model  = settings.templateModel  || 'claude-opus-4-8'
-  const effort = settings.templateEffort || 'max'
-
-  const prompt = `create a doctor profile for "${doctorName}" from source folder "${stagingRel}"`
-
-  // The actual shell command is logged by spawnClaude as `[template] $ ...`.
-  const jobStartMs = Date.now()
-
-  const templateCreateStartedAt = nowIso()
-  let templateJobEventId = null
-  try {
-    templateJobEventId = dbEvents.startEvent({ jobKind: 'template_create', modelUsed: model, effort, startedAt: templateCreateStartedAt })
-  } catch (e) { log(`[db] startEvent(template_create) failed: ${e.message}`) }
-
-  const templateJobProc = spawnClaude({
-    prompt,
-    model,
-    effort,
-    tag: '',
-    label: 'template',
-    onClose(code, errText, resultText, resultEvent) {
-      ctx.stores.jobs.clear()
-      const durationMs = Date.now() - jobStartMs
-      logSkillStream(log, '', 'template', resultEvent)
-
-      if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
-        const evId = ctx.stores.jobs.getEventId() ?? templateJobEventId
-        if (evId != null) {
-          try { dbEvents.finishEvent(evId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
-        }
-        broadcastTemplateJob({
-          status: 'failed',
-          doctorName,
-          lastname,
-          error: 'Claude usage limit reached. Try again once the limit resets.',
-          finishedAt: Date.now()
-        })
-        ctx.renderer.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: 'Template creation could not complete — try again once the limit resets.'
-        })
-        return
-      }
-
-      const expectedPath = path.join(ctx.paths.templatesDir, `${lastname}.md`)
-      if (code === 0 && fs.existsSync(expectedPath)) {
-        // Register the doctor in DB (and keep settings.json in sync for backward compat)
-        let doctorId = null
-        try {
-          const existing = dbDoctors.getDoctorByLastname(lastname)
-          doctorId = existing ? existing.id : String(Date.now())
-          dbDoctors.upsertDoctor({ id: doctorId, name: doctorName.trim(), lastname, templatePath: expectedPath })
-          log(`[template] Doctor registered in DB: ${doctorName} (${expectedPath})`)
-        } catch (e) {
-          log(`[template] WARNING: failed to register doctor in DB: ${e.message}`)
-        }
-
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'success', ...extractUsage(resultEvent), relatedDoctorId: doctorId, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
-        }
-
-        // Delete staging folder after success
-        try {
-          fs.rmSync(stagingDir, { recursive: true, force: true })
-          log(`[template] Staging deleted: ${stagingDir}`)
-        } catch (e) {
-          log(`[template] WARNING: failed to delete staging: ${e.message}`)
-        }
-
-        broadcastTemplateJob({
-          status: 'success',
-          doctorName,
-          lastname,
-          templatePath: expectedPath,
-          durationMs,
-          finishedAt: Date.now()
-        })
-        notifyUser('Template ready', `Profile for ${doctorName} saved.`)
-      } else {
-        if (templateJobEventId != null) {
-          try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: code === 0 ? `Template file not found at ${expectedPath}` : `Exit code ${code}`, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) failed: ${e.message}`) }
-        }
-        broadcastTemplateJob({
-          status: 'failed',
-          doctorName,
-          lastname,
-          error: code === 0
-            ? `Claude exited 0 but template file not found at ${expectedPath}`
-            : `Claude exited with code ${code}`,
-          finishedAt: Date.now()
-        })
-        notifyUser('Template creation failed', `${doctorName} — check app.log for details`)
-      }
-    },
-    onError(err) {
-      ctx.stores.jobs.clear()
-      if (templateJobEventId != null) {
-        try { dbEvents.finishEvent(templateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_create) onError failed: ${e.message}`) }
-      }
-      broadcastTemplateJob({
-        status: 'failed',
-        doctorName,
-        lastname,
-        error: err.code === 'ENOENT'
-          ? 'Claude CLI not installed. Install the Claude CLI to enable template creation.'
-          : err.message,
-        finishedAt: Date.now()
-      })
-    }
-  })
-
-  ctx.stores.jobs.start('create', templateJobProc, templateJobEventId)
-
-  broadcastTemplateJob({
-    status: 'running',
-    doctorName,
-    lastname,
-    startedAt: jobStartMs,
-    model,
-    effort
-  })
+  // Fire-and-forget; the IPC handler already checked jobs.isRunning(). The job
+  // dispatcher acquires the single-flight lock synchronously before its first await.
+  runJob(templateCreateJob, { doctorName, lastname, stagingRel }, ctx, { stagingDir })
 }
 
 function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsFile, samplesDir) {
   const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
-  const settings = readSettings()
-  const model  = settings.templateModel  || 'claude-opus-4-8'
-  const effort = settings.templateEffort || 'max'
-
-  // Flatten multi-line corrections and strip double quotes to avoid breaking shell quoting on Windows
-  const safeCorrections = (corrections || '').replace(/\r?\n/g, ' | ').replace(/"/g, "'")
-  const safeName = doctorName.replace(/"/g, "'")
-  const safePath = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
-  const safeCorrectionsFile = correctionsFile ? correctionsFile.replace(/\\/g, '/').replace(/"/g, "'") : ''
-  const safeSamplesDir = samplesDir ? samplesDir.replace(/\\/g, '/').replace(/"/g, "'") : ''
-
-  const prompt = `update doctor profile. Doctor: ${safeName}. Template: ${safePath}. Corrections: ${safeCorrections}. CorrectionsFile: ${safeCorrectionsFile}. Samples: ${safeSamplesDir}`
-
-  // The actual shell command is logged by spawnClaude as `[template-update] $ ...`.
-  const updateJobStartMs = Date.now()
-
-  const doctorForUpdate = dbDoctors.getDoctorByLastname(lastname)
-  const doctorIdForUpdate = doctorForUpdate?.id || null
-
-  const templateUpdateStartedAt = nowIso()
-  let templateUpdateJobEventId = null
-  try {
-    templateUpdateJobEventId = dbEvents.startEvent({ jobKind: 'template_update', relatedDoctorId: doctorIdForUpdate, modelUsed: model, effort, startedAt: templateUpdateStartedAt })
-  } catch (e) { log(`[db] startEvent(template_update) failed: ${e.message}`) }
-
-  const templateUpdateProc = spawnClaude({
-    prompt,
-    model,
-    effort,
-    tag: '',
-    label: 'template-update',
-    onClose(code, errText, resultText, resultEvent) {
-      ctx.stores.jobs.clear()
-      const durationMs = Date.now() - updateJobStartMs
-      logSkillStream(log, '', 'template-update', resultEvent)
-
-      if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
-        if (templateUpdateJobEventId != null) {
-          try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
-        }
-        broadcastTemplateJob({
-          type: 'update',
-          status: 'failed',
-          doctorName,
-          lastname,
-          error: 'Claude usage limit reached. Try again once the limit resets.',
-          finishedAt: Date.now()
-        })
-        ctx.renderer.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: 'Template update could not complete — try again once the limit resets.'
-        })
-        return
-      }
-
-      if (code === 0) {
-        if (templateUpdateJobEventId != null) {
-          try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'success', ...extractUsage(resultEvent), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
-        }
-
-        // Extract changes report from JSON manifest (B6) or fall back to "Updated:" text marker.
-        const updateManifest = parseSkillManifest(resultText)
-        const changesReport = (() => {
-          if (updateManifest && updateManifest.skill === 'update-doctor-profile') {
-            // Manifest is last line — everything before it is the human-readable report.
-            const lastNewline = resultText.lastIndexOf('\n')
-            return lastNewline > 0 ? resultText.slice(0, lastNewline).trim() : null
-          }
-          const idx = resultText.indexOf('Updated:')
-          return idx !== -1 ? resultText.slice(idx).trim() : null
-        })()
-
-        broadcastTemplateJob({
-          type: 'update',
-          status: 'success',
-          doctorName,
-          lastname,
-          templatePath,
-          durationMs,
-          changesReport,
-          finishedAt: Date.now()
-        })
-
-        // Clean up samples staging folder if one was used
-        if (samplesDir && fs.existsSync(samplesDir)) {
-          try { fs.rmSync(samplesDir, { recursive: true, force: true }) } catch (_) {}
-        }
-
-        notifyUser('Template updated', `Profile for ${doctorName} updated.`)
-      } else {
-        if (templateUpdateJobEventId != null) {
-          try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) failed: ${e.message}`) }
-        }
-        broadcastTemplateJob({
-          type: 'update',
-          status: 'failed',
-          doctorName,
-          lastname,
-          error: `Claude exited with code ${code}`,
-          finishedAt: Date.now()
-        })
-        notifyUser('Template update failed', `${doctorName} — check app.log for details`)
-      }
-    },
-    onError(err) {
-      ctx.stores.jobs.clear()
-      if (templateUpdateJobEventId != null) {
-        try { dbEvents.finishEvent(templateUpdateJobEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(template_update) onError failed: ${e.message}`) }
-      }
-      broadcastTemplateJob({
-        type: 'update',
-        status: 'failed',
-        doctorName,
-        lastname,
-        error: err.code === 'ENOENT'
-          ? 'Claude CLI not installed. Install the Claude CLI to enable template updates.'
-          : err.message,
-        finishedAt: Date.now()
-      })
-    }
-  })
-
-  ctx.stores.jobs.start('update', templateUpdateProc, templateUpdateJobEventId)
-
-  broadcastTemplateJob({
-    type: 'update',
-    status: 'running',
+  // Flatten corrections newlines to " | " (the skill's Step 0 line separator) and
+  // forward-slash paths. The old "->' shell-escaping is dropped — arg-array spawn
+  // passes content faithfully, so the model now sees the scribe's text verbatim.
+  const input = {
     doctorName,
-    lastname,
-    startedAt: updateJobStartMs,
-    model,
-    effort
-  })
+    templatePath:    templatePath.replace(/\\/g, '/'),
+    corrections:     (corrections || '').replace(/\r?\n/g, ' | '),
+    correctionsFile: correctionsFile ? correctionsFile.replace(/\\/g, '/') : '',
+    samplesDir:      samplesDir ? samplesDir.replace(/\\/g, '/') : '',
+  }
+  runJob(templateUpdateJob, input, ctx, { lastname })
 }
 
 // ---------------------------------------------------------------------------
@@ -887,173 +568,24 @@ function buildCombinedAttachment(filePaths) {
 function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath) {
   const caseName = path.basename(caseDir)
   const patientLabel = caseName.replace(/_\d{4}-\d{2}-\d{2}.*$/, '').replace(/_/g, ' ') || caseName
-  const settings = readSettings()
-  const model = settings.soapModel || 'claude-sonnet-4-6'
-
-  // Build the skill prompt. Match update-doctor-profile's style: literal field names,
-  // shell-safe quoting (replace " with ' inside any user-supplied string).
-  const safeCase    = caseDir.replace(/\\/g, '/').replace(/"/g, "'")
-  const safeTpl     = templatePath.replace(/\\/g, '/').replace(/"/g, "'")
-  const safeAttach  = (combinedAttachmentPath || '').replace(/\\/g, '/').replace(/"/g, "'")
-  const safeInstr   = (instructions || '').replace(/\r?\n/g, ' ').replace(/"/g, "'")
-  const promptText  = `edit note. Case: ${safeCase}. Template: ${safeTpl}. Attachment: ${safeAttach}. Instructions: ${safeInstr}`
-
-  // The actual shell command is logged by spawnClaude as `[prechart] $ ...`.
-  const prechartJobStartMs = Date.now()
-
-  // Look up the case DB id by folder path so we can bump revision + write backup_path
   let prechartCaseId = null
   try { prechartCaseId = dbCases.getCaseIdByDir(caseDir) } catch (_) {}
 
-  const prechartStartedAt = nowIso()
-  let prechartEventId = null
-  try {
-    prechartEventId = dbEvents.startEvent({ caseId: prechartCaseId, jobKind: 'prechart', modelUsed: model, effort: 'high', startedAt: prechartStartedAt })
-  } catch (e) { log(`[db] startEvent(prechart) failed: ${e.message}`) }
-
-  const cleanupAttachment = () => {
-    if (combinedAttachmentPath) {
-      try {
-        fs.unlinkSync(combinedAttachmentPath)
-        log(`[prechart][${patientLabel}] cleaned up temp attachment`)
-      } catch (e) {
-        log(`[prechart][${patientLabel}] WARNING: failed to delete temp attachment: ${e.message}`)
-      }
-    }
+  const input = {
+    caseDir:        caseDir.replace(/\\/g, '/'),
+    templatePath:   templatePath.replace(/\\/g, '/'),
+    attachmentPath: (combinedAttachmentPath || '').replace(/\\/g, '/'),
+    instructions:   (instructions || '').replace(/\r?\n/g, ' '),
   }
-
-  const prechartProc = spawnClaude({
-    prompt: promptText,
-    model,
-    effort: 'high',
-    tag: '',
-    label: `prechart][${patientLabel}`,
-    onClose(code, errText, resultText, resultEvent) {
-      ctx.stores.jobs.clear()
-      cleanupAttachment()
-      const durationMs = Date.now() - prechartJobStartMs
-      logSkillStream(log, '', `prechart][${patientLabel}`, resultEvent)
-
-      if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
-        if (prechartEventId != null) {
-          try { dbEvents.finishEvent(prechartEventId, { status: 'rate_limited', ...extractUsage(resultEvent), errorMessage: 'Claude usage limit reached', finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
-        }
-        broadcastTemplateJob({
-          type: 'prechart',
-          status: 'failed',
-          doctorName: patientLabel,
-          lastname: patientLabel,
-          caseDir,
-          error: 'Claude usage limit reached. Try again once the limit resets.',
-          finishedAt: Date.now()
-        })
-        ctx.renderer.send('service-warning', {
-          title: 'Claude usage limit reached',
-          message: 'Pre-chart could not complete — try again once the limit resets.'
-        })
-        return
-      }
-
-      if (code === 0) {
-        // Parse backup_path from the JSON manifest (B6 migration).
-        // Falls back to BACKUP_OK: text marker (older skill) then to filesystem glob.
-        let backupPath = null
-        const manifest = parseSkillManifest(resultText)
-        if (manifest && manifest.skill === 'edit-note' && manifest.backup_path) {
-          backupPath = manifest.backup_path
-        } else if (/BACKUP_OK:\s*(.+)/.test(resultText)) {
-          backupPath = resultText.match(/BACKUP_OK:\s*(.+)/)[1].trim()
-        } else {
-          // Defensive fallback: glob for most-recent backup file in the case dir
-          try {
-            const backups = fs.readdirSync(caseDir)
-              .filter(f => /_soap_note_backup_/.test(f) && f.endsWith('.md'))
-              .map(f => ({ f, mt: fs.statSync(path.join(caseDir, f)).mtimeMs }))
-              .sort((a, b) => b.mt - a.mt)
-            if (backups.length > 0) backupPath = path.join(caseDir, backups[0].f)
-          } catch (_) {}
-        }
-
-        if (prechartEventId != null) {
-          try { dbEvents.finishEvent(prechartEventId, { status: 'success', ...extractUsage(resultEvent), backupPath, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
-        }
-        try { dbCases.bumpCaseRevision(prechartCaseId) } catch (e) { log(`[db] prechart bumpRevision failed: ${e.message}`) }
-
-        // Skill overwrites the soap note in place. Diagnoses may have changed,
-        // so re-run ICD coding before refreshing the .docx mirror. ICD is
-        // best-effort — failures fall through to docx.
-        const updatedNote = findExistingSoapNote(caseDir)
-        if (updatedNote) {
-          runEngine(icdEngine, ctx, {
-            caseId: prechartCaseId, caseTag: null, patientFolderName: null,
-            soapNoteMdPath: updatedNote, caseDir, doctor: null,
-          }).then(() => spawnDocxConversion(updatedNote, null, null, prechartCaseId))
-        } else {
-          log(`[prechart][${patientLabel}] WARNING: claude exited 0 but soap note not found in ${caseDir}`)
-        }
-        // Hide backup .md files created by the edit-note skill
-        try {
-          fs.readdirSync(caseDir)
-            .filter(f => f.endsWith('.md'))
-            .forEach(f => hideFileFromUser(path.join(caseDir, f)))
-        } catch {}
-        broadcastTemplateJob({
-          type: 'prechart',
-          status: 'success',
-          doctorName: patientLabel,
-          lastname: patientLabel,
-          caseDir,
-          durationMs,
-          finishedAt: Date.now()
-        })
-        notifyUser('Pre-chart applied', `${patientLabel}'s note has been updated.`)
-      } else {
-        if (prechartEventId != null) {
-          try { dbEvents.finishEvent(prechartEventId, { status: 'failed', ...extractUsage(resultEvent), errorMessage: errText.slice(0, 1024), finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) failed: ${e.message}`) }
-        }
-        broadcastTemplateJob({
-          type: 'prechart',
-          status: 'failed',
-          doctorName: patientLabel,
-          lastname: patientLabel,
-          caseDir,
-          error: `Claude exited with code ${code}`,
-          finishedAt: Date.now()
-        })
-        notifyUser('Pre-chart failed', `${patientLabel} — check app.log for details`)
-      }
-    },
-    onError(err) {
-      ctx.stores.jobs.clear()
-      cleanupAttachment()
-      if (prechartEventId != null) {
-        try { dbEvents.finishEvent(prechartEventId, { status: 'failed', errorMessage: err.message, finishedAt: nowIso() }) } catch (e) { log(`[db] finishEvent(prechart) onError failed: ${e.message}`) }
-      }
-      broadcastTemplateJob({
-        type: 'prechart',
-        status: 'failed',
-        doctorName: patientLabel,
-        lastname: patientLabel,
-        caseDir,
-        error: err.code === 'ENOENT'
-          ? 'Claude CLI not installed. Install the Claude CLI to enable pre-chart.'
-          : err.message,
-        finishedAt: Date.now()
-      })
-    }
+  runJob(prechartJob, input, ctx, {
+    patientLabel,
+    caseId: prechartCaseId,
+    combinedAttachmentPath,   // raw temp path, for cleanup
+    runEngine,
+    icdEngine,
+    spawnDocxConversionFn: (md, tag, folder, cid) => spawnDocxConversion(md, tag, folder, cid),
+    findExistingSoapNoteFn: findExistingSoapNote,
   })
-
-  broadcastTemplateJob({
-    type: 'prechart',
-    status: 'running',
-    doctorName: patientLabel,
-    lastname: patientLabel,
-    caseDir,
-    startedAt: prechartJobStartMs,
-    model
-  })
-
-  ctx.stores.jobs.start('prechart', prechartProc, prechartEventId)
 }
 
 // After a git pull that brought new commits: run npm install (picks up new/changed

@@ -59,28 +59,28 @@ test('create-doctor-profile builds correct format', () => {
 
 // ---- update-doctor-profile -------------------------------------------------
 
-test('update-doctor-profile with corrections only', () => {
+test('update-doctor-profile always emits all 5 markers (empty when absent)', () => {
   const p = buildPrompt('update-doctor-profile', {
     doctorName: 'Sabbag',
     templatePath: '/notes/Templates/sabbag.md',
     corrections: 'Add more detail to assessment',
   })
   assert.match(p, /Doctor: Sabbag/)
-  assert.match(p, /Corrections: Add more detail/)
-  assert.ok(!p.includes('CorrectionsFile'))
-  assert.ok(!p.includes('Samples'))
+  assert.match(p, /Corrections: Add more detail to assessment/)
+  // Skill parses by fixed markers — both must be present even when empty.
+  assert.match(p, /CorrectionsFile: \. Samples: $/)
 })
 
-test('update-doctor-profile with corrections file + samples', () => {
+test('update-doctor-profile with corrections file + samples folder', () => {
   const p = buildPrompt('update-doctor-profile', {
     doctorName: 'Sabbag',
     templatePath: '/notes/Templates/sabbag.md',
     corrections: 'See file',
     correctionsFile: '/tmp/corrections.txt',
-    sampleFiles: ['/notes/sample1.md', '/notes/sample2.md'],
+    samplesDir: '/notes/Templates/_staging_update/sabbag_123',
   })
   assert.match(p, /CorrectionsFile: \/tmp\/corrections\.txt/)
-  assert.match(p, /Samples: \/notes\/sample1\.md, \/notes\/sample2\.md/)
+  assert.match(p, /Samples: \/notes\/Templates\/_staging_update\/sabbag_123$/)
 })
 
 // ---- edit-note -------------------------------------------------------------
