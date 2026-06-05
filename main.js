@@ -48,6 +48,8 @@ const prechartJob            = require('./src/jobs/prechart')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
+const { checkForUpdates }    = require('./src/update/autoUpdate')
+const { copyDirSync }        = require('./src/pipeline/artifacts')
 const { registerLifecycleIpc }   = require('./src/ipc/lifecycle')
 const { registerRecordingIpc }   = require('./src/ipc/recording')
 const { registerDoctorsIpc }     = require('./src/ipc/doctors')
@@ -602,128 +604,6 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
 // deps) then electron-rebuild (recompiles better-sqlite3 for this Electron ABI).
 // Always calls onDone() — failure is logged but non-fatal; the safety net in
 // app.whenReady() will show a recovery dialog if the user restarts too early.
-function runPostUpdateSetup(onDone) {
-  const isWin = process.platform === 'win32'
-
-  log('[update] Running npm install...')
-  const npmProc = spawn('npm', ['install', '--no-audit', '--silent'], {
-    cwd: __dirname,
-    stdio: 'pipe',
-    shell: isWin
-  })
-  let npmStderr = ''
-  npmProc.stderr.on('data', d => { npmStderr += d.toString() })
-  npmProc.on('error', err => {
-    log(`[update] npm install error: ${err.message}`)
-    onDone()
-  })
-  npmProc.on('close', code => {
-    if (code !== 0) {
-      log(`[update] npm install failed (exit ${code}): ${npmStderr.trim()}`)
-      onDone()
-      return
-    }
-    log('[update] npm install OK — rebuilding native modules for Electron...')
-
-    const rebuildBin = path.join(
-      __dirname, 'node_modules', '.bin',
-      isWin ? 'electron-rebuild.cmd' : 'electron-rebuild'
-    )
-    // Quote rebuildBin: default install paths contain spaces (e.g.
-    // "AI Medical Scribe (Staging)"), and with shell:true an unquoted path is
-    // split on the first space — cmd.exe then tries to run "...\Programs\AI".
-    const rebuildProc = spawn(`"${rebuildBin}" -f -w better-sqlite3`, [], {
-      cwd: __dirname,
-      stdio: 'pipe',
-      shell: true
-    })
-    let rebuildLog = ''
-    rebuildProc.stdout.on('data', d => { rebuildLog += d.toString() })
-    rebuildProc.stderr.on('data', d => { rebuildLog += d.toString() })
-    rebuildProc.on('error', err => {
-      log(`[update] electron-rebuild not found or failed to start: ${err.message}`)
-      onDone()
-    })
-    rebuildProc.on('close', rCode => {
-      if (rCode !== 0) {
-        log(`[update] electron-rebuild failed (exit ${rCode}): ${rebuildLog.trim()}`)
-      } else {
-        log('[update] Native modules rebuilt OK')
-      }
-      onDone()
-    })
-  })
-}
-
-function checkForUpdates(appCtx) {
-  // Run git pull --ff-only in background — no blocking, no crash on failure
-  const _ctx = appCtx || ctx
-  const gitPull = spawn('git', ['pull', '--ff-only'], {
-    cwd: __dirname,
-    stdio: 'pipe',
-    shell: process.platform === 'win32'
-  })
-
-  let stdout = ''
-  let stderr = ''
-  gitPull.stdout.on('data', d => { stdout += d.toString() })
-  gitPull.stderr.on('data', d => { stderr += d.toString() })
-
-  gitPull.on('close', code => {
-    if (code !== 0) {
-      log(`[update] git pull failed (exit ${code}): ${stderr.trim()}`)
-      return
-    }
-    const output = stdout.trim()
-    log(`[update] ${output}`)
-
-    // 'Already up to date.' means no changes — do nothing
-    if (output === 'Already up to date.') return
-
-    // New commits were pulled — re-sync skills immediately from updated code
-    const notesDir = _ctx?.paths?.notesDir
-    if (notesDir) {
-      const claudeConfigSrc = path.join(__dirname, 'notes-claude')
-      copyDirSync(claudeConfigSrc, path.join(notesDir, '.claude'))
-      writeMcpConfig(notesDir, p => _ctx?.platform?.hideInternal(p), log)
-      log('[update] Skills re-synced from updated code')
-    }
-
-    // Run npm install + electron-rebuild before telling the user to restart,
-    // so the native modules are ready when they do. Notification fires after
-    // both steps complete (or if either fails — the safety net dialog handles
-    // the restart-too-early case).
-    runPostUpdateSetup(() => {
-      const stagingTag = _ctx?.platform?.isStaging() ? ' (staging)' : ''
-      if (_ctx?.tray) _ctx.tray.setToolTip(`AI Medical Scribe${stagingTag} — updated, restart to apply`)
-      log('[update] Notifying user to restart')
-      const { Notification } = require('electron')
-      if (Notification.isSupported()) {
-        new Notification({
-          title: `AI Medical Scribe${stagingTag} updated`,
-          body: 'A new version was downloaded. Restart the app to apply it.',
-          silent: true
-        }).show()
-      }
-    })
-  })
-
-  gitPull.on('error', err => log(`[update] git not found or failed: ${err.message}`))
-}
-
-function copyDirSync(src, dest) {
-  fs.mkdirSync(dest, { recursive: true })
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath  = path.join(src,  entry.name)
-    const destPath = path.join(dest, entry.name)
-    if (entry.isDirectory()) {
-      copyDirSync(srcPath, destPath)
-    } else {
-      fs.copyFileSync(srcPath, destPath)
-    }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Recording status tracking — all shims defined at top of file; delegate to ctx store
 // ---------------------------------------------------------------------------
@@ -758,7 +638,9 @@ app.whenReady().then(async () => {
     notesDir,
     dbStartupError: _dbStartupError,
     registerIpcHandlers,
-    checkForUpdates,
+    // checkForUpdates moved to src/update/autoUpdate.js; inject the deps it needs
+    // (repo root for cwd, the shared copyDirSync, and the mcp writer).
+    checkForUpdates: (c) => checkForUpdates(c, { appRoot: __dirname, copyDirSync, writeMcpConfig }),
   })
 })
 

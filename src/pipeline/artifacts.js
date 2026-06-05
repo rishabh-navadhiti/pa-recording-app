@@ -104,4 +104,18 @@ function createSessionFolder(ctx) {
   return sessionDir
 }
 
-module.exports = { sanitizeName, extractLastname, relForSkill, cdiPaths, caseStemFromSoapMd, buildCaseFolder, createSessionFolder }
+/**
+ * Recursively copy a directory tree (used for the notes-claude → .claude skills
+ * sync and the Templates copy on notes-dir change). Synchronous, mkdir -p.
+ */
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true })
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath  = path.join(src,  entry.name)
+    const destPath = path.join(dest, entry.name)
+    if (entry.isDirectory()) copyDirSync(srcPath, destPath)
+    else fs.copyFileSync(srcPath, destPath)
+  }
+}
+
+module.exports = { sanitizeName, extractLastname, relForSkill, cdiPaths, caseStemFromSoapMd, buildCaseFolder, createSessionFolder, copyDirSync }
