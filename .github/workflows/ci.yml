@@ -24,3 +24,22 @@ jobs:
       - run: npm ci
 
       - run: node --test --test-force-exit tests/unit/**/*.test.js tests/unit/*.test.js
+
+  test-python:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ffmpeg lets pydub decode the probe-duration WAV fixture (else that test
+      # self-skips). requirements.txt is platform-gated: on Linux only pydub +
+      # python-docx install (pyaudiowpatch is win32-only; sounddevice/soundfile/
+      # numpy are darwin-only), which is exactly what these tests need.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -r requirements.txt
+
+      - run: python -m unittest discover -s tests/python -p "test_*.py" -v

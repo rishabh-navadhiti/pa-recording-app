@@ -305,5 +305,6 @@ If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md i
 - Standards (consumed by cdi-review, future review engines): `notes-claude/standards/{icd10_fy2026,ahima_acdis_2026}.md` + `notes-claude/standards/specialties/<specialty>.md` (ortho only in v1)
 - CDI Co-Pilot review runs after ICD coding, before docx. Toggled globally in Settings (`enableCdi` + `cdiMode`); specialty is per-doctor in the Templates tab. Produces `<case>_cdi.{json,md,docx}` per case folder. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) → *Per-case post-processing chain*.
 - Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-8` (effort=max)
-- Python entry: `record.py`, `transcribe.py`, `md_to_docx.py`
+- Python entry: `record.py`, `md_to_docx.py`, `probe_duration.py` (transcription + prechart-extract are Node now)
+- Run tests: `npm test` (Node), `npm run test:py` (Python — stdlib unittest, `tests/python/`)
 - Run: `npm start`
