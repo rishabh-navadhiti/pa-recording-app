@@ -8,9 +8,12 @@ const path = require('path')
 //
 // The edit-note (Pre-chart) skill takes ONE attachment path, but the UI lets the
 // scribe pick several files — so the app pre-combines them into a single .md
-// here before invoking the skill. Per-file extraction mirrors the skill's Step 5
-// so the model sees the same content shape it would if each file were passed
-// individually. Output format (preserved from the Python version):
+// here before invoking the skill. Per-file extraction mirrors the skill's Step 5.
+// The combined-file STRUCTURE (separators below) is preserved from the Python
+// version; the per-file text is not byte-identical — .docx now comes from
+// mammoth (one blank line between paragraphs, blank paragraphs kept) vs the old
+// python-docx single-newline join. That whitespace difference is immaterial to
+// the only consumer (the edit-note skill, an LLM). Output structure:
 //
 //   <file 1 contents, verbatim>
 //

@@ -11,8 +11,9 @@
 # Windows: WASAPI loopback capture
 PyAudioWPatch>=0.2.12,<0.3 ; sys_platform == "win32"
 
-# macOS: BlackHole capture via sounddevice + soundfile (both need numpy).
-# Not installed on Windows — record.py only imports these in record_macos().
+# macOS: BlackHole capture. record_macos() imports sounddevice + soundfile;
+# numpy is their transitive dependency (sounddevice hands the callback an ndarray).
+# None are installed on Windows — record.py imports them lazily inside record_macos().
 sounddevice>=0.4.6,<0.6 ; sys_platform == "darwin"
 soundfile>=0.12,<0.14   ; sys_platform == "darwin"
 numpy>=1.24,<3          ; sys_platform == "darwin"

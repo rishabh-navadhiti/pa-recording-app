@@ -201,7 +201,6 @@ def select_loopback_index(loopback_devices, default_name):
 def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     import sounddevice as sd
     import soundfile as sf
-    import numpy as np
 
     if device_index_override is not None:
         device_index = device_index_override

@@ -44,6 +44,10 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       return transcribeToFile({ mp3Path, transcriptDest, apiKey })
     })
     .then(() => {
+      // Transcription itself succeeded — record it. The post-success callbacks
+      // (SOAP gen + transcript docx) run in the FINAL .then below, OUTSIDE the
+      // .catch — so a synchronous throw in their setup is a SOAP/docx defect, not
+      // a transcription failure, and must not flip the case to failed or warn.
       log(`${tag}[transcribe] completed`)
       const durationMs = Date.now() - wallStart
       const { dbEvents, dbCases } = requireDb()
@@ -51,9 +55,7 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
         dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: new Date().toISOString() })
         dbCases.updateCasePaths(caseId, { status: 'generating_note', transcript_path: transcriptDest })
       } catch (e) { log(`[db] transcribe success update failed: ${e.message}`) }
-
-      if (onSuccess) onSuccess(transcriptDest, soapNotePath, caseTag, templatePath, caseId, ctx)
-      if (spawnDocx) spawnDocx(transcriptDest, caseTag, null, caseId)
+      return true
     })
     .catch(err => {
       const errText = (err && err.message) ? err.message : String(err)
@@ -83,6 +85,17 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       } else {
         ctx.platform.notify('Transcription failed', `Case: ${caseTag || 'unknown'} — check app.log for details`)
       }
+      return false
+    })
+    .then(ok => {
+      if (!ok) return
+      // Post-success chain. Wrapped so a throw here is logged, not re-attributed
+      // to transcription (the transcript is already written + the case is already
+      // 'generating_note'). spawn()'s own failures surface via proc.on('error').
+      try { if (onSuccess) onSuccess(transcriptDest, soapNotePath, caseTag, templatePath, caseId, ctx) }
+      catch (e) { log(`${tag}[transcribe] onSuccess threw (post-success): ${e.message}`) }
+      try { if (spawnDocx) spawnDocx(transcriptDest, caseTag, null, caseId) }
+      catch (e) { log(`${tag}[transcribe] spawnDocx threw (post-success): ${e.message}`) }
     })
 }
 
