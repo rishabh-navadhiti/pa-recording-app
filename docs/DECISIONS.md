@@ -364,3 +364,19 @@ Every other skill writes `.md` only and lets `main.js → spawnDocxConversion �
 6. **The chain.test.js "node:test hang" was a bad fixture, not a tooling bug.** An `existsFn` of `(p)=>p.includes('john')` matched the candidate child folder, spinning `planChildCases`'s collision loop forever. Fixed the fixture (exact match) + two latent wrong assertions; the file now exits cleanly under `node --test`.
 
 **Test posture:** 171 unit + 12 integration tests green. `--test-force-exit` added to the test scripts/CI. Headless boot smoke (stubbed electron) confirms main.js loads + all registrars register; GUI boot is the manual gate.
+
+---
+
+## 2026-06-05 — Phase 5: Python restructure — port transcribe + extract to Node, harden record.py (rs)
+
+**Context:** Fifth refactor phase (`docs/refactor/`), decision A7. Port the two Python scripts that are just IO + format glue to Node (so they join the `node:test` harness and shrink the bundled Python); keep `record.py` (no Node WASAPI/BlackHole equivalent) and `md_to_docx.py` (until golden-tested) in Python.
+
+**Decisions:**
+
+1. **`transcribe.py` → `src/pipeline/elevenLabs.js` + rewired `transcription.js`.** The HTTP call is native `fetch`/`FormData`/`Blob` (no new dep); `formatTranscript()` is a byte-faithful port of `format_transcript` (a golden-file test pins the markdown — the downstream SOAP/CDI pipeline consumes `transcript.md`). `spawnTranscription` keeps its name + signature and all DB-event / case-status / service-warning orchestration; it no longer spawns a child — the work is an awaited fetch, fired-and-forgotten. Thrown errors carry the HTTP status in their message so the existing `markers.js` regexes still classify auth (401) vs rate-limit (429). Key now from `ctx.secrets` — kills the Python `.env` read **and** the hardcoded `LOG_DIR`.
+
+2. **`extract_attachments.py` → `src/pipeline/attachments.js`.** `.docx` via `mammoth`, `.pdf` via `pdf-parse` **2.x** — which is a class API (`new PDFParse({data}).getText()`), not the v1 function. We join `pages[].text` rather than `result.text` because the latter injects `-- N of M --` page markers (pdfplumber, the original, didn't). Output contract preserved exactly — including the triple-newline before the first separator, which is faithful to the Python `'\n'.join(pieces)` over `'\n\n'`-prefixed pieces. Both deps are pure-JS (no native build) and add zero new audit advisories (the lone `npm audit` hit is the pre-existing `electron` one).
+
+3. **`record.py` macOS brought to Windows parity (the mac branch was second-class).** Added: a **0-frames guard** (delete the empty WAV + `exit(1)` rather than emit a silent MP3 that goes to transcription), a **stop-check inside the sounddevice callback**, and a **device matcher** that prefers known virtual-audio loopback drivers (BlackHole → Aggregate → Loopback → Soundflower) and **deliberately never falls back to an arbitrary input** — grabbing the built-in mic instead of system audio is silently wrong (unlike Windows' last-resort "first loopback", which is still system audio). The hardcoded 48 kHz is now the device's reported default rate. The Windows 5-pass heuristic and the mac matcher were extracted into pure functions (`select_loopback_index` / `select_macos_input_index` / `is_macos_capture_candidate`) so they're pytest-able without audio hardware; the Windows pass order/conditions are preserved exactly — only the logging moved to the caller.
+
+**Risk + gate:** `record.py` is the capture path and can't be tested headlessly — the Win + Mac recording smoke is the irreplaceable gate. The transcript-fidelity golden test guards the #1 risk (transcript shape feeds the whole pipeline).
