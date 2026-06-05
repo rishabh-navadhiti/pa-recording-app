@@ -1,10 +1,9 @@
 'use strict'
 
-// Drift tests for src/shared/ constants vs their copies in renderer/renderer.js.
-// renderer.js is a browser script (no module.exports), so we read it as text
-// and extract the literal values with regex. When Phase 4 wires renderer.js
-// to import from src/shared/ directly, these regex-based assertions can be
-// replaced with a simple require() check.
+// Drift tests for src/shared/ constants vs their copies in renderer/constants.js.
+// The renderer is sandboxed and can't require src/shared (CJS) — it keeps ESM
+// copies in renderer/constants.js. That file is a browser module, so we read it
+// as text and extract the literal values with regex (avoids ESM/CJS friction).
 
 const { test } = require('node:test')
 const assert = require('node:assert/strict')

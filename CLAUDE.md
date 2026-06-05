@@ -20,11 +20,15 @@ All output lands in `~/Documents/AI Medical Notes/Cases/{patient}_{YYYY-MM-DD}/`
 ```
 main.js                       Electron main process — tray, popup window, state machine, IPC, pipeline orchestration, child-process management
 preload.js                    contextBridge → window.api — the ONLY surface renderer can use
-renderer/
-  index.html                  Main window UI (280×420, three tabs: Record + Pre-chart + Templates)
-  renderer.js                 State-driven UI; renders by current STATE; owns timer + forms
+renderer/                     ESM module graph (no bundler — native file:// imports; sandboxed, can't require src/shared)
+  index.html                  Main window UI (280×420, three tabs: Record + Pre-chart + Templates); loads app.js as type=module
+  app.js                      viewRouter — renders the active view by current STATE; owns the state subscription
+  views/                      one module per screen ({ mount, update, unmount }) — record, prechart, templates, settings, upload, …
+  components/                 shared building blocks: visible, timer, fileListField, button, confirm
+  ipc/client.js               the single window.api seam — `ipc` Proxy forwarding lazily to window.api
+  constants.js                ESM copies of STATE / STATUS_LABELS / DOCTOR_SPECIALTIES (drift-tested vs src/shared)
   styles.css                  Dark theme, single file
-  status.html / status.js     Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
+  status.html / statusPanel.js  Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
   transcribe.py               ElevenLabs scribe_v2 → diarised transcript.md
@@ -77,7 +81,7 @@ uninstall*.ps1                Windows installer / launcher scripts
 | `PAUSED` | Recording mid-flight, audio paused | Pause button |
 | `PROCESSING` | Patient-name form open, awaiting input | Stop Recording (transient — popped immediately after name resolved) |
 
-Defined identically in [main.js](main.js) (`STATE`) and [renderer/renderer.js](renderer/renderer.js) (`STATE`). They MUST match. Renderer subscribes via `api.onStateChange`.
+Defined identically in [main.js](main.js) (`STATE`, imported from `src/shared/state.js`) and [renderer/constants.js](renderer/constants.js) (`STATE`). They MUST match — guarded by the drift test in [tests/unit/shared-drift.test.js](tests/unit/shared-drift.test.js). Renderer subscribes via `api.onStateChange`.
 
 After a recording completes, `stop-recording` returns to `SESSION_ACTIVE` immediately so the next case can begin while transcription/SOAP generation run in the background.
 
@@ -290,7 +294,7 @@ If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md i
 **Doc edits with two devs:** `DECISIONS.md` is append-only by date — no merge conflicts by construction. For `CLAUDE.md` / `ARCHITECTURE.md`, prefer adding new sections over reflowing existing ones; section headers are stable anchors.
 
 **Periodic audit prompt** (run when docs feel drifted):
-> "Read main.js, preload.js, renderer/renderer.js, and the python/ files. Diff what they actually do against CLAUDE.md and docs/ARCHITECTURE.md. Patch only the parts that have drifted; don't reflow."
+> "Read main.js, preload.js, renderer/app.js (+ renderer/views/), and the python/ files. Diff what they actually do against CLAUDE.md and docs/ARCHITECTURE.md. Patch only the parts that have drifted; don't reflow."
 
 ---
 
