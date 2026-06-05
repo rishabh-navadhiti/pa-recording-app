@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const path = require('path')
 const { screen, BrowserWindow } = require('electron')
 
@@ -12,10 +14,10 @@ function registerStatusIpc(ipcMain, appCtx, deps) {
   const { log, appRoot } = deps
 
   // ---- get-session-recordings ----
-  ipcMain.handle('get-session-recordings', () => appCtx.stores.recordings.getAll())
+  ipcMain.handle(CHANNELS.GET_SESSION_RECORDINGS, () => appCtx.stores.recordings.getAll())
 
   // ---- open-status-window ----
-  ipcMain.handle('open-status-window', () => {
+  ipcMain.handle(CHANNELS.OPEN_STATUS_WINDOW, () => {
     if (appCtx.statusWin && !appCtx.statusWin.isDestroyed()) {
       appCtx.statusWin.focus()
       return
@@ -55,12 +57,12 @@ function registerStatusIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- close-status-window ----
-  ipcMain.handle('close-status-window', () => {
+  ipcMain.handle(CHANNELS.CLOSE_STATUS_WINDOW, () => {
     if (appCtx.statusWin && !appCtx.statusWin.isDestroyed()) appCtx.statusWin.close()
   })
 
   // ---- open-soap-note ----
-  ipcMain.handle('open-soap-note', async (_, filePath) => {
+  ipcMain.handle(CHANNELS.OPEN_SOAP_NOTE, async (_, filePath) => {
     const { shell } = require('electron')
     // Confine to casesDir so the renderer cannot open arbitrary paths.
     const normalized = path.resolve(filePath)

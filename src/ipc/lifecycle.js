@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const fs = require('fs')
 
 // Session/state lifecycle IPC handlers, moved verbatim from main.js's
@@ -9,15 +11,15 @@ function registerLifecycleIpc(ipcMain, appCtx, deps) {
   const { log, setState, STATE, getAllDoctors, createSessionFolder, dbSessions, waitForExit } = deps
 
   // ---- get-state ----
-  ipcMain.handle('get-state', () => appCtx.stores.state.getState())
+  ipcMain.handle(CHANNELS.GET_STATE, () => appCtx.stores.state.getState())
 
   // ---- get-build-info ----
-  ipcMain.handle('get-build-info', () => ({
+  ipcMain.handle(CHANNELS.GET_BUILD_INFO, () => ({
     isStaging: appCtx.platform.isStaging()
   }))
 
   // ---- start-session ----
-  ipcMain.handle('start-session', async () => {
+  ipcMain.handle(CHANNELS.START_SESSION, async () => {
     log('start-session')
     const doctors = getAllDoctors()
 
@@ -59,7 +61,7 @@ function registerLifecycleIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- stop-session ----
-  ipcMain.handle('stop-session', async () => {
+  ipcMain.handle(CHANNELS.STOP_SESSION, async () => {
     log('stop-session')
     appCtx.stores.session.cancelDoctorPick()
 

@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const path = require('path')
 const { dialog } = require('electron')
 
@@ -12,7 +14,7 @@ function registerAudioUploadIpc(ipcMain, appCtx, deps) {
   } = deps
 
   // ---- browse-audio-file ----
-  ipcMain.handle('browse-audio-file', async () => {
+  ipcMain.handle(CHANNELS.BROWSE_AUDIO_FILE, async () => {
     const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select Audio File',
       properties: ['openFile'],
@@ -25,7 +27,7 @@ function registerAudioUploadIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- process-audio-file ----
-  ipcMain.handle('process-audio-file', (_, filePath, patientName) => {
+  ipcMain.handle(CHANNELS.PROCESS_AUDIO_FILE, (_, filePath, patientName) => {
     log(`process-audio-file: ${filePath}`)
     const name = sanitizeName(patientName)
     log(`Patient name: ${name || '(none)'}`)

@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const path = require('path')
 const fs = require('fs')
 const { dialog } = require('electron')
@@ -25,7 +27,7 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
   } = deps
 
   // ---- get-config-status ----
-  ipcMain.handle('get-config-status', async () => {
+  ipcMain.handle(CHANNELS.GET_CONFIG_STATUS, async () => {
     const env = readEnv()
     const apiKey = env['ELEVENLABS_API_KEY'] || ''
     const settings = readSettings()
@@ -45,14 +47,14 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- get-elevenlabs-key ----
-  ipcMain.handle('get-elevenlabs-key', () => {
+  ipcMain.handle(CHANNELS.GET_ELEVENLABS_KEY, () => {
     const env = readEnv()
     const key = env['ELEVENLABS_API_KEY'] || ''
     return key === 'your_key_here' ? '' : key
   })
 
   // ---- save-elevenlabs-key ----
-  ipcMain.handle('save-elevenlabs-key', (_, key) => {
+  ipcMain.handle(CHANNELS.SAVE_ELEVENLABS_KEY, (_, key) => {
     try {
       const trimmed = (key || '').trim()
       if (!trimmed) return { ok: false, error: 'Key cannot be empty' }
@@ -66,10 +68,10 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- get-settings ----
-  ipcMain.handle('get-settings', () => readSettings())
+  ipcMain.handle(CHANNELS.GET_SETTINGS, () => readSettings())
 
   // ---- save-settings ----
-  ipcMain.handle('save-settings', (_, settings) => {
+  ipcMain.handle(CHANNELS.SAVE_SETTINGS, (_, settings) => {
     try {
       // CDI⟹ICD invariant is enforced by createSettingsStore.save() automatically.
       writeSettings(settings)
@@ -82,7 +84,7 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- list-audio-devices ----
-  ipcMain.handle('list-audio-devices', () => {
+  ipcMain.handle(CHANNELS.LIST_AUDIO_DEVICES, () => {
     return new Promise(resolve => {
       const proc = spawn(appCtx.python, [
         path.join(appRoot, 'python', 'record.py'),
@@ -108,10 +110,10 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- get-notes-dir ----
-  ipcMain.handle('get-notes-dir', () => appCtx.paths.notesDir)
+  ipcMain.handle(CHANNELS.GET_NOTES_DIR, () => appCtx.paths.notesDir)
 
   // ---- change-notes-dir ----
-  ipcMain.handle('change-notes-dir', async (_, mode = 'new') => {
+  ipcMain.handle(CHANNELS.CHANGE_NOTES_DIR, async (_, mode = 'new') => {
     const isExisting = mode === 'existing'
     const result = await dialog.showOpenDialog(appCtx.win, {
       title: isExisting ? 'Select your existing AI Medical Notes folder' : 'Choose where to store your AI Medical Notes',

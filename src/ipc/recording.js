@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -18,7 +20,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   } = deps
 
   // ---- start-recording ----
-  ipcMain.handle('start-recording', () => {
+  ipcMain.handle(CHANNELS.START_RECORDING, () => {
     log('start-recording')
     const tmpMp3 = path.join(os.tmpdir(), `rec_${Date.now()}.mp3`)
     log(`Temp MP3: ${tmpMp3}`)
@@ -68,7 +70,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- stop-recording ----
-  ipcMain.handle('stop-recording', async () => {
+  ipcMain.handle(CHANNELS.STOP_RECORDING, async () => {
     log('stop-recording')
 
     let exitPromise = Promise.resolve()
@@ -137,7 +139,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- pause-recording ----
-  ipcMain.handle('pause-recording', () => {
+  ipcMain.handle(CHANNELS.PAUSE_RECORDING, () => {
     log('pause-recording')
     appCtx.stores.recorder.pause()
     setState(STATE.PAUSED)
@@ -145,7 +147,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- resume-recording ----
-  ipcMain.handle('resume-recording', () => {
+  ipcMain.handle(CHANNELS.RESUME_RECORDING, () => {
     log('resume-recording')
     appCtx.stores.recorder.resume()
     setState(STATE.RECORDING)
@@ -153,7 +155,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- discard-recording ----
-  ipcMain.handle('discard-recording', async () => {
+  ipcMain.handle(CHANNELS.DISCARD_RECORDING, async () => {
     log('discard-recording')
 
     if (appCtx.stores.recorder.isRecording()) {
@@ -193,7 +195,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- submit-patient-name (registered once at startup) ----
-  ipcMain.handle('submit-patient-name', (_, name) => {
+  ipcMain.handle(CHANNELS.SUBMIT_PATIENT_NAME, (_, name) => {
     appCtx.stores.recorder.resolvePatientName(sanitizeName(name))
     return true
   })

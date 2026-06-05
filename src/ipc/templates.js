@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const path = require('path')
 const fs = require('fs')
 const { dialog } = require('electron')
@@ -19,7 +21,7 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
 
   // ---- browse-notes-files ----
   // Multi-select file picker for sample notes + supporting documents.
-  ipcMain.handle('browse-notes-files', async () => {
+  ipcMain.handle(CHANNELS.BROWSE_NOTES_FILES, async () => {
     const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select sample notes and supporting documents',
       properties: ['openFile', 'multiSelections'],
@@ -35,7 +37,7 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
   // ---- start-template-creation ----
   // Stages the user-selected files into NOTES_DIR/Templates/_staging/<lastname>/
   // then spawns the create-doctor-profile skill via Claude.
-  ipcMain.handle('start-template-creation', async (_, doctorName, filePaths) => {
+  ipcMain.handle(CHANNELS.START_TEMPLATE_CREATION, async (_, doctorName, filePaths) => {
     const name = (doctorName || '').trim()
     if (!name) return { ok: false, error: 'Doctor name is required' }
     if (!Array.isArray(filePaths) || filePaths.length === 0) {
@@ -72,7 +74,7 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- browse-corrections-file ----
-  ipcMain.handle('browse-corrections-file', async () => {
+  ipcMain.handle(CHANNELS.BROWSE_CORRECTIONS_FILE, async () => {
     const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select corrections file',
       properties: ['openFile'],
@@ -86,7 +88,7 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- start-template-update ----
-  ipcMain.handle('start-template-update', async (_, doctorName, corrections, correctionsFile, sampleFiles) => {
+  ipcMain.handle(CHANNELS.START_TEMPLATE_UPDATE, async (_, doctorName, corrections, correctionsFile, sampleFiles) => {
     const name = (doctorName || '').trim()
     if (!name) return 'Doctor name is required.'
 
@@ -131,7 +133,7 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- get-doctors-with-templates ----
-  ipcMain.handle('get-doctors-with-templates', () =>
+  ipcMain.handle(CHANNELS.GET_DOCTORS_WITH_TEMPLATES, () =>
     getAllDoctors()
       .filter(d => d.templatePath && fs.existsSync(d.templatePath))
       .map(d => d.name)
@@ -139,16 +141,16 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
   )
 
   // ---- get-template-job-status ----
-  ipcMain.handle('get-template-job-status', () => readTemplateJob())
+  ipcMain.handle(CHANNELS.GET_TEMPLATE_JOB_STATUS, () => readTemplateJob())
 
   // ---- dismiss-template-job ----
-  ipcMain.handle('dismiss-template-job', () => {
+  ipcMain.handle(CHANNELS.DISMISS_TEMPLATE_JOB, () => {
     writeTemplateJob({ status: 'idle' })
     return { ok: true }
   })
 
   // ---- cancel-template-creation ----
-  ipcMain.handle('cancel-template-creation', () => {
+  ipcMain.handle(CHANNELS.CANCEL_TEMPLATE_CREATION, () => {
     if (!appCtx.stores.jobs.isRunning()) return { ok: false, error: 'No job running' }
     try {
       const evId = appCtx.stores.jobs.getEventId()

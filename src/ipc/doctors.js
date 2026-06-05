@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const path = require('path')
 const fs = require('fs')
 const { dialog } = require('electron')
@@ -10,10 +12,10 @@ function registerDoctorsIpc(ipcMain, appCtx, deps) {
   const { log, getAllDoctors, dbDoctors, extractLastname } = deps
 
   // ---- get-doctors ----
-  ipcMain.handle('get-doctors', () => getAllDoctors())
+  ipcMain.handle(CHANNELS.GET_DOCTORS, () => getAllDoctors())
 
   // ---- add-doctor ----
-  ipcMain.handle('add-doctor', async (_, name) => {
+  ipcMain.handle(CHANNELS.ADD_DOCTOR, async (_, name) => {
     const trimmed = (name || '').trim()
     if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
 
@@ -42,7 +44,7 @@ function registerDoctorsIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- update-doctor-template ----
-  ipcMain.handle('update-doctor-template', async (_, id) => {
+  ipcMain.handle(CHANNELS.UPDATE_DOCTOR_TEMPLATE, async (_, id) => {
     const doctor = dbDoctors.getDoctor(id) || getAllDoctors().find(d => d.id === id)
     if (!doctor) return { ok: false, error: 'Doctor not found' }
 
@@ -70,7 +72,7 @@ function registerDoctorsIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- update-doctor ----
-  ipcMain.handle('update-doctor', (_, id, name) => {
+  ipcMain.handle(CHANNELS.UPDATE_DOCTOR, (_, id, name) => {
     const trimmed = (name || '').trim()
     if (!trimmed) return { ok: false, error: 'Name cannot be empty' }
     const doctor = dbDoctors.getDoctor(id) || getAllDoctors().find(d => d.id === id)
@@ -86,7 +88,7 @@ function registerDoctorsIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- remove-doctor ----
-  ipcMain.handle('remove-doctor', (_, id) => {
+  ipcMain.handle(CHANNELS.REMOVE_DOCTOR, (_, id) => {
     try {
       const doctor = dbDoctors.getDoctor(id)
       const tp = doctor?.templatePath
@@ -118,7 +120,7 @@ function registerDoctorsIpc(ipcMain, appCtx, deps) {
   // notes-claude/standards/specialties/<value>.md at runtime — values that
   // don't have a corresponding standards file are gated in main.js's
   // spawnCdiReview and never reach the skill.
-  ipcMain.handle('update-doctor-specialty', (_, id, specialty) => {
+  ipcMain.handle(CHANNELS.UPDATE_DOCTOR_SPECIALTY, (_, id, specialty) => {
     const doctor = dbDoctors.getDoctor(id)
     if (!doctor) return { ok: false, error: 'Doctor not found' }
     try {
@@ -132,7 +134,7 @@ function registerDoctorsIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- select-doctor (resolves picker shown during start-session) ----
-  ipcMain.handle('select-doctor', (_, id) => {
+  ipcMain.handle(CHANNELS.SELECT_DOCTOR, (_, id) => {
     appCtx.stores.session.resolveDoctorPick(id)
     return true
   })

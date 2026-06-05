@@ -94,23 +94,23 @@ test('shared DOCTOR_SPECIALTIES values match the renderer.js literal', () => {
 
 // ---- CHANNELS completeness ----
 
-test('CHANNELS map contains all channel strings from preload.js', () => {
+test('every CHANNELS.X reference in preload.js is a valid CHANNELS key', () => {
   const preloadSrc = fs.readFileSync(
     path.join(__dirname, '../../preload.js'), 'utf8'
   )
-  // Extract all 'channel-name' string literals from ipcRenderer.invoke/on calls.
-  const channelStrings = new Set()
-  for (const [, ch] of preloadSrc.matchAll(/ipcRenderer\.(?:invoke|on)\s*\(\s*'([^']+)'/g)) {
-    channelStrings.add(ch)
+  // preload now uses CHANNELS.X constants (Phase 3 Group 9). A typo'd constant
+  // would be `undefined` at runtime → silent hang. Assert each referenced key exists.
+  const refs = new Set()
+  for (const [, key] of preloadSrc.matchAll(/CHANNELS\.([A-Z_]+)/g)) refs.add(key)
+  assert.ok(refs.size > 0, 'preload.js should reference CHANNELS constants')
+  for (const key of refs) {
+    assert.ok(key in CHANNELS, `preload.js references CHANNELS.${key} which is not defined in ipc-channels.js`)
   }
 
+  // Any remaining bare string literals in invoke/on must also be valid channels.
   const channelValues = new Set(Object.values(CHANNELS))
-
-  for (const ch of channelStrings) {
-    assert.ok(
-      channelValues.has(ch),
-      `preload.js channel '${ch}' is not present in src/shared/ipc-channels.js CHANNELS map`
-    )
+  for (const [, ch] of preloadSrc.matchAll(/ipcRenderer\.(?:invoke|on)\s*\(\s*'([^']+)'/g)) {
+    assert.ok(channelValues.has(ch), `preload.js literal channel '${ch}' is not in CHANNELS map`)
   }
 })
 

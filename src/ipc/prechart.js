@@ -1,5 +1,7 @@
 'use strict'
 
+const { CHANNELS } = require('../shared/ipc-channels')
+
 const fs = require('fs')
 const { dialog } = require('electron')
 
@@ -19,7 +21,7 @@ function registerPrechartIpc(ipcMain, appCtx, deps) {
   // ---- browse-prechart-files ----
   // Multi-select picker for attachment files (prechart docs, prior visit notes, etc.).
   // Same formats the edit-note skill knows how to read.
-  ipcMain.handle('browse-prechart-files', async () => {
+  ipcMain.handle(CHANNELS.BROWSE_PRECHART_FILES, async () => {
     const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select attachment files',
       properties: ['openFile', 'multiSelections'],
@@ -33,12 +35,12 @@ function registerPrechartIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- list-recent-patient-cases ----
-  ipcMain.handle('list-recent-patient-cases', () => findRecentPatientCases(appCtx.paths.notesDir, 30))
+  ipcMain.handle(CHANNELS.LIST_RECENT_PATIENT_CASES, () => findRecentPatientCases(appCtx.paths.notesDir, 30))
 
   // ---- browse-patient-case-folder ----
   // Folder picker scoped to <NOTES_DIR>/Cases/. Validates the picked folder
   // contains a *_soap_note.md (excluding backup files).
-  ipcMain.handle('browse-patient-case-folder', async () => {
+  ipcMain.handle(CHANNELS.BROWSE_PATIENT_CASE_FOLDER, async () => {
     const result = await dialog.showOpenDialog(appCtx.win, {
       title: 'Select patient case folder',
       defaultPath: appCtx.paths.casesDir,
@@ -53,7 +55,7 @@ function registerPrechartIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- start-prechart-job ----
-  ipcMain.handle('start-prechart-job', async (_, doctorId, caseDir, instructions, attachmentPaths) => {
+  ipcMain.handle(CHANNELS.START_PRECHART_JOB, async (_, doctorId, caseDir, instructions, attachmentPaths) => {
     if (appCtx.stores.jobs.isRunning()) return { ok: false, error: 'Another job is already running.' }
 
     const allDocs = getAllDoctors()
