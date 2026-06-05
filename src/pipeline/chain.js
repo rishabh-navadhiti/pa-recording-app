@@ -7,6 +7,7 @@ const { runEngine } = require('../engines/engineRunner')
 const icd = require('../engines/icd')
 const cdi = require('../engines/cdi')
 const { spawnDocxConversion } = require('./docx')
+const { planChildCases, materializeChild } = require('./multiPatient')
 
 // ---- Single-patient post-SOAP chain ----------------------------------------
 
@@ -47,45 +48,6 @@ async function runCaseChain(ctx, caseCtx) {
 }
 
 // ---- Multi-patient post-SOAP chain -----------------------------------------
-
-/**
- * Plan child-case targets from a multi-patient manifest.
- * PURE — no filesystem I/O; suitable for unit testing.
- *
- * @param {object[]}  cases         manifest.cases array
- * @param {string}    sessionDir    Parent directory where child folders go.
- * @param {string}    datestamp     YYYY-MM-DD string for folder names.
- * @param {Function}  sanitizeName  sanitizeName(name) → slug string
- * @param {Function}  [existsFn]    fs.existsSync replacement (injectable for tests)
- * @returns {{ i, c, slug, folderName, targetDir }[]}
- */
-function planChildCases(cases, sessionDir, datestamp, sanitizeName, existsFn = fs.existsSync) {
-  const slugsUsed = new Set()
-  const planned   = []
-
-  for (let i = 0; i < cases.length; i++) {
-    const c = cases[i]
-    if (c.status === 'failed' || !c.soap_note_md || !existsFn(c.soap_note_md)) continue
-
-    let baseSlug = sanitizeName(c.patient_name) || `unknown_${i + 1}`
-    let slug = baseSlug; let n = 2
-    while (slugsUsed.has(slug)) { slug = `${baseSlug}_${n}`; n++ }
-    slugsUsed.add(slug)
-
-    let folderName = `${slug}_${datestamp}`
-    let targetDir  = path.join(sessionDir, folderName)
-    let suffix = 2
-    while (existsFn(targetDir)) {
-      folderName = `${slug}_${datestamp}_${suffix}`
-      targetDir  = path.join(sessionDir, folderName)
-      suffix++
-    }
-
-    planned.push({ i, c, slug, folderName, targetDir })
-  }
-
-  return planned
-}
 
 /**
  * Run the multi-patient post-SOAP chain.
