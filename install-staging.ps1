@@ -177,7 +177,18 @@ OK "Config file ready - add your ElevenLabs key in the app after launch"
 # ---- 11. Autostart via Task Scheduler ---------------------------------------
 Step 11 "Registering autostart ($taskName)..."
 
-$electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+$electronPathTxt = Join-Path $installDir "node_modules\electron\path.txt"
+if (Test-Path $electronPathTxt) {
+    $electronRelative = (Get-Content $electronPathTxt -Raw).Trim()
+    $electronExe = Join-Path $installDir "node_modules\electron\$electronRelative"
+} else {
+    $electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+}
+if (-not (Test-Path $electronExe)) {
+    Write-Host "  ERROR: Electron binary not found at $electronExe" -ForegroundColor Red
+    Write-Host "  Try running 'npm install' again in $installDir" -ForegroundColor Yellow
+    exit 1
+}
 
 $action = New-ScheduledTaskAction `
     -Execute  $electronExe `

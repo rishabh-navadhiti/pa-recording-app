@@ -152,10 +152,21 @@ OK "Config file ready - add your ElevenLabs key in the app after launch"
 # ---- 11. Autostart via Task Scheduler ---------------------------------------
 Step 11 "Registering autostart (Task Scheduler)..."
 
-# Launch Electron directly — it's a GUI app so no console window appears.
-# This avoids wscript.exe + VBS which triggers antivirus false positives
-# (Bitdefender, ESET, PC Matic flag VBS as a malware vector).
-$electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+# Resolve the Electron binary. The canonical source is path.txt written by the
+# electron npm package postinstall script. Fall back to the conventional path if
+# path.txt is absent (older npm cache or partially-run install).
+$electronPathTxt = Join-Path $installDir "node_modules\electron\path.txt"
+if (Test-Path $electronPathTxt) {
+    $electronRelative = (Get-Content $electronPathTxt -Raw).Trim()
+    $electronExe = Join-Path $installDir "node_modules\electron\$electronRelative"
+} else {
+    $electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+}
+if (-not (Test-Path $electronExe)) {
+    Write-Host "  ERROR: Electron binary not found at $electronExe" -ForegroundColor Red
+    Write-Host "  Try running 'npm install' again in $installDir" -ForegroundColor Yellow
+    exit 1
+}
 
 $action = New-ScheduledTaskAction `
     -Execute  $electronExe `
