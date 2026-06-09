@@ -43,7 +43,12 @@ async function runManualCdiJob(input, ctx) {
   const startedAt = Date.now()
   const jobBase = { type: 'cdi', doctorName }
 
+  // Persist + broadcast. Persisting to jobState (.template_job.json) is what keeps
+  // the shared banner alive: the renderer's 3s poller + tab-re-entry both call
+  // getTemplateJobStatus() (which reads jobState). Without this the live push
+  // events would be overwritten by a stale read within 3s, hiding the banner.
   function broadcast(payload) {
+    ctx.jobState.save(payload)
     ctx.renderer.send('template-job-status', payload)
     ctx.sendStatus('template-job-status', payload)
   }

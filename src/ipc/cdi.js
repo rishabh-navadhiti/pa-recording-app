@@ -67,6 +67,14 @@ function registerCdiIpc(ipcMain, appCtx, deps) {
       return { ok: false, error: 'Provide a pasted SOAP note or upload a file.' }
     }
 
+    // Discard any prior unsaved report before starting a new run, so its temp
+    // folder is never orphaned (the renderer also discards on tab-leave, but a
+    // back-to-back run on the same tab would otherwise overwrite the slot).
+    if (_heldResult) {
+      _cleanup(_heldResult.tempDir, appCtx.log)
+      _heldResult = null
+    }
+
     // Stub .docx path until docx_to_md.py is available — checked at runtime in
     // cdiManual.js so the error surfaces only if the script is actually missing.
 

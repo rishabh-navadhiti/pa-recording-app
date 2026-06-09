@@ -1,13 +1,18 @@
 // CDI tab — manual cdi-review on a user-supplied SOAP note.
 // Pattern mirrors prechartView.js exactly: listener tracking via on(), cleanup in unmount().
 //
-// refreshCdiTab() repopulates the doctor dropdown (filtered to CDI-eligible doctors)
-// and resets all inputs. Called by the router when the CDI tab is opened.
+// refreshCdiTab() repopulates the doctor dropdown (filtered to CDI-eligible doctors).
+// Called by the router when the CDI tab is opened — but it PRESERVES an in-flight
+// run or a completed-but-unsaved report (it doesn't blow them away on re-entry).
 //
 // Input is mutually exclusive (D9): choosing a file clears the textarea and vice-versa.
 // Run → ipc.startCdiReview(); progress via the shared job banner (type:'cdi').
 // On success the banner emits type:'cdi' status:'success'; the tab then shows
-// Save / Discard buttons.
+// Save / Close buttons.
+//
+// Held-report lifecycle: a completed report STAYS (Save + Close on the tab) until
+// the user saves it, closes it, or starts the NEXT CDI run — at which point main.js
+// discards the previous report's temp folder. Leaving the tab does NOT discard it.
 
 import { ipc } from '../ipc/client.js'
 import { setVisible } from '../components/visible.js'
@@ -19,6 +24,11 @@ export function createCdiView() {
       btnCdiRun, cdiError, cdiSuccessRow, btnCdiSave, btnCdiDiscard
 
   let selectedFilePath = null
+  // A completed report is held main-side (temp .docx) awaiting Save/Close.
+  // It survives tab navigation and is only discarded on Save, Close, or next run.
+  let reportReady = false
+  // True while a CDI run is in flight (between Run and success/failed).
+  let isRunning = false
 
   const listeners = []
   function on(el, type, fn) {
@@ -82,7 +92,19 @@ export function createCdiView() {
 
   async function refreshCdiTab() {
     if (!cdiView) return
-    resetForm()
+
+    // Preserve an in-flight run or a completed-but-unsaved report across tab
+    // re-entry — only reset the form when the tab is idle.
+    if (!isRunning && !reportReady) {
+      resetForm()
+    } else if (reportReady) {
+      // Returning to the tab with a held report — re-show the Save/Close row.
+      showSuccessRow(true)
+    } else if (isRunning) {
+      // Returning mid-run — keep Run hidden/disabled; banner shows progress.
+      showSuccessRow(false)
+      if (btnCdiRun) btnCdiRun.disabled = true
+    }
 
     // Populate doctor dropdown (CDI-eligible only: specialty set + standards pack)
     if (cdiDoctorSelect) {
@@ -120,28 +142,37 @@ export function createCdiView() {
       cdiModeSelect.value = 'balanced'
     }
 
-    updateRunEnabled()
+    // Don't re-enable Run while a run is in flight or a report is held — those
+    // states own the button visibility/enabled-ness.
+    if (!isRunning && !reportReady) updateRunEnabled()
   }
 
   // Called by app.js when a template-job-status event arrives with type:'cdi'
   function handleJobStatus(job) {
     if (!job || job.type !== 'cdi') return
-    if (job.status === 'success') {
+    if (job.status === 'running') {
+      isRunning = true
+      reportReady = false
+      if (btnCdiRun) btnCdiRun.disabled = true
+    } else if (job.status === 'success') {
+      isRunning = false
+      reportReady = true
       showSuccessRow(true)
       hideError()
     } else if (job.status === 'failed') {
+      isRunning = false
+      reportReady = false
       showSuccessRow(false)
       showError(job.error || 'CDI review failed.')
       if (btnCdiRun) btnCdiRun.disabled = false
     }
-    // 'running' is handled by the shared job banner; nothing extra needed here.
   }
 
   return {
     mount(root) {
       cdiView          = root.querySelector('#tab-cdi')
       cdiDoctorSelect  = root.querySelector('#cdi-doctor-select')
-      cdiModeSelect    = root.querySelector('#cdi-mode-select')
+      cdiModeSelect    = root.querySelector('#cdi-tab-mode-select')
       cdiPasteArea     = root.querySelector('#cdi-paste')
       cdiFileRow       = root.querySelector('#cdi-file-row')
       cdiFileName      = root.querySelector('#cdi-file-name')
@@ -192,8 +223,11 @@ export function createCdiView() {
           if (!paste.trim() && !selectedFilePath) { showError('Provide a SOAP note.'); return }
 
           btnCdiRun.disabled = true
+          isRunning = true
+          reportReady = false
           const res = await ipc.startCdiReview(doctorId, mode, paste, selectedFilePath || '')
           if (!res || !res.ok) {
+            isRunning = false
             showError((res && res.error) || 'Failed to start CDI review.')
             btnCdiRun.disabled = false
           }
@@ -207,16 +241,19 @@ export function createCdiView() {
           const res = await ipc.saveCdiReport()
           btnCdiSave.disabled = false
           if (!res || !res.ok) {
+            // Save dialog cancelled — keep the report held so the user can retry.
             if (res && res.error && res.error !== 'cancelled') showError(res.error)
             return
           }
-          // Save succeeded — reset tab for next use.
+          // Save succeeded — the temp report was copied out + cleaned up main-side.
+          reportReady = false
           resetForm()
         })
       }
 
       if (btnCdiDiscard) {
         on(btnCdiDiscard, 'click', async () => {
+          reportReady = false
           await ipc.discardCdiReport()
           resetForm()
         })

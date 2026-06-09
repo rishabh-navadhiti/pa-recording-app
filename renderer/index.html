@@ -360,7 +360,7 @@
         </select>
 
         <label class="setting-label">Mode</label>
-        <select id="cdi-mode-select">
+        <select id="cdi-tab-mode-select">
           <option value="balanced">Balanced</option>
           <option value="compliance">Compliance</option>
           <option value="aggressive">Aggressive</option>
@@ -384,8 +384,11 @@
         <button id="btn-cdi-run" disabled>Run CDI review</button>
 
         <div id="cdi-success-row" class="cdi-success-row hidden">
-          <button id="btn-cdi-save" class="btn-primary">Save CDI report</button>
-          <button id="btn-cdi-discard" class="small">Discard</button>
+          <div class="cdi-success-hint">CDI report ready.</div>
+          <div class="cdi-success-buttons">
+            <button id="btn-cdi-save" class="btn-primary">Save CDI report</button>
+            <button id="btn-cdi-discard" class="small">Close</button>
+          </div>
         </div>
 
         <div id="cdi-error" class="config-warn hidden"></div>

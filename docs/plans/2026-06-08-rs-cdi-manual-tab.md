@@ -38,14 +38,16 @@ This reuses the *same* `cdi-review` skill, standards packs, and per-doctor speci
 |---|---|---|
 | D1 | **Skill picker is a list with one entry** (`CDI Review`), not a mode picker. | Future-proofs for more CDI skills; today it's a single, effectively-fixed option. |
 | D2 | **CDI mode comes from a dropdown in the tab** (`Balanced` default), *not* from global `cdiMode`. | Global CDI settings apply to the Record tab only (D5); the tab owns its own mode. |
-| D3 | **Per-run ephemeral temp case folder**, deleted after the run completes (success, failure, or after save/dismiss). Nothing stored. | User: "no need to store anything … temporary case folder for every case, after each case process is completed it should be deleted." |
+| D3 | **Per-run ephemeral temp case folder** in `os.tmpdir()` (outside `<NOTES_DIR>`). Deleted on failure, on save, on Close/Discard, **or when the next CDI run starts** (see D11). Nothing is persisted to `<NOTES_DIR>` or `app.db`. | User: "no need to store anything … temporary case folder for every case." (Lifecycle refined by D11.) |
 | D4 | **Input normalization:** paste → write to `.md`; `.md` upload → use as-is; `.docx` upload → convert to `.md` via user's Python script. | User spec. |
 | D5 | **Global `enableCdi`/`cdiMode` are irrelevant to this tab.** The tab always works regardless of the global toggle. | User: "global cdi … either enable or disable doesn't matter; that matters only for record tab." |
 | D6 | **ICD pre-flight:** if the note has no `## ICD-10-CM Codes` section, show "ICD codes not available" and **stop** — no Claude call. | User: "mention ICD code is not available and stop." |
 | D7 | **Doctor dropdown filtered to supported specialties only** (specialty set *and* a standards pack exists). | User: "filter to supported only." Avoids dead-end runs. |
-| D8 | **Single deliverable:** the `cdi-review` `.md` → `.docx`, offered via OS save dialog. The `_cdi.json`, the prepared soap `.md`, and the temp folder are discarded. | User: convert `.md` to docx, show save option, open file system. |
+| D8 | **Single deliverable:** the `cdi-review` `.md` → `.docx`, offered via OS save dialog. The `_cdi.json`, the prepared soap `.md`, and the temp folder are discarded once the held report's lifecycle ends (D11). | User: convert `.md` to docx, show save option, open file system. |
 | D9 | **Inputs are mutually exclusive** — choosing a file disables the paste textarea and vice-versa. | One SOAP note per run; avoids ambiguity. |
-| D10 | **Save UX:** on success the tab shows a **Save CDI report** button → OS save dialog (default name `CDI_Review_<doctor>_<YYYY-MM-DD>.docx`); the temp `.docx` is held until the user saves or dismisses. | User: "show option to save and file system should open … save anywhere." |
+| D10 | **Save UX:** on success the tab shows a **Save CDI report** button → OS save dialog (default name `CDI_Review_<doctorLast>_<YYYY-MM-DD>.docx`) + a **Close** (discard) button; the temp `.docx` is held until the user saves or closes — or the next run starts (D11). | User: "show option to save and file system should open … save anywhere." |
+| D11 | **Held report persists until the NEXT run (revised lifecycle).** A completed report is NOT auto-deleted and is NOT discarded when the user navigates away from the tab. It stays held (Save/Close visible on the tab) until: (a) the user Saves it, (b) the user Closes/Discards it, or (c) the user starts another CDI run — at which point main.js discards the prior temp folder before creating the new one. | User: "once we process a cdi job … it just stays as it is, till we want to process another file for cdi — that time this old one will be discarded." Supersedes the earlier "discard on tab-leave" idea. |
+| D12 | **Live progress via the shared job banner.** The manual CDI job persists its `{type:'cdi', status, startedAt}` to `.template_job.json` (same store as template/prechart jobs) AND pushes `template-job-status` events. Persisting is load-bearing: the renderer's 3s status poller and tab-re-entry both read `getTemplateJobStatus()` (which reads the store), so without persistence the live banner would be overwritten by a stale read within 3s. The banner shows "Running CDI review for `<doctor>` — `<elapsed>`" with a live timer, then a transient "CDI report ready" that auto-dismisses (the real completion UX is the tab's Save/Close row). | User: "a timer or any status would help which keeps running while cdi is happening, similar to template." |
 
 ---
 
@@ -69,10 +71,10 @@ This reuses the *same* `cdi-review` skill, standards packs, and per-doctor speci
 ```
 
 States:
-- **Running** → shared job banner: *"Running CDI review …"* (spinner + elapsed). Run button disabled.
+- **Running** → shared job banner: *"Running CDI review for `<doctor>` — `<elapsed>`"* (live timer, updates every 3s; D12). Run button hidden/disabled. State persists across tab navigation.
 - **ICD missing** → inline error *"ICD codes not available in this note."* No run.
-- **Failure** → inline error from the skill/job.
-- **Success** → banner clears; tab shows **[ Save CDI report ]** + **[ Discard ]**. Save → OS dialog → copies the `.docx` out → temp deleted. Discard → temp deleted.
+- **Failure** → inline error on the tab + transient red banner (auto-dismisses).
+- **Success** → transient *"CDI report ready"* banner (auto-dismisses); tab shows **[ Save CDI report ]** + **[ Close ]**. The held report STAYS (survives tab navigation) until Save, Close, or the next run (D11). Save → OS dialog → copies the `.docx` out → temp deleted. Close → temp deleted. Next run → prior temp deleted, then new run starts.
 
 ---
 
@@ -99,9 +101,10 @@ Sequence (all paths clean up the temp folder in a `finally`):
 6. **Run the skill:** `prompt = buildPrompt('cdi-review', input)`; `runResult = await ctx.llm.runSkill({ prompt, model: cfg.soapModel || 'claude-sonnet-4-6', effort: 'high', label: 'cdi-manual', signal })`. The skill writes `<stem>_cdi.json` + `<stem>_cdi.md` into the temp folder.
 7. **Parse manifest** with `parseSkillManifest(runResult.text)`; on null/malformed, fall back to reading the on-disk `<stem>_cdi.json` (reuse the `synthesizeManifestFromDisk` approach from `src/engines/cdi.js:122`). If `status !== 'ok'` or no `md_path`, fail with the skill's reason.
 8. **Convert `_cdi.md` → `.docx`** via a new **DB-free** helper `convertMdToDocx(mdPath, { python, log }) → Promise<docxPath>` — just the bare `spawn(python, [.../md_to_docx.py, mdPath])` from `docx.js:55`, resolving `<stem>_cdi.docx` on exit 0. (Does **not** call `spawnDocxConversion`, which is DB-coupled.)
-9. **Hold the result** in a main-side slot: `{ tempDir, docxPath, suggestedName: 'CDI_Review_<doctorLast>_<date>.docx' }`. Broadcast `{ type: 'cdi', status: 'success' }`. Release the job lock.
-10. **Save** (separate IPC, D10): `saveCdiReport()` → `dialog.showSaveDialog(win, { defaultPath: suggestedName, filters: [{name:'Word', extensions:['docx']}] })` → copy `docxPath` to the chosen path → delete `tempDir`. `discardCdiReport()` → delete `tempDir`. Both clear the main-side slot.
-11. **Cleanup invariant:** on any failure in steps 2–8, delete `tempDir` immediately and broadcast `failed`. On success, `tempDir` lives only until save/discard (step 10).
+9. **Hold the result** in a main-side slot (owned by `src/ipc/cdi.js`, written via an injected `setCdiResult` callback): `{ tempDir, docxPath, suggestedName: 'CDI_Review_<doctorLast>_<date>.docx' }`. Broadcast (and persist to jobState, D12) `{ type: 'cdi', status: 'success' }`. Release the job lock. The held report persists until Save/Close/next-run (D11) — it is NOT auto-deleted.
+10. **Save / Close** (separate IPC, D10): `saveCdiReport()` → `dialog.showSaveDialog(win, { defaultPath: suggestedName, filters: [{name:'Word', extensions:['docx']}] })` → copy `docxPath` to the chosen path → delete `tempDir` + clear slot. `discardCdiReport()` (the Close button) → delete `tempDir` + clear slot. Save-dialog *cancel* keeps the slot so the user can retry.
+11. **Next-run discard (D11):** `START_CDI_REVIEW` discards any pre-existing held slot (`_cleanup(tempDir)`) before starting the new run, so a back-to-back run never orphans the previous temp folder.
+12. **Cleanup invariant:** on any failure in steps 2–8, delete `tempDir` immediately and broadcast `failed`. On success, `tempDir` lives until Save / Close / next-run (D11). Navigating away from the tab does NOT delete it.
 
 Service-warning scanning (ElevenLabs/Claude limits, MCP auth) is inherited from `ctx.llm.runSkill`'s existing stderr/stdout regex surface — reuse as-is.
 

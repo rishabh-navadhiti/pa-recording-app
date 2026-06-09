@@ -1285,6 +1285,17 @@ button.outline:hover { opacity: 0.85; }
 
 .cdi-success-row {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cdi-success-hint {
+  font-size: 12px;
+  color: #a5e5c7;
+}
+
+.cdi-success-buttons {
+  display: flex;
   gap: 8px;
   align-items: center;
 }

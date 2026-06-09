@@ -119,10 +119,14 @@ export function createJobBanner() {
           }
         }, 6000)
       } else if (isCdi) {
-        // Auto-dismiss after short delay; cdiView shows the Save/Discard buttons.
+        // CDI's real completion UX is the Save/Close row on the CDI tab (cdiView).
+        // The banner is just a transient "done" signal — auto-dismiss it AND clear
+        // the persisted job state so the 3s poller doesn't resurface it. The held
+        // report itself is tracked separately (cdiView reportReady), not by jobState.
         setTimeout(() => {
           if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
             setVisible(templateJobBanner, false)
+            ipc.dismissTemplateJob()
           }
         }, 4000)
       } else if (!job.changesReport) {
@@ -144,6 +148,17 @@ export function createJobBanner() {
       templateJobBannerText.innerHTML = `<strong>${failLabel}</strong> — ${job.error || 'unknown error'}`
       if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, isCdi ? false : true)
       stopJobPolling()
+      if (isCdi) {
+        // CDI failures surface inline on the CDI tab (cdiView showError); the banner
+        // is transient — auto-dismiss it + clear job state so it doesn't re-show on
+        // tab re-entry.
+        setTimeout(() => {
+          if (templateJobBanner && templateJobBanner.classList.contains('banner-failed')) {
+            setVisible(templateJobBanner, false)
+            ipc.dismissTemplateJob()
+          }
+        }, 8000)
+      }
     }
   }
 
