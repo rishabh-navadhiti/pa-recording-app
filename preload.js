@@ -52,6 +52,12 @@ contextBridge.exposeInMainWorld('api', {
   browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
   startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
 
+  getCdiDoctors:            ()                                                      => ipcRenderer.invoke('get-cdi-doctors'),
+  browseCdiSoapFile:        ()                                                      => ipcRenderer.invoke('browse-cdi-soap-file'),
+  startCdiReview:           (doctorId, mode, pastedText, filePath)                 => ipcRenderer.invoke('start-cdi-review', doctorId, mode, pastedText, filePath),
+  saveCdiReport:            ()                                                      => ipcRenderer.invoke('save-cdi-report'),
+  discardCdiReport:         ()                                                      => ipcRenderer.invoke('discard-cdi-report'),
+
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
   listAudioDevices:   ()          => ipcRenderer.invoke('list-audio-devices'),

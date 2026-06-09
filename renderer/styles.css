@@ -1225,6 +1225,79 @@ button.outline:hover { opacity: 0.85; }
 }
 
 /* ---------------------------------------------------------------- */
+/* CDI tab                                                           */
+/* ---------------------------------------------------------------- */
+
+#cdi-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#cdi-paste {
+  width: 100%;
+  resize: vertical;
+  min-height: 112px;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: #252525;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  outline: none;
+  box-sizing: border-box;
+}
+
+#cdi-paste:focus {
+  border-color: #1D9E75;
+}
+
+#cdi-paste:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cdi-file-add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.cdi-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.cdi-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #b0b0b0;
+}
+
+.cdi-success-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#btn-cdi-run:disabled {
+  opacity: 0.4;
+}
+
+#cdi-error {
+  margin-top: 2px;
+}
+
+/* ---------------------------------------------------------------- */
 /* Template job banner                                               */
 /* ---------------------------------------------------------------- */
 

@@ -343,6 +343,56 @@
 
     </div><!-- /#tab-prechart -->
 
+    <!-- ============================================================ -->
+    <!-- TAB: CDI                                                      -->
+    <!-- ============================================================ -->
+    <div id="tab-cdi" class="hidden">
+
+      <div id="cdi-view">
+        <label class="setting-label">Doctor</label>
+        <select id="cdi-doctor-select">
+          <option value="">Select doctor…</option>
+        </select>
+
+        <label class="setting-label">Skill</label>
+        <select id="cdi-skill-select" disabled>
+          <option value="cdi-review">CDI Review</option>
+        </select>
+
+        <label class="setting-label">Mode</label>
+        <select id="cdi-mode-select">
+          <option value="balanced">Balanced</option>
+          <option value="compliance">Compliance</option>
+          <option value="aggressive">Aggressive</option>
+        </select>
+
+        <label class="setting-label">SOAP note (paste or upload — not both)</label>
+        <textarea id="cdi-paste"
+                  placeholder="Paste the ICD-coded SOAP note here…"
+                  rows="7"
+                  spellcheck="false"></textarea>
+
+        <div class="cdi-file-add-row">
+          <button id="btn-cdi-add-file" class="small">+ Add .md / .docx file</button>
+        </div>
+        <div id="cdi-file-row" class="cdi-file-row hidden">
+          <span id="cdi-file-name" class="cdi-file-name"></span>
+          <button id="btn-cdi-clear-file" class="icon-btn" title="Remove file">&#10005;</button>
+        </div>
+        <div class="setting-hint">File overrides paste. .docx requires python/docx_to_md.py.</div>
+
+        <button id="btn-cdi-run" disabled>Run CDI review</button>
+
+        <div id="cdi-success-row" class="cdi-success-row hidden">
+          <button id="btn-cdi-save" class="btn-primary">Save CDI report</button>
+          <button id="btn-cdi-discard" class="small">Discard</button>
+        </div>
+
+        <div id="cdi-error" class="config-warn hidden"></div>
+      </div>
+
+    </div><!-- /#tab-cdi -->
+
     <!-- Bottom tab bar -->
     <div id="tab-bar">
       <button id="btn-tab-record" class="tab-btn tab-active" data-tab="record">
@@ -356,6 +406,10 @@
       <button id="btn-tab-templates" class="tab-btn" data-tab="templates">
         <span class="tab-icon">&#128209;</span>
         <span>Templates</span>
+      </button>
+      <button id="btn-tab-cdi" class="tab-btn" data-tab="cdi">
+        <span class="tab-icon">&#128203;</span>
+        <span>CDI</span>
       </button>
     </div>
 

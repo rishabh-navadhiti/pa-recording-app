@@ -54,9 +54,11 @@ const { registerRecordingIpc }   = require('./src/ipc/recording')
 const { registerDoctorsIpc }     = require('./src/ipc/doctors')
 const { registerTemplatesIpc }   = require('./src/ipc/templates')
 const { registerPrechartIpc }    = require('./src/ipc/prechart')
+const { registerCdiIpc }         = require('./src/ipc/cdi')
 const { registerConfigIpc }      = require('./src/ipc/config')
 const { registerAudioUploadIpc } = require('./src/ipc/audioUpload')
 const { registerStatusIpc }      = require('./src/ipc/status')
+const { runManualCdiJob }        = require('./src/jobs/cdiManual')
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -669,6 +671,7 @@ function registerIpcHandlers(appCtx) {
   registerDoctorsIpc(ipcMain, appCtx, deps)
   registerTemplatesIpc(ipcMain, appCtx, deps)
   registerPrechartIpc(ipcMain, appCtx, deps)
+  registerCdiIpc(ipcMain, appCtx, { getAllDoctors, runManualCdiJob, python: appCtx.python })
   registerConfigIpc(ipcMain, appCtx, deps)
   registerAudioUploadIpc(ipcMain, appCtx, deps)
   registerStatusIpc(ipcMain, appCtx, deps)

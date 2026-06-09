@@ -12,6 +12,18 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-09 (rs) — Manual CDI tab is fully ephemeral, independent of global settings
+
+**Context:** Users asked for an on-demand CDI review path for externally-produced SOAP notes (not from a recording in this app). The existing CDI step is deeply coupled to the pipeline: it runs inside `engineRunner`, writes DB rows (`cases`, `cdi_flags`, `processing_events`), and is gated by `enableCdi`/`cdiMode` in settings.
+
+**Decision:** The manual CDI tab (`renderer/views/cdiView.js` + `src/jobs/cdiManual.js` + `src/ipc/cdi.js`) bypasses `engineRunner` and `jobDispatcher` entirely. It uses `ctx.llm.runSkill` directly (same LLM seam, no DB side effects). The run is fully ephemeral: it writes to a temp folder in `os.tmpdir()` (outside `<NOTES_DIR>`), deleted after save or discard. Nothing is persisted to `cases`, `cdi_flags`, or `processing_events`. The global `enableCdi`/`cdiMode` settings apply only to the Record-tab pipeline; the CDI tab always works and owns its own mode dropdown. The ICD pre-flight gate is mandatory: if the note has no `## ICD-10-CM Codes` heading *and* no bare ICD code match, the run stops with an inline error — no Claude call.
+
+**Rejected:** (1) Routing through the existing CDI engine — that would have required DB writes and the `enableCdi` gate, both explicitly unwanted. (2) Persisting results into `Cases/` — the user spec was explicit: no case store pollution from manual runs.
+
+**Implications:** The single-flight lock (`ctx.stores.jobs`) is still shared, so a manual CDI run blocks template/prechart jobs and vice-versa. The `type:'cdi'` banner event is emitted on the shared `template-job-status` channel (already consumed by the prechart banner). `docx_to_md.py` is now bundled in `python/` and used for `.docx` uploads to the CDI tab; if it's absent the `.docx` path returns an error but paste + `.md` still work.
+
+---
+
 ## 2026-06-02 (sr) — ICD-10 coding gated by a settings toggle; CDI forces ICD on
 
 **Context:** The ICD coding step (`spawnIcdCoding`) ran unconditionally on every case — there was no way to turn it off, unlike CDI (`enableCdi`). Users wanted a switch. CDI is built to run *after* ICD so the note already has codes baked in (ICD-aware validation in `cdi-review`), so CDI logically depends on ICD.

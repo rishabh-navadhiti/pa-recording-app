@@ -28,6 +28,7 @@ import { createSettingsView } from './views/settingsView.js'
 import { createFolderSetup } from './views/folderSetup.js'
 import { createTemplatesView } from './views/templatesView.js'
 import { createPrechartView } from './views/prechartView.js'
+import { createCdiView } from './views/cdiView.js'
 import { createJobBanner } from './views/jobBanner.js'
 
 const root = document
@@ -38,6 +39,7 @@ const settingsView = createSettingsView()
 const folderSetup  = createFolderSetup()
 const templatesView = createTemplatesView()
 const prechartView = createPrechartView()
+const cdiView      = createCdiView()
 const jobBanner    = createJobBanner()
 
 // --- Router state ---
@@ -47,8 +49,8 @@ let settingsOpen = false
 
 // --- Header / tab DOM refs ---
 let btnWindowClose, btnSettings,
-    tabRecord, tabTemplates, tabPrechart, tabBar, tabTitle, statusRow,
-    btnTabRecord, btnTabTemplates, btnTabPrechart
+    tabRecord, tabTemplates, tabPrechart, tabCdi, tabBar, tabTitle, statusRow,
+    btnTabRecord, btnTabTemplates, btnTabPrechart, btnTabCdi
 
 // ---------------------------------------------------------------------------
 // Tab system (renderer.js showTab 1107-1146)
@@ -59,26 +61,33 @@ function showTab(name) {
   const onRecord    = name === 'record'
   const onTemplates = name === 'templates'
   const onPrechart  = name === 'prechart'
+  const onCdi       = name === 'cdi'
 
   if (tabRecord)    setVisible(tabRecord, onRecord)
   if (tabTemplates) setVisible(tabTemplates, onTemplates)
   if (tabPrechart)  setVisible(tabPrechart, onPrechart)
+  if (tabCdi)       setVisible(tabCdi, onCdi)
 
   if (statusRow) setVisible(statusRow, onRecord)
   if (tabTitle) {
     setVisible(tabTitle, !onRecord)
-    if (onTemplates) tabTitle.textContent = 'Templates'
+    if (onTemplates)  tabTitle.textContent = 'Templates'
     else if (onPrechart) tabTitle.textContent = 'Pre-chart'
+    else if (onCdi)   tabTitle.textContent = 'CDI'
   }
 
   if (btnTabRecord)    btnTabRecord.classList.toggle('tab-active', onRecord)
   if (btnTabTemplates) btnTabTemplates.classList.toggle('tab-active', onTemplates)
   if (btnTabPrechart)  btnTabPrechart.classList.toggle('tab-active', onPrechart)
+  if (btnTabCdi)       btnTabCdi.classList.toggle('tab-active', onCdi)
 
   if (onTemplates) {
     templatesView.onEnter()
   } else if (onPrechart) {
     prechartView.refreshPrechartTab()
+    jobBanner.refreshTemplateJobBanner()
+  } else if (onCdi) {
+    cdiView.refreshCdiTab()
     jobBanner.refreshTemplateJobBanner()
   }
 }
@@ -93,6 +102,7 @@ function openSettings() {
   if (tabRecord)    setVisible(tabRecord, false)
   if (tabTemplates) setVisible(tabTemplates, false)
   if (tabPrechart)  setVisible(tabPrechart, false)
+  if (tabCdi)       setVisible(tabCdi, false)
   if (tabBar)       setVisible(tabBar, false)
   settingsView.open()
 }
@@ -140,7 +150,10 @@ function registerAppListeners() {
   })
   const btnViewStatus = root.getElementById('btn-view-status')
   if (btnViewStatus) btnViewStatus.addEventListener('click', () => ipc.openStatusWindow())
-  ipc.onTemplateJobStatus(job => jobBanner.handleTemplateJobStatus(job))
+  ipc.onTemplateJobStatus(job => {
+    jobBanner.handleTemplateJobStatus(job)
+    cdiView.handleJobStatus(job)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -154,12 +167,14 @@ async function init() {
   tabRecord       = root.getElementById('tab-record')
   tabTemplates    = root.getElementById('tab-templates')
   tabPrechart     = root.getElementById('tab-prechart')
+  tabCdi          = root.getElementById('tab-cdi')
   tabBar          = root.getElementById('tab-bar')
   tabTitle        = root.getElementById('tab-title')
   statusRow       = root.getElementById('status-row')
   btnTabRecord    = root.getElementById('btn-tab-record')
   btnTabTemplates = root.getElementById('btn-tab-templates')
   btnTabPrechart  = root.getElementById('btn-tab-prechart')
+  btnTabCdi       = root.getElementById('btn-tab-cdi')
 
   // Mount views. The shared services each view needs come via ctx.
   recordView.mount(root, {
@@ -180,6 +195,7 @@ async function init() {
   prechartView.mount(root, {
     onJobStarted: () => jobBanner.refreshTemplateJobBanner(),
   })
+  cdiView.mount(root)
   folderSetup.mount(root, {
     onNotesDirSelected: onNotesDirSelected,
   })
@@ -194,6 +210,7 @@ async function init() {
   if (btnTabRecord)    btnTabRecord.addEventListener('click', () => showTab('record'))
   if (btnTabTemplates) btnTabTemplates.addEventListener('click', () => showTab('templates'))
   if (btnTabPrechart)  btnTabPrechart.addEventListener('click', () => showTab('prechart'))
+  if (btnTabCdi)       btnTabCdi.addEventListener('click', () => showTab('cdi'))
 
   // Initial render.
   const state = await ipc.getState()

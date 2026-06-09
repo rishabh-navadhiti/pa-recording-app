@@ -116,6 +116,33 @@ function spawnDocxConversion(mdPath, caseTag, patientFolderName, caseId, ctx) {
   proc.on('error', err => log(`${tag}[docx ERR] failed to spawn md_to_docx: ${err.message}`))
 }
 
+/**
+ * DB-free markdown → .docx conversion for ephemeral (manual CDI) runs.
+ * Spawns md_to_docx.py and resolves the .docx path on exit 0.
+ *
+ * @param {string}   mdPath    Absolute path to the source .md file.
+ * @param {object}   opts
+ * @param {string}   opts.python  Python executable path.
+ * @param {Function} opts.log     Logger function.
+ * @returns {Promise<string>}     Absolute path of the generated .docx.
+ */
+function convertMdToDocx(mdPath, { python, log }) {
+  return new Promise((resolve, reject) => {
+    const appRoot = path.join(__dirname, '..', '..')
+    const proc = spawn(python, [path.join(appRoot, 'python', 'md_to_docx.py'), mdPath], { cwd: appRoot, stdio: 'pipe' })
+    proc.stdout.on('data', d => log(`[cdi-manual][docx] ${d.toString().trim()}`))
+    proc.stderr.on('data', d => log(`[cdi-manual][docx ERR] ${d.toString().trim()}`))
+    proc.on('close', code => {
+      if (code === 0) {
+        resolve(mdPath.replace(/\.md$/, '.docx'))
+      } else {
+        reject(new Error(`md_to_docx.py exited ${code}`))
+      }
+    })
+    proc.on('error', err => reject(new Error(`Failed to spawn md_to_docx: ${err.message}`)))
+  })
+}
+
 let _db = null
 function requireDb() {
   if (!_db) _db = {
@@ -126,4 +153,4 @@ function requireDb() {
   return _db
 }
 
-module.exports = { spawnDocxConversion }
+module.exports = { spawnDocxConversion, convertMdToDocx }

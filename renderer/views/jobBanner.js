@@ -64,19 +64,22 @@ export function createJobBanner() {
       stopJobPolling()
       return
     }
-    const isUpdate = job.type === 'update'
+    const isUpdate   = job.type === 'update'
     const isPrechart = job.type === 'prechart'
+    const isCdi      = job.type === 'cdi'
     if (job.status === 'running') {
       setVisible(templateJobBanner, true)
       templateJobBanner.classList.remove('banner-failed', 'banner-success')
       const elapsed = formatElapsed(Date.now() - (job.startedAt || Date.now()))
       if (isPrechart) {
         templateJobBannerText.innerHTML = `Pre-charting <strong>${job.doctorName || 'patient'}</strong> — ${elapsed}`
+      } else if (isCdi) {
+        templateJobBannerText.innerHTML = `Running CDI review for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
       } else {
         const verb = isUpdate ? 'Updating' : 'Creating'
         templateJobBannerText.innerHTML = `${verb} template for <strong>${job.doctorName || 'doctor'}</strong> — ${elapsed}`
       }
-      if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, true)
+      if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, isCdi ? false : true)
       startJobPolling()
     } else if (job.status === 'success') {
       setVisible(templateJobBanner, true)
@@ -84,13 +87,15 @@ export function createJobBanner() {
       templateJobBanner.classList.remove('banner-failed')
       if (isPrechart) {
         templateJobBannerText.innerHTML = `Pre-chart applied to <strong>${job.doctorName || 'patient'}</strong>'s note`
+      } else if (isCdi) {
+        templateJobBannerText.innerHTML = `CDI report ready for <strong>${job.doctorName || 'doctor'}</strong>`
       } else {
         const doneText = isUpdate ? 'Template updated for' : 'Template ready for'
         templateJobBannerText.innerHTML = `${doneText} <strong>${job.doctorName || 'doctor'}</strong>`
       }
       if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, false)
       stopJobPolling()
-      if (!isPrechart) {
+      if (!isPrechart && !isCdi) {
         // A doctor/template was created or updated — refresh the doctor list +
         // dismiss the "Doctor not set up" warning (router/templatesView wiring).
         if (onTemplateUpdatedCb) onTemplateUpdatedCb()
@@ -104,8 +109,23 @@ export function createJobBanner() {
         }
       }
 
-      // Auto-dismiss if it's a prechart job or there's no changes report to view
-      if (isPrechart || !job.changesReport) {
+      // Auto-dismiss for prechart; for CDI the tab shows Save/Discard so we keep banner
+      // visible briefly but allow the tab to handle the final UX.
+      if (isPrechart) {
+        setTimeout(() => {
+          if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
+            setVisible(templateJobBanner, false)
+            ipc.dismissTemplateJob()
+          }
+        }, 6000)
+      } else if (isCdi) {
+        // Auto-dismiss after short delay; cdiView shows the Save/Discard buttons.
+        setTimeout(() => {
+          if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
+            setVisible(templateJobBanner, false)
+          }
+        }, 4000)
+      } else if (!job.changesReport) {
         setTimeout(() => {
           if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
             setVisible(templateJobBanner, false)
@@ -118,10 +138,11 @@ export function createJobBanner() {
       templateJobBanner.classList.add('banner-failed')
       templateJobBanner.classList.remove('banner-success')
       const failLabel = isPrechart ? 'Pre-chart failed'
-                      : isUpdate    ? 'Template update failed'
-                                    : 'Template creation failed'
+                      : isCdi      ? 'CDI review failed'
+                      : isUpdate   ? 'Template update failed'
+                                   : 'Template creation failed'
       templateJobBannerText.innerHTML = `<strong>${failLabel}</strong> — ${job.error || 'unknown error'}`
-      if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, true)
+      if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, isCdi ? false : true)
       stopJobPolling()
     }
   }

@@ -188,6 +188,38 @@ Properties:
 
 ---
 
+## Manual CDI tab
+
+The CDI tab (4th tab in the popup) lets a scribe run the `cdi-review` skill on a SOAP note they supply directly — independent of the recording pipeline.
+
+**Key differences from the pipeline CDI step:**
+
+| | Pipeline CDI (`src/engines/cdi.js`) | Manual CDI (`src/jobs/cdiManual.js`) |
+|---|---|---|
+| Trigger | Automatic after ICD coding | User-initiated via CDI tab |
+| Storage | DB rows (`cases`, `cdi_flags`, `processing_events`) | Nothing — fully ephemeral |
+| `enableCdi` gate | Required on | Ignored |
+| `cdiMode` setting | Used | Tab's own dropdown |
+| Output location | `<NOTES_DIR>/Cases/…` | `os.tmpdir()/cdi_manual_…/` |
+| Deliverable | `_cdi.docx` into case folder | `.docx` via OS save dialog |
+
+**Flow:**
+
+1. User selects doctor (CDI-eligible only — specialty set AND standards pack exists), mode, and either pastes the ICD-coded SOAP note or uploads `.md`/`.docx`.
+2. `START_CDI_REVIEW` IPC → `runManualCdiJob` acquires the single-flight lock (shared with template/prechart jobs) and broadcasts `type:'cdi' status:'running'` on `template-job-status`.
+3. Note is normalised to `<stem>_soap_note.md` in a temp folder under `os.tmpdir()` (paste → write; `.md` → copy; `.docx` → spawn `python/docx_to_md.py`).
+4. **ICD pre-flight**: if the note lacks `## ICD-10-CM Codes` heading *and* no ICD-10 code match, the job aborts with "ICD codes not available in this note." and the temp folder is deleted. No Claude call.
+5. `buildPrompt('cdi-review', …)` → `ctx.llm.runSkill(…)`. Skill writes `<stem>_cdi.json` + `<stem>_cdi.md` into the temp folder. Manifest parsed with `parseSkillManifest`; filesystem fallback (`synthesizeManifestFromDisk`) applies identically to the pipeline path.
+6. `convertMdToDocx` (DB-free helper in `src/pipeline/docx.js`) converts `_cdi.md` → `_cdi.docx` in the temp folder.
+7. The `.docx` path is held in a module-level slot in `src/ipc/cdi.js`. `type:'cdi' status:'success'` is broadcast; the CDI tab shows **Save CDI report** and **Discard**.
+8. `SAVE_CDI_REPORT` → OS save dialog → copy `.docx` to user's chosen path → delete temp folder. `DISCARD_CDI_REPORT` → delete temp folder.
+
+On any failure in steps 3–6 the temp folder is deleted immediately and `type:'cdi' status:'failed'` is broadcast.
+
+The single-flight lock means a manual CDI run blocks (and is blocked by) template/prechart jobs — intentional (same LLM token budget).
+
+---
+
 ## Template + Pre-chart pipelines
 
 All three operations (template create, template update, pre-chart edit-note) share the same `templateJobProc` lock and `.template_job.json` persistence. The job object has a `type` field (`'create'`, `'update'`, or `'prechart'`) so the renderer banner shows the right text. Only one of these jobs can run at a time.

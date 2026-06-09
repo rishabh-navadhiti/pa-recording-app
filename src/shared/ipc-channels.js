@@ -60,6 +60,13 @@ const CHANNELS = Object.freeze({
   BROWSE_PATIENT_CASE_FOLDER: 'browse-patient-case-folder',
   START_PRECHART_JOB:       'start-prechart-job',
 
+  // ---- manual CDI ----
+  GET_CDI_DOCTORS:          'get-cdi-doctors',
+  BROWSE_CDI_SOAP_FILE:     'browse-cdi-soap-file',
+  START_CDI_REVIEW:         'start-cdi-review',
+  SAVE_CDI_REPORT:          'save-cdi-report',
+  DISCARD_CDI_REPORT:       'discard-cdi-report',
+
   // ---- status window ----
   GET_SESSION_RECORDINGS:   'get-session-recordings',
   OPEN_STATUS_WINDOW:       'open-status-window',

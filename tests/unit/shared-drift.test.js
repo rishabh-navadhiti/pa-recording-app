@@ -14,6 +14,7 @@ const { STATE } = require('../../src/shared/state')
 const { STATUS_LABELS } = require('../../src/shared/pipeline-status')
 const { DOCTOR_SPECIALTIES } = require('../../src/shared/specialties')
 const { CHANNELS } = require('../../src/shared/ipc-channels')
+const { CDI_MODES } = require('../../src/shared/cdi-modes')
 
 // Phase 4: the renderer's enum copies live in renderer/constants.js (ESM).
 // The renderer is sandboxed and can't import src/shared, so these copies are
@@ -127,4 +128,30 @@ test('shared STATE has exactly the 5 expected values', () => {
     assert.strictEqual(STATE[key], key, `STATE.${key} should equal '${key}'`)
   }
   assert.strictEqual(Object.keys(STATE).length, expected.length, 'STATE should have exactly 5 keys')
+})
+
+// ---- CDI_MODES drift ----
+
+test('shared CDI_MODES values match the renderer.js CDI_MODES literal', () => {
+  const rendererModes = extractArrayLiteral(rendererSrc, 'CDI_MODES')
+  assert.ok(rendererModes, 'CDI_MODES should be found in renderer/constants.js')
+
+  assert.strictEqual(
+    rendererModes.length,
+    CDI_MODES.length,
+    'CDI_MODES length mismatch between shared and renderer/constants.js'
+  )
+
+  for (let i = 0; i < CDI_MODES.length; i++) {
+    assert.strictEqual(
+      rendererModes[i].value,
+      CDI_MODES[i].value,
+      `CDI_MODES[${i}].value mismatch`
+    )
+    assert.strictEqual(
+      rendererModes[i].label,
+      CDI_MODES[i].label,
+      `CDI_MODES[${i}].label mismatch`
+    )
+  }
 })

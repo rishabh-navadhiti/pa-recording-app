@@ -40,6 +40,14 @@ export const STATUS_LABELS = {
   failed:          'Failed',
 }
 
+// CDI mode options for the manual CDI tab.
+// Mirrored from src/shared/cdi-modes.js; guarded by tests/unit/shared-drift.test.js.
+export const CDI_MODES = [
+  { value: 'balanced',   label: 'Balanced' },
+  { value: 'compliance', label: 'Compliance' },
+  { value: 'aggressive', label: 'Aggressive' },
+]
+
 export function specialtyLabel(value) {
   if (!value) return null
   const entry = DOCTOR_SPECIALTIES.find(s => s.value === value)

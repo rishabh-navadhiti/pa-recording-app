@@ -26,12 +26,13 @@ renderer/                     ESM module graph (no bundler — native file:// im
   views/                      one module per screen ({ mount, update, unmount }) — record, prechart, templates, settings, upload, …
   components/                 shared building blocks: visible, timer, fileListField, button, confirm
   ipc/client.js               the single window.api seam — `ipc` Proxy forwarding lazily to window.api
-  constants.js                ESM copies of STATE / STATUS_LABELS / DOCTOR_SPECIALTIES (drift-tested vs src/shared)
+  constants.js                ESM copies of STATE / STATUS_LABELS / DOCTOR_SPECIALTIES / CDI_MODES (drift-tested vs src/shared)
   styles.css                  Dark theme, single file
   status.html / statusPanel.js  Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
+  docx_to_md.py               .docx → Markdown (used by the manual CDI tab to normalise uploaded SOAP notes)
   (transcribe.py + extract_attachments.py ported to Node in Phase 5 — see src/pipeline/elevenLabs.js + src/pipeline/attachments.js)
 notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
   skills/generate-note/           SOAP-note skill, invoked by `claude -p "generate a note ..."`
@@ -50,8 +51,8 @@ src/                          Modular app code (Phases 0-3). main.js is now a th
   llm/                          LLM seam: provider.js (interface) + claudeCliProvider.js (arg-array spawn, no shell:true), childRunner.js, usage.js; skill-io/{prompts,markers,manifest}.js
   engines/                      soap/icd/cdi descriptors + registry.js + engineRunner.js (the 7-step shared runner)
   pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js (+ elevenLabs.js — Node ElevenLabs client/formatter), attachments.js (Node prechart combine — mammoth/.docx, pdf-parse/.pdf), docx.js, multiPatient.js, caseStatus.js, artifacts.js
-  jobs/                         jobDispatcher.js (single-flight lock + abort) + templateCreate/templateUpdate/prechart descriptors
-  ipc/                          envelope.js + 8 per-domain registrars (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status) — 43 handlers
+  jobs/                         jobDispatcher.js (single-flight lock + abort) + templateCreate/templateUpdate/prechart descriptors + cdiManual.js (DB-free manual CDI job)
+  ipc/                          envelope.js + 9 per-domain registrars (lifecycle/recording/doctors/templates/prechart/cdi/config/audioUpload/status)
   update/autoUpdate.js          git-pull updater (Phase 6 → electron-updater)
 context/                      appContext.js (the ctx) + stateMachine, sessionStore, recordingsStore, recorderController
 config/                       paths, settings (cached), secrets, jobState, mcp
@@ -160,6 +161,11 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
 | `hideWindow()` | Close popup |
+| `getCdiDoctors()` | Doctors eligible for manual CDI — specialty set **and** a standards pack exists. |
+| `browseCdiSoapFile()` | Single-file picker (`.md`/`.docx`) for the SOAP note. |
+| `startCdiReview(doctorId, mode, pastedText, filePath)` | Kick off the ephemeral manual CDI run. Returns `{ok, error?}`. Progress via `onTemplateJobStatus` (`type:'cdi'`). |
+| `saveCdiReport()` | Opens the OS save dialog for the held CDI `.docx`, copies it out, deletes the temp folder. |
+| `discardCdiReport()` | Deletes the held temp folder without saving. |
 
 Events (`on*`):
 `onStateChange`, `onShowPatientForm`, `onSetupWarning`, `onAutoStartRecording`, `onPickDoctor`, `onServiceWarning`, `onTemplateJobStatus`, `onRecordingStatusUpdate` (driving the floating status window).
@@ -173,7 +179,7 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 | File | Owned by | Purpose |
 |---|---|---|
 | `<repo>/.env` | App writes; user-editable | `ELEVENLABS_API_KEY`, `NOTES_DIR_PATH` |
-| `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `soapModel`, `templateModel`, `templateEffort`, `enableIcd` (gates the per-case ICD coding step), `enableCdi`, `cdiMode` (the last two gate the per-case CDI review step). **Invariant: `enableCdi` on ⟹ `enableIcd` on** — CDI needs ICD codes in the note, so enabling CDI forces ICD on (enforced in `readSettings()` + the `save-settings` handler). — **`doctors[]` moved to `app.db` after first launch** |
+| `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `soapModel`, `templateModel`, `templateEffort`, `enableIcd` (gates the per-case ICD coding step), `enableCdi`, `cdiMode` (the last two gate the per-case CDI review step — **Record tab only**; the CDI tab is independent and ignores them). **Invariant: `enableCdi` on ⟹ `enableIcd` on** — CDI needs ICD codes in the note, so enabling CDI forces ICD on (enforced in `readSettings()` + the `save-settings` handler). — **`doctors[]` moved to `app.db` after first launch** |
 | `<NOTES_DIR>/app.db` | App writes only | SQLite metadata + index store: `doctors`, `sessions`, `cases`, `processing_events`. Canonical artifacts stay on disk; DB stores references + structured metadata. WAL mode; safe to delete (rebuilt on next launch, doctors restored from `settings.doctors.backup.json`). |
 | `<NOTES_DIR>/settings.doctors.backup.json` | App writes once | One-time backup of `settings.json doctors[]` written when doctors are migrated to `app.db`. Hand-recovery only — not read by app code. |
 | `<NOTES_DIR>/.template_job.json` | App writes only | Live + last-finished background-job state (template create/update + pre-chart share this file) |
