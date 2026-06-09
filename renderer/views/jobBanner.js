@@ -88,7 +88,7 @@ export function createJobBanner() {
         const doneText = isUpdate ? 'Template updated for' : 'Template ready for'
         templateJobBannerText.innerHTML = `${doneText} <strong>${job.doctorName || 'doctor'}</strong>`
       }
-      if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, false)
+      if (btnTemplateJobCancel) setVisible(btnTemplateJobCancel, true)
       stopJobPolling()
       if (!isPrechart) {
         // A doctor/template was created or updated — refresh the doctor list +
@@ -104,15 +104,13 @@ export function createJobBanner() {
         }
       }
 
-      // Auto-dismiss if it's a prechart job or there's no changes report to view
-      if (isPrechart || !job.changesReport) {
-        setTimeout(() => {
-          if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
-            setVisible(templateJobBanner, false)
-            ipc.dismissTemplateJob()
-          }
-        }, 6000)
-      }
+      // Auto-dismiss after 6s — cancel button also acts as immediate close
+      setTimeout(() => {
+        if (templateJobBanner && templateJobBanner.classList.contains('banner-success')) {
+          setVisible(templateJobBanner, false)
+          ipc.dismissTemplateJob()
+        }
+      }, 6000)
     } else if (job.status === 'failed') {
       setVisible(templateJobBanner, true)
       templateJobBanner.classList.add('banner-failed')

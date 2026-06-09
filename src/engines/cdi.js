@@ -93,8 +93,49 @@ const cdi = {
     return { manifest: null, recovered: false, rateLimited, skippedReason: null }
   },
 
-  /** DB and UI writes are handled by engineRunner using the interpret() result. */
-  persist() {},
+  /**
+   * Write CDI results to the DB.
+   * Called by engineRunner after interpret(); result is the interpret() return value.
+   */
+  persist(result, ctx, caseCtx, eventId) {
+    const { caseId, caseTag } = caseCtx
+    if (!caseId) return
+    const tag = caseTag ? `[${caseTag}] ` : ''
+    const log = ctx.log
+    const { dbCases, dbCdiFlags } = requireDb()
+
+    if (!result || !result.manifest) {
+      const status = (result && result.skippedReason) ? 'skipped' : 'failed'
+      dbCases.updateCaseCdi(caseId, { cdi_status: status })
+      return
+    }
+
+    const m = result.manifest
+    dbCases.updateCaseCdi(caseId, {
+      cdi_status:                      'completed',
+      cdi_mode:                        ctx.config.get().cdiMode || 'balanced',
+      cdi_json_path:                   m.json_path  || null,
+      cdi_md_path:                     m.md_path    || null,
+      cdi_quality_score:               m.quality_score != null ? m.quality_score : null,
+      cdi_medical_necessity:           m.medical_necessity_status || null,
+      cdi_claim_defense_readiness:     m.claim_defense_readiness  || null,
+      cdi_clinician_approval_required: m.clinician_approval_required ? 1 : 0,
+    })
+
+    // Insert flags from the on-disk JSON (manifest has the path).
+    if (m.json_path) {
+      try {
+        const full = JSON.parse(fs.readFileSync(m.json_path, 'utf8'))
+        if (full && Array.isArray(full.flags) && full.flags.length > 0) {
+          const n = dbCdiFlags.insertFlags(caseId, eventId, full.flags)
+          const approval = m.clinician_approval_required ? ' (approval required)' : ''
+          log(`${tag}[cdi] success: ${n} flags, quality ${m.quality_score ?? '?'}/100${approval} · ICD ${m.icd_validated ? 'validated' : 'not validated'}`)
+        }
+      } catch (e) {
+        log(`${tag}[cdi] flag insert failed: ${e.message}`)
+      }
+    }
+  },
 
   render(result) {
     if (!result || !result.manifest) return null
@@ -156,6 +197,18 @@ function synthesizeManifestFromDisk(caseDir, log) {
     log(`[cdi] fallback parse failed: ${e.message}`)
     return null
   }
+}
+
+// Lazy-require DB modules — keeps cdi.js testable without a real DB.
+let _db = null
+function requireDb() {
+  if (!_db) {
+    _db = {
+      dbCases:    require('../../db/cases'),
+      dbCdiFlags: require('../../db/cdi_flags'),
+    }
+  }
+  return _db
 }
 
 module.exports = cdi
