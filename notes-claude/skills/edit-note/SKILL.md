@@ -134,9 +134,10 @@ BACKUP_PATH="${CASE_DIR}/${CASE_STEM}_soap_note_backup_${TIMESTAMP}.md"
 cp "${EXISTING_NOTE_PATH}" "${BACKUP_PATH}"
 
 if [ -f "${BACKUP_PATH}" ]; then
-  echo "BACKUP_OK: ${BACKUP_PATH}"
+  # Backup confirmed — record path for the Step 9 JSON manifest
+  BACKUP_CONFIRMED="${BACKUP_PATH}"
 else
-  echo "BACKUP_FAILED"
+  echo "Backup failed — stopping to protect the original note."
   exit 1
 fi
 ```
@@ -253,23 +254,19 @@ SOAP_NOTE_EOF
 
 ## Step 9: Confirm Completion
 
-Print a concise summary:
+You may print a concise human-readable summary of what changed, then end your **final assistant response** with a single line of valid JSON as the very last line:
 
+```json
+{"schema_version":1,"skill":"edit-note","status":"ok","backup_path":"<BACKUP_PATH>","note_path":"<EXISTING_NOTE_PATH>"}
 ```
-Edited:  <EXISTING_NOTE_PATH>
-Backup:  <BACKUP_PATH>
 
-Sources used:
-- Existing note: <EXISTING_NOTE_PATH>
-- Template:      <TEMPLATE_PATH>
-- Attachment:    <ATTACHMENT_PATH or "none">
-- Instructions:  <"yes" or "none">
+If the edit failed for any reason after the backup was taken:
 
-Changes applied (<N> total):
-1. [<Section>] <What was added / changed / corrected>
-2. [<Section>] <What was added / changed / corrected>
-...
+```json
+{"schema_version":1,"skill":"edit-note","status":"failed","backup_path":"<BACKUP_PATH or null>","error":"<reason>"}
 ```
+
+The JSON must be the very last line of your response — nothing after it.
 
 If any change was inferred rather than literal, append:
 

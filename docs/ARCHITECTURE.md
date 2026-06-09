@@ -20,18 +20,20 @@ Pipeline, processes, and file flow for AI Medical Scribe. Sister doc to [CLAUDE.
              │ contextBridge                     │ child_process.spawn
              │ (preload.js)                      │
              ▼                                   ▼
-┌────────────────────────────┐    ┌─────────────────────────────────┐
-│ Renderer (2 windows)       │    │ Children (one per task)         │
-│   • renderer.js (main UI)  │    │   • python record.py            │
-│   • status.js (mini status │    │   • python transcribe.py        │
-│      window, opt-in)       │    │   • python md_to_docx.py        │
-│   • Listens for state +    │    │   • python extract_attachments  │
-│      event broadcasts      │    │   • claude -p (SOAP)            │
-│                            │    │   • claude -p (template/update) │
-│                            │    │   • claude -p (edit-note)       │
-│                            │    │   • claude -p (add-icd-codes)   │
-│                            │    │   • git pull (auto-update)      │
-└────────────────────────────┘    └─────────────────────────────────┘
+┌──────────────────────────────────────┐    ┌──────────────────────────────────┐
+│ Renderer (2 windows)                 │    │ Children (one per task)          │
+│   • app.js (viewRouter)              │    │   • python record.py             │
+│   • views/ + components/             │    │   • python md_to_docx.py         │
+│   • ipc/client.js (window.api seam)  │    │   • claude -p (SOAP)             │
+│   • statusPanel.js (mini status      │    │   • claude -p (template/update)  │
+│      window, opt-in)                 │    │   • claude -p (edit-note)        │
+│   • Listens for state + events       │    │   • claude -p (add-icd-codes)    │
+│                                      │    │   • git pull (auto-update)       │
+└──────────────────────────────────────┘    └──────────────────────────────────┘
+
+Transcription (ElevenLabs) and Pre-chart attachment-combining used to be Python
+children too; as of Phase 5 they run in-process in Node (`src/pipeline/
+elevenLabs.js` + `attachments.js`), so they're no longer in the children box.
 ```
 
 The renderer cannot touch Node, fs, or `child_process` — it must go through `window.api` (`preload.js`). Children are short-lived and unsupervised after spawn except `record.py`, which is held in `recordingProcess` and stopped via stdin.
@@ -60,13 +62,12 @@ User           Renderer            Main                Python              Eleve
  │               │ ──IPC──────────▶ │ resolve promise   │                       │              │
  │               │                  │ build case dir    │                       │              │
  │               │                  │ rename MP3 in     │                       │              │
- │               │                  │ spawn transcribe.py──▶ POST /v1/speech ──▶│              │
- │               │                  │ setState SESSION_ACTIVE  (UI freed!)      │              │
+ │               │                  │ transcribe (Node fetch, in-process) ─────▶│ POST          │
+ │               │                  │ setState SESSION_ACTIVE  (UI freed!)      │ /v1/speech    │
  │               │ ◀─state-change── │                                           │              │
  │               │                  │              ◀──── transcript JSON ───────│              │
- │               │                  │                   │ write transcript.md   │              │
- │               │                  │                   │ exit 0                │              │
- │               │                  │ on transcribe close: spawn claude -p ────────────────────▶│
+ │               │                  │ formatTranscript() → write transcript.md  │              │
+ │               │                  │ on success: spawn claude -p ─────────────────────────────▶│
  │               │                  │                   │                       │  generate-note
  │               │                  │                   │                       │  reads template
  │               │                  │                   │                       │  + transcript
@@ -245,7 +246,7 @@ User           Renderer                Main                            Claude CL
  │ type instr,   │                      │                                │
  │ add files ──▶ │ startPrechartJob ──▶ │ resolve template from          │
  │               │                      │   *_soap_note.md "**Doctor:**" │
- │               │                      │ extract_attachments.py ──▶     │
+ │               │                      │ attachments.js combine ──▶     │
  │               │                      │   write tmp combined.md        │
  │               │                      │ broadcast {type:'prechart',    │
  │               │                      │            status: 'running'}  │
@@ -263,7 +264,7 @@ User           Renderer                Main                            Claude CL
  │ banner ✓      │                      │                                │
 ```
 
-The user picks 1+ files in the picker; `python/extract_attachments.py` concatenates their text (handling `.md`/`.txt` directly, `.docx` via python-docx, `.pdf` via pdfplumber→pypdf) into a single `prechart_<ts>.md` in OS temp. That single path is what the skill receives as `Attachment:` — the skill itself only ever processes one attachment, matching its existing contract.
+The user picks 1+ files in the picker; `src/pipeline/attachments.js` (Node — as of Phase 5) concatenates their text (handling `.md`/`.txt` directly, `.docx` via `mammoth`, `.pdf` via `pdf-parse`) into a single `prechart_<ts>.md` in OS temp. That single path is what the skill receives as `Attachment:` — the skill itself only ever processes one attachment, matching its existing contract.
 
 `.template_job.json` ensures:
 - popup can close/reopen and still see status
@@ -332,7 +333,7 @@ Prompt formats the skills expect:
 - `generate-note`: `generate a note using template "<rel>" and transcript "<rel>"`  *(or omit template to fall back to doctor lookup)*
 - `create-doctor-profile`: `create a doctor profile for "<name>" from source folder "<rel>"`
 - `update-doctor-profile`: `update doctor profile. Doctor: <name>. Template: <abs-path>. Corrections: <text>`  *(path is absolute; multi-line corrections are collapsed to ` | ` separators)*
-- `edit-note` (pre-chart): `edit note. Case: <abs-case-dir>. Template: <abs-template-path>. Attachment: <abs-attachment-path-or-empty>. Instructions: <scribe-text-or-empty>`  *(at least one of Attachment/Instructions must be non-empty; multi-file attachments are pre-combined by `extract_attachments.py`)*
+- `edit-note` (pre-chart): `edit note. Case: <abs-case-dir>. Template: <abs-template-path>. Attachment: <abs-attachment-path-or-empty>. Instructions: <scribe-text-or-empty>`  *(at least one of Attachment/Instructions must be non-empty; multi-file attachments are pre-combined by `src/pipeline/attachments.js`)*
 
 The first two use paths relative to cwd (= `<NOTES_DIR>`). The update prompt uses an absolute path because the template path is already resolved in main.js before the prompt is built.
 
@@ -413,7 +414,7 @@ States: `IDLE`, `SESSION_ACTIVE`, `RECORDING`, `PAUSED`, `PROCESSING`.
 
 `PAUSED` reuses the same `recordingProcess` — `pause`/`resume` are stdin commands the Python side acts on (it stops appending frames to the WAV until resume). This is why a pause+resume gap doesn't show up in the recording.
 
-Rendered identically in main.js and renderer.js — the renderer's `render(state)` switch decides which buttons are visible and what the indicator looks like.
+Rendered identically in main.js and the renderer — the renderer's `viewRouter` (`renderer/app.js`) decides which view is mounted by current `STATE`, and each view decides which buttons are visible.
 
 ---
 

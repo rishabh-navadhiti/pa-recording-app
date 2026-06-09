@@ -352,3 +352,69 @@ Every other skill writes `.md` only and lets `main.js → spawnDocxConversion �
 - `db/cases.js` gains `createChildCase` (inserts a child case with all paths populated, `status='converting'`) and `getCaseRow` (read-back for inheriting `recorded_at`/`doctor_id` onto child rows). **No schema changes.**
 - Multi-patient child folders are on-disk indistinguishable from single-patient cases — pre-chart, recent-cases listings, DB queries, and file hiding all work unmodified.
 - The skill is now schema-version-gated. Future format changes bump the version; the app fails closed (treats unknown versions as failed) until it catches up. Adopting the same JSON manifest format across the other skills (`cdi-review`, `edit-note`, `create-doctor-profile`, `update-doctor-profile`, future `icd`) is queued as follow-up work — out of scope for this PR.
+
+---
+
+## 2026-06-04 — Phase 0: refactor foundations & safety gates (rs)
+
+**Context:** Start of the planned multi-phase refactor (`docs/refactor/`). Phase 0 is all additive or behavior-preserving; no pipeline logic changes.
+
+**Decisions made in this phase:**
+
+1. **Test runner: `node:test` + `node:assert`, zero new deps.** Avoids Jest/Vitest which fight `better-sqlite3`'s native addon and require config the project doesn't have. `node --test` is built into Node 18+. The suite runs against system Node (ABI 137 on the dev machine); `electron-rebuild` targets the Electron ABI (132). Running integration tests locally requires `npm rebuild better-sqlite3` first; CI (`npm ci` on ubuntu-latest Node 20) gets the right ABI without this step.
+
+2. **DB migration runner: transactions + runner owns user_version.** Each migration is now wrapped in `db.transaction()`. The SQL file's trailing `PRAGMA user_version = N` is stripped before `db.exec()` and the runner sets it via `db.pragma()` inside the same transaction. This makes schema + version advance atomic; a mid-migration failure cannot leave partial DDL committed. Backward-compatible with `user_version=4` (the version on production installs as of 2026-06-01).
+
+3. **`open-soap-note` confined to `CASES_DIR`.** The renderer could previously pass any path to `shell.openPath`. Now the handler rejects any resolved path that does not start with `CASES_DIR`. Low-severity but correct.
+
+4. **`python -c` injection replaced with `python/probe_duration.py`.** The inline `python -c "...r\"${audioDest}\"..."` in `process-audio-file` interpolated the path into Python source code. Replaced with a 4-line script that reads the path from `sys.argv[1]`.
+
+5. **`spawnClaude` shell-injection (`shell:true`) deferred to Phase 2.** Changing from shell-string to arg-array spawn requires the full `claudeCliProvider` test harness (stream-json format, flag handling). Doing it in Phase 0 would be under-tested. The risk is low in practice: patient names go through `sanitizeName()` and OS file-dialog paths don't contain shell metacharacters on Windows.
+
+6. **`src/shared/` enums: main.js wired, renderer deferred to Phase 4.** `STATE` and `STATUS_LABELS` are now imported from `src/shared/` by main.js. `renderer/renderer.js` retains its own copies until Phase 4 restructures it; the drift test in `tests/unit/shared-drift.test.js` catches divergence in CI.
+
+7. **`parseSkillManifest.js` forwarding shim.** The canonical location is now `src/llm/skill-io/manifest.js`. The root-level `parseSkillManifest.js` is a `module.exports = require(...)` shim. Shim deleted in Phase 3 when all callers are updated.
+
+---
+
+## 2026-06-05 — Phase 3: pipeline + jobs + IPC + update modularization (rs)
+
+**Context:** Third refactor phase (`docs/refactor/`). Moves the orchestration out of main.js now that the seams (Phase 1 ctx, Phase 2 LLM provider + engine framework) exist. main.js: ~3,080 → ~620 lines.
+
+**Decisions:**
+
+1. **`spawnClaude` deleted — the last `shell:true` is gone.** Template-create/update/prechart were the final 3 callers; they now go through `ctx.llm.runSkill` (arg-array spawn) via `src/jobs/jobDispatcher.js` + per-job descriptors. Shell injection is fixed across every AI call path. The only remaining `shell:true` is `electron-rebuild` in autoUpdate (a static binary path, no user input; replaced wholesale in Phase 6).
+
+2. **Job dispatcher owns the single-flight lock + abort.** `runJob` acquires `ctx.stores.jobs` synchronously before the first await, registers an abort-proc so `cancel-template-creation` SIGTERMs the in-flight run (via a new `signal` param on `claudeCliProvider.runSkill`), and releases in a `finally`. Descriptors never touch the lock. `onSuccess` returns `{ok?, error?, eventFields?}` so the dispatcher writes exactly ONE `finishEvent` — `finishEvent` is a full-column UPDATE, so a second call clobbers status/usage to NULL.
+
+3. **IPC: 904-line `registerIpcHandlers` → 8 per-domain registrars** under `src/ipc/` (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status), 43 handlers moved verbatim. Each `register(ipcMain, appCtx, deps)` destructures the main.js helpers it needs from a `deps` object so handler bodies stay byte-identical. `change-notes-dir` re-points the module `ctx` via a `deps.setGlobalCtx` setter; `__dirname`-dependent handlers receive `deps.appRoot`. Return shapes preserved (mixed {ok,error}/raw — `envelope.js` is opt-in). Drift test asserts every preload channel has a handler.
+
+4. **CHANNELS single-sourced.** preload.js (52 invoke/on) + the 8 registrars (43 handle) import `src/shared/ipc-channels.js`. A renamed value propagates to both sides; a typo'd constant is a load-time error.
+
+5. **Adversarial review caught 4 real regressions** in the Group 7 job refactor (samples-staging leak, finishEvent clobber, dropped service-warning toast, lost backup_path) — all fixed before Group 8, with DB-backed tests.
+
+6. **The chain.test.js "node:test hang" was a bad fixture, not a tooling bug.** An `existsFn` of `(p)=>p.includes('john')` matched the candidate child folder, spinning `planChildCases`'s collision loop forever. Fixed the fixture (exact match) + two latent wrong assertions; the file now exits cleanly under `node --test`.
+
+**Test posture:** 171 unit + 12 integration tests green. `--test-force-exit` added to the test scripts/CI. Headless boot smoke (stubbed electron) confirms main.js loads + all registrars register; GUI boot is the manual gate.
+
+---
+
+## 2026-06-05 — Phase 5: Python restructure — port transcribe + extract to Node, harden record.py (rs)
+
+**Context:** Fifth refactor phase (`docs/refactor/`), decision A7. Port the two Python scripts that are just IO + format glue to Node (so they join the `node:test` harness and shrink the bundled Python); keep `record.py` (no Node WASAPI/BlackHole equivalent) and `md_to_docx.py` (until golden-tested) in Python.
+
+**Decisions:**
+
+1. **`transcribe.py` → `src/pipeline/elevenLabs.js` + rewired `transcription.js`.** The HTTP call is native `fetch`/`FormData`/`Blob` (no new dep); `formatTranscript()` is a byte-faithful port of `format_transcript` (a golden-file test pins the markdown — the downstream SOAP/CDI pipeline consumes `transcript.md`). `spawnTranscription` keeps its name + signature and all DB-event / case-status / service-warning orchestration; it no longer spawns a child — the work is an awaited fetch, fired-and-forgotten. Thrown errors carry the HTTP status in their message so the existing `markers.js` regexes still classify auth (401) vs rate-limit (429). Key now from `ctx.secrets` — kills the Python `.env` read **and** the hardcoded `LOG_DIR`.
+
+2. **`extract_attachments.py` → `src/pipeline/attachments.js`.** `.docx` via `mammoth`, `.pdf` via `pdf-parse` **2.x** — which is a class API (`new PDFParse({data}).getText()`), not the v1 function. We join `pages[].text` rather than `result.text` because the latter injects `-- N of M --` page markers (pdfplumber, the original, didn't). Output contract preserved exactly — including the triple-newline before the first separator, which is faithful to the Python `'\n'.join(pieces)` over `'\n\n'`-prefixed pieces. Both deps are pure-JS (no native build) and add zero new audit advisories (the lone `npm audit` hit is the pre-existing `electron` one).
+
+3. **`record.py` macOS brought to Windows parity (the mac branch was second-class).** Added: a **0-frames guard** (delete the empty WAV + `exit(1)` rather than emit a silent MP3 that goes to transcription), a **stop-check inside the sounddevice callback**, and a **device matcher** that prefers known virtual-audio loopback drivers (BlackHole → Aggregate → Loopback → Soundflower) and **deliberately never falls back to an arbitrary input** — grabbing the built-in mic instead of system audio is silently wrong (unlike Windows' last-resort "first loopback", which is still system audio). The hardcoded 48 kHz is now the device's reported default rate. The Windows 5-pass heuristic and the mac matcher were extracted into pure functions (`select_loopback_index` / `select_macos_input_index` / `is_macos_capture_candidate`) so they're pytest-able without audio hardware; the Windows pass order/conditions are preserved exactly — only the logging moved to the caller.
+
+4. **Killed the runtime `pip install` in `md_to_docx.py`; slimmed + bounded `requirements.txt`.** The old `except ImportError: pip install python-docx --break-system-packages` mutated the user's global Python on first run — replaced with a clear "install requirements.txt" error + `exit(1)`. `requirements.txt` drops the now-unused `requests` / `elevenlabs` / `python-dotenv` (ported to Node), marks `numpy` + `soundfile` macOS-only (only `record_macos` imports them — no reason to install them on Windows), and adds compatible-release version bounds. Exact-version freeze is deferred to the Phase 6 bundled runtime.
+
+5. **Python tests use stdlib `unittest`, not pytest.** pytest isn't installed and — having just removed `md_to_docx.py`'s auto-`pip install` — adding a test-time install felt wrong. `unittest` is zero-install, runs immediately, mirrors the JS side's zero-dep `node:test`, and pytest can still discover these `TestCase`s if a dev prefers it. New `tests/python/` covers the Windows 5-pass heuristic + the macOS no-mic-fallback matcher (pure, no audio libs), `md_to_docx` golden-structure (styles/bold/underline/ALL-CAPS/GFM-vs-layout-table shading), and `probe_duration` (real WAV via stdlib `wave`, self-skips without ffmpeg). New `test:py` npm script + a `test-python` CI job (`pip install -r requirements.txt` on Linux pulls only pydub + python-docx via the platform markers).
+
+**Test posture:** 23 Python tests (`python -m unittest discover -s tests/python`) + the new Node transcription (7) and attachments (8) tests, all green. The golden transcript + md→docx structure tests are the fidelity gates.
+
+**Risk + gate:** `record.py` is the capture path and can't be tested headlessly — the Win + Mac recording smoke is the irreplaceable gate. The transcript-fidelity golden test guards the #1 risk (transcript shape feeds the whole pipeline).

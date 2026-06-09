@@ -117,7 +117,7 @@ Two directories matter:
 
 A few things that surprise new contributors:
 
-- **The state machine is in two places.** `IDLE → SESSION_ACTIVE → RECORDING ↔ PAUSED → PROCESSING → SESSION_ACTIVE` is defined in both `main.js` and `renderer/renderer.js`. They must stay in sync. See [ARCHITECTURE.md § state-machine](ARCHITECTURE.md#state-machine-details).
+- **The state machine is in two places.** `IDLE → SESSION_ACTIVE → RECORDING ↔ PAUSED → PROCESSING → SESSION_ACTIVE` is defined in both `main.js` (via `src/shared/state.js`) and `renderer/constants.js`. They must stay in sync (drift-tested). See [ARCHITECTURE.md § state-machine](ARCHITECTURE.md#state-machine-details).
 - **Recording stops via stdin, not signal.** `main.js` writes `stop\n` to the Python child's stdin instead of killing it, because Windows' `TerminateProcess` skips Python cleanup code (and we need the WAV→MP3 conversion to finish). See [DECISIONS.md § stop-via-stdin](DECISIONS.md).
 - **The pipeline runs detached after Stop.** The UI returns to `SESSION_ACTIVE` as soon as the case folder is built — the transcribe→soap→icd→docx chain runs in the background so the scribe can start the next case immediately.
 - **Skills live in the repo, run from the user's notes-dir.** `notes-claude/` is the source of truth and is copied to `<NOTES_DIR>/.claude/` on every app launch. Edits to the runtime copy get overwritten.

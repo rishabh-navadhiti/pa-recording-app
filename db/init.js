@@ -32,6 +32,13 @@ function getDb() {
   return _db
 }
 
+// Injectable seam for tests: swap the cached db instance without touching disk.
+// Call initDbWith(new Database(':memory:')) then runMigrations(getDb()) in tests.
+function initDbWith(database) {
+  _db = database
+  return _db
+}
+
 // Called when the notes directory changes (user picks a new folder).
 // Closes the old connection and re-opens at the new path.
 function resetDb(newNotesDir) {
@@ -54,11 +61,23 @@ function runMigrations(db) {
     const fileVersion = parseInt(file.slice(0, 3), 10)
     if (fileVersion <= currentVersion) continue
 
-    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8')
-    // Run each migration in a transaction (except the PRAGMA user_version line,
-    // which better-sqlite3 handles fine inside a transaction on WAL mode)
-    db.exec(sql)
-    console.log(`[db] Applied migration: ${file}`)
+    const sqlRaw = fs.readFileSync(path.join(migrationsDir, file), 'utf8')
+
+    // Strip the trailing "PRAGMA user_version = N" line so the runner (not the
+    // SQL file) is the single authority that advances user_version — and so
+    // it runs inside the transaction without ambiguity.
+    const sql = sqlRaw.replace(/^\s*PRAGMA\s+user_version\s*=\s*\d+\s*;?\s*$/im, '').trimEnd()
+
+    try {
+      db.transaction(() => {
+        db.exec(sql)
+        db.pragma(`user_version = ${fileVersion}`)
+      })()
+      console.log(`[db] Applied migration: ${file}`)
+    } catch (e) {
+      console.error(`[db] Migration failed: ${file} — ${e.message}`)
+      throw e
+    }
   }
 }
 
@@ -119,4 +138,4 @@ function tryRestoreDoctorsFromBackup(db, notesDir, writeSettingsFn, extractLastn
   }
 }
 
-module.exports = { initDb, getDb, resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup }
+module.exports = { initDb, getDb, initDbWith, resetDb, runMigrations, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup }
