@@ -12,6 +12,18 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-09 — KNOWN REGRESSION: CDI DB persistence dropped by the engine refactor (doc audit finding)
+
+**Context:** A post-refactor (Phases 0–5) documentation audit comparing the docs against the live `develop` code surfaced a behavior regression in the CDI engine, not a docs problem. Before the refactor, the CDI step (`spawnCdiReview` / `applyCdiSuccess`) populated the `cases.cdi_*` summary columns via `dbCases.updateCaseCdi`, bulk-inserted per-flag rows into `cdi_flags` via `dbCdiFlags.insertFlags` (reading the on-disk `<case>_cdi.json`), and surfaced the at-a-glance CDI badges (flag count / quality score / "⚠ Review") to the status popup.
+
+**Finding (verified in code):** in `src/engines/cdi.js`, `persist()` is an **empty no-op** (`persist() {}`), and `src/engines/engineRunner.js` **never calls the engine's `render()`**. So in the current code, a completed CDI run writes its `<case>_cdi.{json,md,docx}` files on disk (the `interpret()` manifest parse + `synthesizeManifestFromDisk()` on-disk fallback are intact), but: (a) `cases.cdi_status` / `cdi_flag_count` / `cdi_quality_score` / `cdi_medical_necessity` / `cdi_claim_defense_readiness` / `cdi_clinician_approval_required` stay NULL; (b) `cdi_flags` rows are never inserted (`dbCdiFlags.insertFlags` has zero live callers); (c) only `cdi_docx_path` is written (by `src/pipeline/docx.js` on the cdi-docx success branch), and the popup CDI badges never fire. This is the kind of behavior change Phase 2's "byte-identical output" gate is meant to catch.
+
+**Decision:** Documented as a known regression (NOT silently fixed) since a dev is mid manual-test before staging. The fix is to (1) implement `cdi.persist(result, ctx, caseCtx, eventId)` to call `dbCases.updateCaseCdi(caseId, {...from manifest...})` + `dbCdiFlags.insertFlags(caseId, cdiRunId, flags-from-on-disk-json)`, gated to non-audit rows; and (2) have `engineRunner` apply `engine.render(result)` to the recordings store (or call it from `persist`) so the status badges return. The `cdi-docx_path` write in docx.js can stay or move into persist — decide during the fix. Add a unit test asserting `persist()` writes the columns + flags from a fixture manifest+json (the fake-provider fixtures pattern from `docs/refactor/05`).
+
+**Implications:** `docs/DB-SCHEMA.md` §3.3 (`cdi_status` enum) and the `cdi_flags` "Written by" line, plus `docs/ARCHITECTURE.md` (per-case post-processing chain) and `CLAUDE.md` (recording pipeline step 7), now carry ⚠️ regression notes pointing here. Remove those notes once `cdi.persist()` is re-wired and a test covers it. Until then, any analytics/queries over `cdi_flags` or the `cases.cdi_*` columns will be empty for cases processed on the refactored build.
+
+---
+
 ## 2026-06-05 (rs) — `cdi-costigan`: a procedure-checklist CDI variant + connector-validated procedure rubric packs
 
 **Context:** Dr. Costigan (Cedars-Sinai spine/interventional pain) had interventional-procedure claims denied; Cedars went through a Medicare TPE audit (MAC Noridian, J-E) on **CPT 64483** (transforaminal epidural) — 30 claims pre-payment reviewed, **23.3% error rate**, 7 denied, CAP required. Cedars' CRI team produced per-procedure medical-necessity checklists derived from the governing LCDs. We want a skill that checks a complete Costigan note against those checklists so the documentation survives audit — sharper and more measurable than general CDI. Skill + standards only (no UI/pipeline — that's deferred to the refactor; skills live in `notes-claude/`, which the refactor leaves untouched, so this is safe to build now).

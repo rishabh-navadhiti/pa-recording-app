@@ -88,6 +88,8 @@ cd recording-app
 npm install
 ```
 
+> If the app later crashes on launch with a `better-sqlite3` `NODE_MODULE_VERSION` mismatch, rebuild the native addon for Electron's ABI: `npx electron-rebuild -f -w better-sqlite3`. (The installer scripts do this automatically; a from-source dev clone may need it once.)
+
 ### 3. Install Python dependencies
 
 ```cmd
@@ -115,6 +117,16 @@ npm start
 > **PowerShell users:** If you see a script execution error, either run `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` first, or use Command Prompt (cmd) instead — execution policies don't apply there.
 
 On first launch the app asks you to pick a folder for your notes (creates an `AI Medical Notes` subfolder inside). After that the main window opens; closing it minimizes to taskbar. A tray icon also lives in the system tray (bottom-right) — left-click toggles the window, right-click → Quit actually exits the app.
+
+### 6. Run tests
+
+```cmd
+npm test            :: Node unit + integration (node:test)
+npm run test:unit   :: just the unit suite
+npm run test:py     :: Python unittest (tests/python/)
+```
+
+Tests live in `tests/unit/`, `tests/integration/`, and `tests/python/`; CI runs them on every push (`.github/workflows/ci.yml`).
 
 ---
 

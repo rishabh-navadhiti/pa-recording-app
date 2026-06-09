@@ -73,7 +73,7 @@ The app captures this in a **template file** per doctor (markdown, lives at `<NO
 
 When a SOAP note is generated, the template is fed to Claude alongside the transcript. The output is "this doctor's note for this consultation" — not a generic AI note.
 
-Templates can be hand-written, but it's tedious. The **Create with AI** flow analyses ~50 of a doctor's past notes and builds the template automatically (uses Opus 4.7 at max effort, takes several minutes).
+Templates can be hand-written, but it's tedious. The **Create with AI** flow analyses ~50 of a doctor's past notes and builds the template automatically (uses Opus 4.8 at max effort by default, takes several minutes).
 
 ## Tech stack at a glance
 
@@ -82,8 +82,9 @@ Templates can be hand-written, but it's tedious. The **Create with AI** flow ana
 | Shell | **Electron** (Node.js) | Window, tray icon, IPC, child-process orchestration |
 | UI | Vanilla HTML/CSS/JS | Single popup window, state-driven rendering, three tabs |
 | Audio capture | **Python + PyAudioWPatch (Windows)** / sounddevice + BlackHole (macOS) | System audio loopback to WAV → MP3 |
-| Transcription | **Python + ElevenLabs scribe_v1** API | Diarised speech-to-text |
-| Note generation | **Local `claude` CLI** (Anthropic) | Runs project-bundled skills |
+| Transcription | **Node + ElevenLabs scribe_v2** API (native `fetch`, `src/pipeline/elevenLabs.js`) | Diarised speech-to-text |
+| Attachment extraction | **Node + mammoth/pdf-parse** (`src/pipeline/attachments.js`) | Pre-chart `.docx`/`.pdf` → combined `.md` |
+| Note generation | **Local `claude` CLI** (Anthropic), via the `ctx.llm` provider seam | Runs project-bundled skills |
 | ICD coding | **claude.ai ICD-10 MCP connector** | Tools called from inside the coding skill |
 | Word export | **Python + python-docx** | Markdown → .docx with proper tables, headings, formatting |
 
@@ -118,10 +119,10 @@ Two directories matter:
 A few things that surprise new contributors:
 
 - **The state machine is in two places.** `IDLE → SESSION_ACTIVE → RECORDING ↔ PAUSED → PROCESSING → SESSION_ACTIVE` is defined in both `main.js` (via `src/shared/state.js`) and `renderer/constants.js`. They must stay in sync (drift-tested). See [ARCHITECTURE.md § state-machine](ARCHITECTURE.md#state-machine-details).
-- **Recording stops via stdin, not signal.** `main.js` writes `stop\n` to the Python child's stdin instead of killing it, because Windows' `TerminateProcess` skips Python cleanup code (and we need the WAV→MP3 conversion to finish). See [DECISIONS.md § stop-via-stdin](DECISIONS.md).
+- **Recording stops via stdin, not signal.** `context/recorderController.js` writes `stop\n` to the Python child's stdin instead of killing it, because Windows' `TerminateProcess` skips Python cleanup code (and we need the WAV→MP3 conversion to finish). See [DECISIONS.md § stop-via-stdin](DECISIONS.md).
 - **The pipeline runs detached after Stop.** The UI returns to `SESSION_ACTIVE` as soon as the case folder is built — the transcribe→soap→icd→docx chain runs in the background so the scribe can start the next case immediately.
 - **Skills live in the repo, run from the user's notes-dir.** `notes-claude/` is the source of truth and is copied to `<NOTES_DIR>/.claude/` on every app launch. Edits to the runtime copy get overwritten.
-- **One job lock for three operations.** Template-create, template-update, and pre-chart-edit-note all share the same background-job slot (`templateJobProc`) and status file. Only one at a time.
+- **One job lock for three operations.** Template-create, template-update, and pre-chart-edit-note all share the same single-flight background-job slot (`ctx.stores.jobs`, driven by `src/jobs/jobDispatcher.js`) and status file. Only one at a time.
 - **Best-effort ICD coding.** The ICD step runs between SOAP generation and DOCX export. If it fails (MCP auth issue, model glitch), the pipeline falls through to DOCX anyway — a note without codes is still useful.
 
 ## Where to read next

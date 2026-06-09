@@ -16,19 +16,20 @@ For the high-level summary, see [ARCHITECTURE.md § DB schema overview](ARCHITEC
 | Companion files | `app.db-wal`, `app.db-shm` (auto-managed; safe to delete when the app is closed) |
 | FK enforcement | `PRAGMA foreign_keys = ON` |
 | Busy timeout | 5000 ms |
-| Schema version | Tracked via `PRAGMA user_version`. Latest = `3`. |
+| Schema version | Tracked via `PRAGMA user_version`. Latest = `4` (migrations 001–004). |
 | Migration files | `db/migrations/NNN_<name>.sql`, run in numeric order, only when `file_version > user_version` |
 
-**"DB never breaks the pipeline."** Every write in `db/*.js` is wrapped in `try/catch` and logs failures. If `app.db` is missing, locked, or otherwise unwritable, the recording → transcription → SOAP → ICD → CDI → DOCX pipeline still completes; only the metadata index is degraded. This is intentional — see DECISIONS.md (2026-05-18).
+**"DB never breaks the pipeline."** Every write in `db/*.js` is wrapped in `try/catch` and logs failures; reads/writes that must not crash the pipeline go through `db/withDb.js` — `withDb(label, fn, fallback)` returns `fallback` (default `null`) when the DB is unavailable or `fn` throws, logging the failure. If `app.db` is missing, locked, or otherwise unwritable, the recording → transcription → SOAP → ICD → CDI → DOCX pipeline still completes; only the metadata index is degraded. This is intentional — see DECISIONS.md (2026-05-18).
 
 **"Safe to delete."** `app.db` is an index, not a content store. Canonical artifacts (transcripts, SOAP notes, MP3s, .docx) live as files in `<NOTES_DIR>/Cases/`. Deleting `app.db` while the app is closed is recoverable: on next launch, `db/init.js` recreates the schema from migrations, and `tryRestoreDoctorsFromBackup()` re-populates `doctors` from `<NOTES_DIR>/settings.doctors.backup.json` (written once during first-launch migration). Sessions/cases/events history is lost — accept the trade-off only if you mean to.
 
 **Migration mechanics** (`db/init.js`):
 
 1. On every app start, `initDb(notesDir)` opens the DB and calls `runMigrations(db)`.
-2. `runMigrations` reads `PRAGMA user_version` (defaults to 0 on a fresh DB), lists `db/migrations/NNN_*.sql` sorted numerically, and `db.exec()`'s each file whose `NNN > user_version`.
-3. Each migration file ends with `PRAGMA user_version = N;` to advance the marker. better-sqlite3 runs the whole file as one statement batch — no explicit transaction wrapping (WAL mode handles this correctly for the small DDL we have).
+2. `runMigrations` reads `PRAGMA user_version` (defaults to 0 on a fresh DB), lists `db/migrations/NNN_*.sql` sorted numerically, and applies each file whose `NNN > user_version`.
+3. **Each migration runs inside an explicit `db.transaction(...)` and the *runner* — not the SQL file — advances the version marker** (hardened in the Phase 0 refactor). The runner strips the trailing `PRAGMA user_version = N;` out of the file text and instead runs `db.exec(sql)` and `db.pragma('user_version = N')` together in one transaction, so a migration that fails halfway **rolls back atomically** and the version never advances past a partially-applied file. The trailing `PRAGMA user_version = N;` is kept in each `.sql` for readability but is a no-op at runtime. A failing migration surfaces with its filename rather than silently leaving the DB null. See `db/init.js → runMigrations`.
 4. A separate one-time post-step (`migrateDoctorsFromSettings`) moves `settings.json.doctors[]` into the `doctors` table on first launch and writes `settings.doctors.backup.json`. Idempotent — checks `COUNT(*) FROM doctors` before doing anything.
+5. Test/injection seam: `initDbWith(database)` swaps the cached connection (e.g. `new Database(':memory:')`) so the whole `db/*` layer is unit-testable without touching disk; `resetDb(newNotesDir)` closes + reopens on a notes-dir change.
 
 **Inspection from the shell** (app must be closed or in read-only mode):
 
@@ -213,20 +214,22 @@ transcribing → generating_note → converting → completed
                                           failed   (terminal; can happen at any earlier stage)
 ```
 
-- `transcribing` — set at `createCase`. record.py done, MP3 in case folder, transcribe.py spawned.
-- `generating_note` — set when transcribe.py exits 0. SOAP-generation skill spawned.
+- `transcribing` — set at `createCase`. record.py done, MP3 in case folder, transcription in flight (Node ElevenLabs `fetch` via `src/pipeline/transcription.js` + `elevenLabs.js` — not a subprocess).
+- `generating_note` — set when transcription succeeds. SOAP-generation skill spawned.
 - `converting` — set when the SOAP `.md` is on disk. docx conversion(s) running. For multi-patient children, `createChildCase` inserts directly at `'converting'`.
 - `completed` — set by docx success handler. `soap_docx_path` populated, `completed_at` set.
 - `failed` — any stage's failure path sets this. Doesn't transition out (a re-attempt would require manual intervention or a future "resume" feature).
 
 **`cdi_status` enum:**
 
-| Value | Meaning |
+> ⚠️ **KNOWN REGRESSION (Phase 0–5 refactor, flagged 2026-06-09 — verify before relying on these columns).** In the current `develop` code the CDI engine (`src/engines/cdi.js`) has an **empty `persist()`** and `src/engines/engineRunner.js` **never calls the engine's `render()`**, so the `cases.cdi_*` summary columns below and the `cdi_flags` rows are **not being written** by the live pipeline. The only CDI DB write that still fires is `cdi_docx_path` (set in `src/pipeline/docx.js` on the cdi-docx success branch). CDI still *runs* and produces `<case>_cdi.{json,md,docx}` on disk; only the DB persistence regressed. The pre-refactor behavior (populate `cdi_*` from the manifest via `updateCaseCdi`, bulk-insert flags via `dbCdiFlags.insertFlags` reading `<case>_cdi.json`, and surface the UI badges via `render()`) needs to be re-wired into `cdi.persist()` + a `render()` call in `engineRunner`. The table below describes the **intended** behavior. See DECISIONS.md.
+
+| Value | Meaning (intended) |
 |---|---|
-| NULL | CDI never attempted on this case. (CDI was added in migration 003; pre-existing cases will have NULL forever unless rerun.) |
-| `'running'` | CDI Claude invocation in flight. Set at spawn, before Claude returns. |
-| `'completed'` | Skill emitted a `status:'ok'` JSON manifest (or main.js recovered the run from the on-disk `_cdi.json` when the manifest line was missing); JSON + MD on disk; flags inserted into `cdi_flags`. |
-| `'skipped'` | CDI was gated off in main.js *before* the spawn because the doctor has no specialty, or the specialty has no standards file. **No `_cdi.*` files are written** — the case folder is untouched. Only this status column records the skip. (Note: when CDI is globally off via `enableCdi=false`, `spawnCdiReview` returns even earlier — before any DB write — so `cdi_status` stays NULL, not `'skipped'`.) |
+| NULL | CDI never attempted on this case. (CDI was added in migration 003; pre-existing cases will have NULL forever unless rerun.) Also currently NULL on completed runs due to the regression above. |
+| `'running'` | CDI Claude invocation in flight. |
+| `'completed'` | Skill emitted a `status:'ok'` JSON manifest (or the run was recovered from the on-disk `_cdi.json` when the manifest line was missing — the recovery logic in `cdi.interpret()` is intact); JSON + MD on disk; flags inserted into `cdi_flags`. |
+| `'skipped'` | CDI was gated off (in `src/engines/cdi.js` `gates()`) *before* the spawn because CDI is globally disabled (`enableCdi=false`), the doctor has no specialty, or the specialty has no standards file. |
 | `'failed'` | Manifest `status:'failed'` AND no usable on-disk `_cdi.json`, or skill non-zero exit with nothing recoverable. Best-effort: pipeline still continues to DOCX. |
 
 **Gotchas:**
@@ -241,7 +244,7 @@ transcribing → generating_note → converting → completed
 
 ### 3.4 `processing_events`
 
-One row per spawned subprocess that does meaningful work — transcribe.py, the SOAP-generation Claude invocation, ICD coding, CDI review, docx conversion, pre-chart, template create/update. Captures wall-clock timing, model used, token usage, cost, and the error message (truncated) on failure.
+One row per meaningful unit of background work — the ElevenLabs transcription fetch (Node, not a subprocess), the SOAP-generation Claude invocation, ICD coding, CDI review, docx conversion, pre-chart, template create/update. Captures wall-clock timing, model used, token usage, cost, and the error message (truncated) on failure. `startEvent`/`finishEvent` (`db/events.js`) are now called from the modules that own each unit of work — `src/pipeline/transcription.js`, `src/pipeline/docx.js`, `src/engines/engineRunner.js` (soap/icd/cdi), and `src/jobs/jobDispatcher.js` — not from main.js close handlers.
 
 **Created by:** migration `001_init.sql`. No CDI-specific columns — CDI just uses `job_kind = 'cdi'`.
 **Written by:** `db/events.js` — `startEvent()` before each spawn, `finishEvent()` in the close handler.
@@ -282,11 +285,11 @@ One row per spawned subprocess that does meaningful work — transcribe.py, the 
 - `'success'` — set by `finishEvent` when the close handler considers the job a success. For CDI specifically, a gated skip (no specialty / no standards file) is caught in main.js *before* a `processing_events` row is started, so a skip produces no CDI event at all — not a `'success'` one.
 - `'failed'` — set by `finishEvent` on any failure path. `error_message` is populated.
 
-**`job_kind` enum** (exact strings used in `startEvent` calls — see [main.js:396](../main.js#L396) and friends):
+**`job_kind` enum** (exact strings used in `startEvent` calls — see `db/events.js → startEvent` and its callers in `src/pipeline/transcription.js`, `src/pipeline/docx.js`, `src/engines/engineRunner.js`, and `src/jobs/jobDispatcher.js`):
 
 | Value | What it is | Has `case_id`? |
 |---|---|---|
-| `transcribe` | python/transcribe.py invocation. | yes |
+| `transcribe` | ElevenLabs STT — Node `fetch` (`src/pipeline/transcription.js` + `elevenLabs.js`), not a child process. `model_used`/token/cost stay NULL (non-Claude). | yes |
 | `soap` | `generate-note` skill via `claude -p`. | yes (parent in multi-patient runs) |
 | `icd` | `add-icd-codes` skill via `claude -p`. | yes (per child in multi-patient runs) |
 | `cdi` | `cdi-review` skill via `claude -p`. | yes (per child in multi-patient runs) |
@@ -309,7 +312,7 @@ One row per spawned subprocess that does meaningful work — transcribe.py, the 
 The structured payload from a successful CDI run, one row per flag. Mirrors the `flags[]` array in the CDI JSON output exactly (see [cdi-review SKILL.md](../notes-claude/skills/cdi-review/SKILL.md) Step 3 / output schema).
 
 **Created by:** migration `003_add_cdi_tables.sql`; extended by `004_extend_cdi_flags.sql` (adds `action` + `reimbursement_impact`).
-**Written by:** `db/cdi_flags.js` — `insertFlags()` (bulk-insert, called by `spawnCdiReview`'s success path), `deleteFlagsForCase()` (used when CDI is re-run on the same case — v1.1 feature, not active in v1).
+**Written by:** `db/cdi_flags.js` — `insertFlags()` (bulk-insert, intended to be called from the CDI engine's persist path after reading `<case>_cdi.json`), `deleteFlagsForCase()` (used when CDI is re-run on the same case — v1.1 feature, not active in v1). ⚠️ **As of the Phase 0–5 refactor `insertFlags()` has no live caller** — `cdi.persist()` is currently a no-op (see the regression note in §3.3 `cdi_status`). The function + its `INSERT` are correct; they just need re-wiring into `src/engines/cdi.js`'s `persist()`.
 
 | Column | Type | Nullable | Default | Meaning |
 |---|---|---|---|---|
