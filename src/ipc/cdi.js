@@ -31,6 +31,12 @@ function registerCdiIpc(ipcMain, appCtx, deps) {
     })
   })
 
+  // ---- get-cdi-skills --------------------------------------------------------
+  // CDI skills discovered on disk (synced .claude/skills/). Folder-based, so a
+  // dropped-in cdi-* skill appears automatically. Empty list → tab shows
+  // "No CDI skills".
+  ipcMain.handle(CHANNELS.GET_CDI_SKILLS, () => listCdiSkills(appCtx.paths.notesDir))
+
   // ---- browse-cdi-soap-file --------------------------------------------------
   // Single-file picker (.md / .docx) for the SOAP note.
   ipcMain.handle(CHANNELS.BROWSE_CDI_SOAP_FILE, async () => {
@@ -47,10 +53,14 @@ function registerCdiIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- start-cdi-review ------------------------------------------------------
-  ipcMain.handle(CHANNELS.START_CDI_REVIEW, async (_, doctorId, mode, pastedText, filePath) => {
+  ipcMain.handle(CHANNELS.START_CDI_REVIEW, async (_, doctorId, skillId, mode, pastedText, filePath) => {
     if (appCtx.stores.jobs.isRunning()) {
       return { ok: false, error: 'Another job is already running.' }
     }
+
+    // Validate the chosen CDI skill exists on disk.
+    const skill = listCdiSkills(appCtx.paths.notesDir).find(s => s.id === skillId)
+    if (!skill) return { ok: false, error: 'Select a valid CDI skill.' }
 
     // Resolve doctor details.
     const doctor = getAllDoctors().find(d => d.id === doctorId)
@@ -87,7 +97,7 @@ function registerCdiIpc(ipcMain, appCtx, deps) {
 
     // Fire-and-forget; lock acquired synchronously inside runManualCdiJob.
     runManualCdiJob(
-      { pastedText: pastedText || '', filePath: filePath || '', doctorId, doctorName: doctor.name, specialty, mode: mode || 'balanced', standardsDir, notesDir: appCtx.paths.notesDir, ts },
+      { skillId: skill.id, pastedText: pastedText || '', filePath: filePath || '', doctorId, doctorName: doctor.name, specialty, mode: mode || 'balanced', standardsDir, notesDir: appCtx.paths.notesDir, ts },
       jobCtx
     )
 
@@ -128,6 +138,33 @@ function registerCdiIpc(ipcMain, appCtx, deps) {
     }
     return { ok: true }
   })
+}
+
+// "cdi-review" → "CDI Review"; "cdi-costigen" → "CDI Costigen".
+function _prettifyCdiSkill(id) {
+  return id
+    .split(/[-_]/)
+    .map(w => (w.toLowerCase() === 'cdi' ? 'CDI' : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(' ')
+}
+
+// CDI skills = directories in the synced .claude/skills/ whose name starts with
+// "cdi" and that contain a SKILL.md. Folder-based discovery means dropping a new
+// cdi-* skill folder in makes it show up in the tab automatically. Returns [] if
+// none — the renderer then displays "No CDI skills".
+function listCdiSkills(notesDir) {
+  const skillsDir = path.join(notesDir, '.claude', 'skills')
+  let entries
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter(e => e.isDirectory() && e.name.toLowerCase().startsWith('cdi'))
+    .filter(e => fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
+    .map(e => ({ id: e.name, label: _prettifyCdiSkill(e.name) }))
+    .sort((a, b) => a.label.localeCompare(b.label))
 }
 
 function _cleanup(tempDir, log) {

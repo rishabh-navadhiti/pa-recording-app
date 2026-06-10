@@ -19,7 +19,7 @@ import { setVisible } from '../components/visible.js'
 import { CDI_MODES } from '../constants.js'
 
 export function createCdiView() {
-  let cdiView, cdiDoctorSelect, cdiModeSelect,
+  let cdiView, cdiDoctorSelect, cdiSkillSelect, cdiModeSelect,
       cdiPasteArea, cdiFileRow, cdiFileName, btnCdiAddFile, btnCdiClearFile,
       btnCdiRun, cdiError, cdiSuccessRow, btnCdiSave, btnCdiDiscard
 
@@ -50,9 +50,10 @@ export function createCdiView() {
   function updateRunEnabled() {
     if (!btnCdiRun) return
     const hasDoctor = cdiDoctorSelect && cdiDoctorSelect.value
+    const hasSkill  = cdiSkillSelect && cdiSkillSelect.value
     const hasPaste  = cdiPasteArea && cdiPasteArea.value.trim()
     const hasFile   = !!selectedFilePath
-    btnCdiRun.disabled = !hasDoctor || !(hasPaste || hasFile)
+    btnCdiRun.disabled = !hasDoctor || !hasSkill || !(hasPaste || hasFile)
   }
 
   function setFile(filePath) {
@@ -130,6 +131,40 @@ export function createCdiView() {
       }
     }
 
+    // Populate skill dropdown (CDI skills discovered on disk). Starts on a
+    // "Select skill…" placeholder; empty list → "No CDI skills". Preserve the
+    // current selection across tab re-entry when still available.
+    if (cdiSkillSelect) {
+      const prev = cdiSkillSelect.value
+      cdiSkillSelect.innerHTML = ''
+      try {
+        const skills = await ipc.getCdiSkills()
+        if (skills && skills.length > 0) {
+          const placeholder = document.createElement('option')
+          placeholder.value = ''
+          placeholder.textContent = 'Select skill…'
+          cdiSkillSelect.appendChild(placeholder)
+          skills.forEach(s => {
+            const opt = document.createElement('option')
+            opt.value = s.id
+            opt.textContent = s.label
+            cdiSkillSelect.appendChild(opt)
+          })
+          // Default to the placeholder; restore a still-valid prior pick.
+          cdiSkillSelect.value = skills.some(s => s.id === prev) ? prev : ''
+          cdiSkillSelect.disabled = false
+        } else {
+          const opt = document.createElement('option')
+          opt.value = ''
+          opt.textContent = 'No CDI skills'
+          cdiSkillSelect.appendChild(opt)
+          cdiSkillSelect.disabled = true
+        }
+      } catch (e) {
+        console.error('getCdiSkills failed', e)
+      }
+    }
+
     // Populate mode dropdown from shared CDI_MODES constant
     if (cdiModeSelect) {
       cdiModeSelect.innerHTML = ''
@@ -172,6 +207,7 @@ export function createCdiView() {
     mount(root) {
       cdiView          = root.querySelector('#tab-cdi')
       cdiDoctorSelect  = root.querySelector('#cdi-doctor-select')
+      cdiSkillSelect   = root.querySelector('#cdi-skill-select')
       cdiModeSelect    = root.querySelector('#cdi-tab-mode-select')
       cdiPasteArea     = root.querySelector('#cdi-paste')
       cdiFileRow       = root.querySelector('#cdi-file-row')
@@ -185,6 +221,7 @@ export function createCdiView() {
       btnCdiDiscard    = root.querySelector('#btn-cdi-discard')
 
       on(cdiDoctorSelect, 'change', updateRunEnabled)
+      on(cdiSkillSelect,  'change', updateRunEnabled)
       on(cdiModeSelect,   'change', () => {})
 
       if (cdiPasteArea) {
@@ -217,15 +254,17 @@ export function createCdiView() {
         on(btnCdiRun, 'click', async () => {
           hideError()
           const doctorId = cdiDoctorSelect ? cdiDoctorSelect.value : ''
+          const skillId  = cdiSkillSelect  ? cdiSkillSelect.value  : ''
           const mode     = cdiModeSelect   ? cdiModeSelect.value   : 'balanced'
           const paste    = cdiPasteArea    ? cdiPasteArea.value     : ''
           if (!doctorId) { showError('Select a doctor first.'); return }
+          if (!skillId)  { showError('Select a CDI skill first.'); return }
           if (!paste.trim() && !selectedFilePath) { showError('Provide a SOAP note.'); return }
 
           btnCdiRun.disabled = true
           isRunning = true
           reportReady = false
-          const res = await ipc.startCdiReview(doctorId, mode, paste, selectedFilePath || '')
+          const res = await ipc.startCdiReview(doctorId, skillId, mode, paste, selectedFilePath || '')
           if (!res || !res.ok) {
             isRunning = false
             showError((res && res.error) || 'Failed to start CDI review.')

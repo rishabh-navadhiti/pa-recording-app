@@ -10,9 +10,6 @@ const { CLAUDE_RATE_LIMITED }    = require('../llm/skill-io/markers')
 const { synthesizeManifestFromDisk } = require('../engines/cdi')
 const { convertMdToDocx }        = require('../pipeline/docx')
 
-// ICD-10 code pattern — fallback for notes that have codes but no section heading.
-const ICD_CODE_RE = /\b[A-TV-Z]\d[0-9A-Z](?:\.[0-9A-Z]{1,4})?\b/
-
 /**
  * Run the cdi-review skill on a SOAP note supplied directly by the user
  * (paste, .md, or .docx). Fully ephemeral — nothing is written to the DB or
@@ -35,6 +32,7 @@ const ICD_CODE_RE = /\b[A-TV-Z]\d[0-9A-Z](?:\.[0-9A-Z]{1,4})?\b/
 async function runManualCdiJob(input, ctx) {
   const { log } = ctx
   const { pastedText, filePath, doctorName, specialty, mode, standardsDir, ts } = input
+  const skillId = input.skillId || 'cdi-review'
 
   // Acquire single-flight lock synchronously before any await so there's no race.
   const ac = new AbortController()
@@ -95,24 +93,20 @@ async function runManualCdiJob(input, ctx) {
       throw new Error('No SOAP note provided.')
     }
 
-    // ---- 3. ICD pre-flight ----------------------------------------------------
-    const noteText = fs.readFileSync(soapMdPath, 'utf8')
-    const hasIcdSection = /^##\s+ICD-10/im.test(noteText)
-    const hasIcdCode    = ICD_CODE_RE.test(noteText)
-    if (!hasIcdSection && !hasIcdCode) {
-      throw new Error('ICD codes not available in this note.')
-    }
-
-    // ---- 4. Validate specialty standards file (belt-and-suspenders) -----------
+    // ---- 3. Validate specialty standards file (belt-and-suspenders) -----------
     const specialtyFile = path.join(standardsDir, 'specialties', `${specialty}.md`)
     if (!fs.existsSync(specialtyFile)) {
       throw new Error(`No standards file for specialty '${specialty}'.`)
     }
 
-    // ---- 5. Build prompt + run skill ------------------------------------------
+    // ---- 4. Build prompt + run skill ------------------------------------------
     const cfg = ctx.config.get()
     const model = cfg.soapModel || 'claude-sonnet-4-6'
-    const prompt = buildPrompt('cdi-review', {
+    // Each CDI skill has its own prompt signature; buildPrompt dispatches on
+    // skillId (e.g. cdi-review uses specialty/mode/doctor; cdi-costigen ignores
+    // them and uses Case + Standards only). Unknown skillId → buildPrompt throws,
+    // caught below and surfaced as a failed run.
+    const prompt = buildPrompt(skillId, {
       caseDir: tempDir,
       specialty,
       mode,
@@ -120,7 +114,7 @@ async function runManualCdiJob(input, ctx) {
       standardsDir,
     })
 
-    log(`[cdi-manual] running cdi-review skill (model=${model}, mode=${mode})`)
+    log(`[cdi-manual] running ${skillId} skill (model=${model}, mode=${mode})`)
     const runResult = await ctx.llm.runSkill({
       prompt,
       model,
@@ -129,7 +123,7 @@ async function runManualCdiJob(input, ctx) {
       signal: ac.signal,
     })
 
-    // ---- 6. Rate-limit check ---------------------------------------------------
+    // ---- 5. Rate-limit check ---------------------------------------------------
     const combined = (runResult.text || '') + '\n' + (runResult.errText || '')
     if (CLAUDE_RATE_LIMITED.test(combined)) {
       throw new Error('Claude usage limit reached. Try again once the limit resets.')
@@ -139,10 +133,11 @@ async function runManualCdiJob(input, ctx) {
       throw new Error(`CDI skill exited ${runResult.code}`)
     }
 
-    // ---- 7. Parse manifest + fallback -----------------------------------------
+    // ---- 6. Parse manifest + fallback -----------------------------------------
     let manifest = parseSkillManifest(runResult.text)
-    const manifestValid = manifest && manifest.schema_version === 1 &&
-      manifest.skill === 'cdi-review' && manifest.status
+    // Don't pin to a specific skill name — any CDI skill's manifest is accepted
+    // (cdi-review emits skill:'cdi-review', cdi-costigen emits 'cdi-costigan').
+    const manifestValid = manifest && manifest.schema_version === 1 && manifest.status
 
     if (!manifestValid || manifest.status !== 'ok') {
       // Filesystem fallback (rate-limited or manifest truncated)
@@ -157,7 +152,7 @@ async function runManualCdiJob(input, ctx) {
       throw new Error(`CDI report not found at: ${manifest.md_path}`)
     }
 
-    // ---- 8. Convert _cdi.md → .docx ------------------------------------------
+    // ---- 7. Convert _cdi.md → .docx ------------------------------------------
     const python = ctx.python || 'python3'
     const docxPath = await convertMdToDocx(manifest.md_path, { python, log })
 
@@ -165,7 +160,7 @@ async function runManualCdiJob(input, ctx) {
       throw new Error('DOCX conversion produced no output file.')
     }
 
-    // ---- 9. Hold result for save/discard + broadcast success ------------------
+    // ---- 8. Hold result for save/discard + broadcast success ------------------
     // The result slot is owned by the IPC registrar; we write to it via a
     // callback injected by the caller.
     if (typeof ctx.setCdiResult === 'function') {

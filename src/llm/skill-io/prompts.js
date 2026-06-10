@@ -42,6 +42,19 @@ function cdiReview({ caseDir, specialty, mode, doctor, standardsDir }) {
 }
 
 /**
+ * cdi-costigen — interventional-pain procedure-checklist CDI variant. Distinct
+ * prompt signature from cdi-review (Case + Standards only; no specialty/mode/doctor).
+ * Keyed by FOLDER name 'cdi-costigen' (the skill's frontmatter name is 'cdi-costigan').
+ *
+ * @param {object} input
+ * @param {string}  input.caseDir       Absolute path to the case folder
+ * @param {string}  input.standardsDir  Absolute path to the standards directory
+ */
+function cdiCostigen({ caseDir, standardsDir }) {
+  return `check costigan procedures. Case: ${caseDir}. Standards: ${standardsDir}`
+}
+
+/**
  * @param {object} input
  * @param {string}  input.doctorName  Full doctor name
  * @param {string}  input.stagingRel  Relative path to the staging folder
@@ -83,6 +96,7 @@ const BUILDERS = {
   'generate-note':        generateNote,
   'add-icd-codes':        addIcdCodes,
   'cdi-review':           cdiReview,
+  'cdi-costigen':         cdiCostigen,
   'create-doctor-profile': createDoctorProfile,
   'update-doctor-profile': updateDoctorProfile,
   'edit-note':            editNote,

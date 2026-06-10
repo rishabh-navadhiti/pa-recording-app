@@ -10,7 +10,7 @@
 
 Add a fourth tab to the main popup — **CDI** — that lets a scribe run the existing `cdi-review` skill on a SOAP note **they supply directly** (pasted text, or an uploaded `.md`/`.docx`), independent of the recording pipeline, store **nothing**, and hand the user back a single `.docx` CDI report to save wherever they want.
 
-This reuses the *same* `cdi-review` skill, standards packs, and per-doctor specialty that the audio pipeline's CDI step uses (see `docs/ARCHITECTURE.md` → *Per-case post-processing chain*). The only difference: the SOAP note already exists (with ICD codes baked in) instead of being produced by `generate-note`, and the run is fully ephemeral.
+This reuses the *same* `cdi-review` skill, standards packs, and per-doctor specialty that the audio pipeline's CDI step uses (see `docs/ARCHITECTURE.md` → *Per-case post-processing chain*). The only difference: the SOAP note already exists (typically already ICD-coded) instead of being produced by `generate-note`, and the run is fully ephemeral.
 
 ---
 
@@ -18,7 +18,7 @@ This reuses the *same* `cdi-review` skill, standards packs, and per-doctor speci
 
 1. **New `CDI` tab** in the main popup (4th tab: Record · Pre-chart · Templates · **CDI**).
 2. Tab fields: **doctor** picker (filtered to supported specialties), **skill** picker (`CDI Review`, single option, future-proofed), **CDI mode** picker (`Balanced`/`Compliance`/`Aggressive`), a **SOAP-note input** that is *either* a paste textarea *or* a single uploaded file (`.md`/`.docx`), and a **Run** button.
-3. A new **manual-CDI job** in main that: builds an ephemeral temp case folder → normalizes the note to `<stem>_soap_note.md` → ICD pre-flight check → invokes `cdi-review` → converts the resulting `_cdi.md` to `.docx` → offers the `.docx` via an OS save dialog → deletes the temp folder.
+3. A new **manual-CDI job** in main that: builds an ephemeral temp case folder → normalizes the note to `<stem>_soap_note.md` → invokes the chosen CDI skill → converts the resulting report `.md` to `.docx` → offers the `.docx` via an OS save dialog → deletes the temp folder.
 4. New IPC domain (`src/ipc/cdi.js`) + channels + `preload.js` methods.
 5. Reuse of the shared single-flight job lock + job-status banner (new `type: 'cdi'`).
 
@@ -26,7 +26,7 @@ This reuses the *same* `cdi-review` skill, standards packs, and per-doctor speci
 
 - **No persistence of anything.** No `cases` row, no `cdi_flags` rows, no `processing_events` event, no file left under `<NOTES_DIR>/Cases/`. The only durable artifact is the `.docx` the *user* chooses to save, wherever they save it.
 - **The audio-pipeline CDI step is untouched** (`src/engines/cdi.js`, `src/pipeline/chain.js`). The global `enableCdi`/`cdiMode` settings continue to gate *only* the Record-tab flow. This tab ignores them.
-- **No ICD coding in this tab.** If the supplied note lacks ICD codes we stop with a message (see *ICD pre-flight*). We never run the `icd` engine here.
+- **No ICD coding in this tab.** We never run the `icd` engine here. (There is also no ICD-presence gate — the note goes straight to the CDI skill regardless; see D6.)
 - **No new specialties / standards packs.** Orthopedics is still the only supported specialty in v1; the doctor dropdown is filtered to whatever has a standards pack.
 - **The `docx → md` conversion script is user-supplied** (Python, to be added — see *Open items*). This plan wires the integration point; the script itself is not authored here.
 
@@ -36,12 +36,12 @@ This reuses the *same* `cdi-review` skill, standards packs, and per-doctor speci
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Skill picker is a list with one entry** (`CDI Review`), not a mode picker. | Future-proofs for more CDI skills; today it's a single, effectively-fixed option. |
+| D1 | **Skill picker is an enabled dropdown populated by folder-based discovery** — `getCdiSkills()` lists every `cdi*` skill folder (with a `SKILL.md`) in the synced `.claude/skills/`; an empty result renders "No CDI skills". The chosen `skillId` threads through `startCdiReview` → the manual job's `buildPrompt(skillId, …)`. Each CDI skill has its own prompt builder (cdi-review and cdi-costigen ship today; the latter uses a Case+Standards-only signature). Dropping a new `cdi-*` skill folder + registering its `buildPrompt` entry makes it appear and run. | User: "show the skills related to CDI … user can select any cdi skill and go ahead"; "if there are no CDI skill then show 'No CDI skills'." |
 | D2 | **CDI mode comes from a dropdown in the tab** (`Balanced` default), *not* from global `cdiMode`. | Global CDI settings apply to the Record tab only (D5); the tab owns its own mode. |
 | D3 | **Per-run ephemeral temp case folder** in `os.tmpdir()` (outside `<NOTES_DIR>`). Deleted on failure, on save, on Close/Discard, **or when the next CDI run starts** (see D11). Nothing is persisted to `<NOTES_DIR>` or `app.db`. | User: "no need to store anything … temporary case folder for every case." (Lifecycle refined by D11.) |
 | D4 | **Input normalization:** paste → write to `.md`; `.md` upload → use as-is; `.docx` upload → convert to `.md` via user's Python script. | User spec. |
 | D5 | **Global `enableCdi`/`cdiMode` are irrelevant to this tab.** The tab always works regardless of the global toggle. | User: "global cdi … either enable or disable doesn't matter; that matters only for record tab." |
-| D6 | **ICD pre-flight:** if the note has no `## ICD-10-CM Codes` section, show "ICD codes not available" and **stop** — no Claude call. | User: "mention ICD code is not available and stop." |
+| D6 | **No ICD pre-flight (removed).** The note is sent to the CDI skill regardless of whether it already contains ICD codes; `cdi-review` validates ICD codes itself against the MCP connector. (An earlier "stop if the note has no `## ICD-10-CM Codes` section" gate was implemented, then removed at the user's request — it blocked valid runs and duplicated the skill's own validation.) | User: "remove the ICD check." (Supersedes the original "mention ICD code is not available and stop.") |
 | D7 | **Doctor dropdown filtered to supported specialties only** (specialty set *and* a standards pack exists). | User: "filter to supported only." Avoids dead-end runs. |
 | D8 | **Single deliverable:** the `cdi-review` `.md` → `.docx`, offered via OS save dialog. The `_cdi.json`, the prepared soap `.md`, and the temp folder are discarded once the held report's lifecycle ends (D11). | User: convert `.md` to docx, show save option, open file system. |
 | D9 | **Inputs are mutually exclusive** — choosing a file disables the paste textarea and vice-versa. | One SOAP note per run; avoids ambiguity. |
@@ -72,7 +72,6 @@ This reuses the *same* `cdi-review` skill, standards packs, and per-doctor speci
 
 States:
 - **Running** → shared job banner: *"Running CDI review for `<doctor>` — `<elapsed>`"* (live timer, updates every 3s; D12). Run button hidden/disabled. State persists across tab navigation.
-- **ICD missing** → inline error *"ICD codes not available in this note."* No run.
 - **Failure** → inline error on the tab + transient red banner (auto-dismisses).
 - **Success** → transient *"CDI report ready"* banner (auto-dismisses); tab shows **[ Save CDI report ]** + **[ Close ]**. The held report STAYS (survives tab navigation) until Save, Close, or the next run (D11). Save → OS dialog → copies the `.docx` out → temp deleted. Close → temp deleted. Next run → prior temp deleted, then new run starts.
 
@@ -90,21 +89,21 @@ Sequence (all paths clean up the temp folder in a `finally`):
    - **paste** → write the textarea contents verbatim to `<stem>_soap_note.md` (D4).
    - **`.md` upload** → copy as-is to `<stem>_soap_note.md` (D4).
    - **`.docx` upload** → spawn the user's Python `docx → md` script (see *Open items*) → write its stdout/output to `<stem>_soap_note.md` (D4).
-4. **ICD pre-flight** (D6): read the prepared `.md`; if it has no `## ICD-10-CM Codes` heading (primary check) *and* no ICD-10 code pattern (`/\b[A-TV-Z]\d[0-9A-Z](?:\.[0-9A-Z]{1,4})?\b/`, fallback), abort with `{ ok: false, error: 'ICD codes not available in this note.' }`. No Claude call.
-5. **Resolve CDI inputs** (mirrors `src/engines/cdi.js` `buildInput`, but mode from the tab):
+4. **Resolve CDI inputs** (mirrors `src/engines/cdi.js` `buildInput`, but mode from the tab):
    - `caseDir` = temp folder (absolute)
    - `specialty` = doctor's specialty (lowercased)
    - `mode` = the tab's selection (D2)
    - `doctor` = doctor full name
    - `standardsDir` = `<NOTES_DIR>/.claude/standards`
    - Re-validate the specialty standards file exists (`standards/specialties/<specialty>.md`) — belt-and-suspenders vs the dropdown filter (D7).
-6. **Run the skill:** `prompt = buildPrompt('cdi-review', input)`; `runResult = await ctx.llm.runSkill({ prompt, model: cfg.soapModel || 'claude-sonnet-4-6', effort: 'high', label: 'cdi-manual', signal })`. The skill writes `<stem>_cdi.json` + `<stem>_cdi.md` into the temp folder.
-7. **Parse manifest** with `parseSkillManifest(runResult.text)`; on null/malformed, fall back to reading the on-disk `<stem>_cdi.json` (reuse the `synthesizeManifestFromDisk` approach from `src/engines/cdi.js:122`). If `status !== 'ok'` or no `md_path`, fail with the skill's reason.
-8. **Convert `_cdi.md` → `.docx`** via a new **DB-free** helper `convertMdToDocx(mdPath, { python, log }) → Promise<docxPath>` — just the bare `spawn(python, [.../md_to_docx.py, mdPath])` from `docx.js:55`, resolving `<stem>_cdi.docx` on exit 0. (Does **not** call `spawnDocxConversion`, which is DB-coupled.)
-9. **Hold the result** in a main-side slot (owned by `src/ipc/cdi.js`, written via an injected `setCdiResult` callback): `{ tempDir, docxPath, suggestedName: 'CDI_Review_<doctorLast>_<date>.docx' }`. Broadcast (and persist to jobState, D12) `{ type: 'cdi', status: 'success' }`. Release the job lock. The held report persists until Save/Close/next-run (D11) — it is NOT auto-deleted.
-10. **Save / Close** (separate IPC, D10): `saveCdiReport()` → `dialog.showSaveDialog(win, { defaultPath: suggestedName, filters: [{name:'Word', extensions:['docx']}] })` → copy `docxPath` to the chosen path → delete `tempDir` + clear slot. `discardCdiReport()` (the Close button) → delete `tempDir` + clear slot. Save-dialog *cancel* keeps the slot so the user can retry.
-11. **Next-run discard (D11):** `START_CDI_REVIEW` discards any pre-existing held slot (`_cleanup(tempDir)`) before starting the new run, so a back-to-back run never orphans the previous temp folder.
-12. **Cleanup invariant:** on any failure in steps 2–8, delete `tempDir` immediately and broadcast `failed`. On success, `tempDir` lives until Save / Close / next-run (D11). Navigating away from the tab does NOT delete it.
+   - **No ICD pre-flight.** The note is sent to the skill as-is; `cdi-review` does its own ICD validation against the MCP connector. (The earlier "stop if no ICD codes" gate was removed — see D6.)
+5. **Run the skill:** `prompt = buildPrompt(skillId, input)`; `runResult = await ctx.llm.runSkill({ prompt, model: cfg.soapModel || 'claude-sonnet-4-6', effort: 'high', label: 'cdi-manual', signal })`. The skill writes its report (`<stem>_cdi.{json,md}` for cdi-review) into the temp folder.
+6. **Parse manifest** with `parseSkillManifest(runResult.text)`; on null/malformed, fall back to reading the on-disk JSON (`synthesizeManifestFromDisk` from `src/engines/cdi.js`). If no `md_path`, fail with the skill's reason.
+7. **Convert the report `.md` → `.docx`** via a new **DB-free** helper `convertMdToDocx(mdPath, { python, log }) → Promise<docxPath>` — just the bare `spawn(python, [.../md_to_docx.py, mdPath])` from `docx.js:55`, resolving the `.docx` on exit 0. (Does **not** call `spawnDocxConversion`, which is DB-coupled.)
+8. **Hold the result** in a main-side slot (owned by `src/ipc/cdi.js`, written via an injected `setCdiResult` callback): `{ tempDir, docxPath, suggestedName: 'CDI_Review_<doctorLast>_<date>.docx' }`. Broadcast (and persist to jobState, D12) `{ type: 'cdi', status: 'success' }`. Release the job lock. The held report persists until Save/Close/next-run (D11) — it is NOT auto-deleted.
+9. **Save / Close** (separate IPC, D10): `saveCdiReport()` → `dialog.showSaveDialog(win, { defaultPath: suggestedName, filters: [{name:'Word', extensions:['docx']}] })` → copy `docxPath` to the chosen path → delete `tempDir` + clear slot. `discardCdiReport()` (the Close button) → delete `tempDir` + clear slot. Save-dialog *cancel* keeps the slot so the user can retry.
+10. **Next-run discard (D11):** `START_CDI_REVIEW` discards any pre-existing held slot (`_cleanup(tempDir)`) before starting the new run, so a back-to-back run never orphans the previous temp folder.
+11. **Cleanup invariant:** on any failure in steps 2–7, delete `tempDir` immediately and broadcast `failed`. On success, `tempDir` lives until Save / Close / next-run (D11). Navigating away from the tab does NOT delete it.
 
 Service-warning scanning (ElevenLabs/Claude limits, MCP auth) is inherited from `ctx.llm.runSkill`'s existing stderr/stdout regex surface — reuse as-is.
 
@@ -166,18 +165,17 @@ Event reuse: `onTemplateJobStatus` now also emits `{ type: 'cdi', status, … }`
 
 - **`npm test`** (Node):
   - `tests/unit/shared-drift.test.js` — extend to assert `CDI_MODES` matches between `src/shared/cdi-modes.js` and `renderer/constants.js`, and the new `CHANNELS` keys match `preload.js`.
-  - New unit test for the ICD pre-flight detector (has-`## ICD-10-CM Codes` → ok; bare code regex → ok; neither → blocked).
   - New unit test for the manual-CDI input normalizer (paste/`.md`/`.docx` branch selection; mutual-exclusion validation; temp-folder cleanup-on-failure).
 - **`npm run test:py`** — add `test_docx_to_md.py` once the script lands.
-- **Manual (`npm start`)** — exercise all three input modes (paste, `.md`, `.docx`), the ICD-missing stop path, the supported-specialty filter, the success → Save dialog → file-saved path, Discard, and confirm the temp folder is gone afterward and **no** `Cases/` row/folder/DB change occurred.
+- **Manual (`npm start`)** — exercise all three input modes (paste, `.md`, `.docx`), the supported-specialty filter, the success → Save dialog → file-saved path, Discard, and confirm the temp folder is gone afterward and **no** `Cases/` row/folder/DB change occurred.
 
 ---
 
 ## Docs to update (same PR)
 
 - **`CLAUDE.md`** — tab count (3 → 4: add CDI), the IPC table (5 new methods), the settings note (clarify `enableCdi`/`cdiMode` gate the *Record-tab* CDI only; the CDI tab is independent), and the code map (`src/ipc/cdi.js`, `src/jobs/cdiManual.js`, `src/shared/cdi-modes.js`, `python/docx_to_md.py`, `renderer/views/cdiView.js`).
-- **`docs/ARCHITECTURE.md`** — new subsection *Manual CDI tab* under the CDI/post-processing area, describing the ephemeral temp-folder flow and how it diverges from the audio-pipeline CDI step (no DB, no gate, mode-from-tab, ICD-presence-required).
-- **`docs/DECISIONS.md`** — dated entry: *manual CDI is fully ephemeral (temp folder, no DB), independent of global `enableCdi`/`cdiMode`, requires ICD codes already present, and reuses the same `cdi-review` skill + standards packs* — with the why (on-demand review of externally-produced notes without polluting the case store).
+- **`docs/ARCHITECTURE.md`** — new subsection *Manual CDI tab* under the CDI/post-processing area, describing the ephemeral temp-folder flow and how it diverges from the audio-pipeline CDI step (no DB, no gate, mode-from-tab, no ICD-presence gate).
+- **`docs/DECISIONS.md`** — dated entry: *manual CDI is fully ephemeral (temp folder, no DB), independent of global `enableCdi`/`cdiMode`, has no ICD-presence gate, and reuses the same `cdi-review` skill + standards packs* — with the why (on-demand review of externally-produced notes without polluting the case store).
 - After merge: `git mv` this plan to `docs/archive/plans/` and drop its row from `docs/plans/README.md`.
 
 ---

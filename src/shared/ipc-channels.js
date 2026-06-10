@@ -62,6 +62,7 @@ const CHANNELS = Object.freeze({
 
   // ---- manual CDI ----
   GET_CDI_DOCTORS:          'get-cdi-doctors',
+  GET_CDI_SKILLS:           'get-cdi-skills',
   BROWSE_CDI_SOAP_FILE:     'browse-cdi-soap-file',
   START_CDI_REVIEW:         'start-cdi-review',
   SAVE_CDI_REPORT:          'save-cdi-report',

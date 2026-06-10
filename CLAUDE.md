@@ -162,8 +162,9 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
 | `hideWindow()` | Close popup |
 | `getCdiDoctors()` | Doctors eligible for manual CDI — specialty set **and** a standards pack exists. |
+| `getCdiSkills()` | CDI skills for the tab's Skill dropdown — **folder-based discovery**: directories in the synced `.claude/skills/` whose name starts `cdi` and contain a `SKILL.md`. Returns `[{id, label}]` (`[]` ⟹ tab shows "No CDI skills"). Each skill's prompt is built by its own `buildPrompt(skillId, …)` entry (`cdi-review`, `cdi-costigen`). |
 | `browseCdiSoapFile()` | Single-file picker (`.md`/`.docx`) for the SOAP note. |
-| `startCdiReview(doctorId, mode, pastedText, filePath)` | Kick off the ephemeral manual CDI run. Returns `{ok, error?}`. Progress via `onTemplateJobStatus` (`type:'cdi'`). |
+| `startCdiReview(doctorId, skillId, mode, pastedText, filePath)` | Kick off the ephemeral manual CDI run with the chosen CDI skill. Returns `{ok, error?}`. Progress via `onTemplateJobStatus` (`type:'cdi'`). |
 | `saveCdiReport()` | Opens the OS save dialog for the held CDI `.docx`, copies it out, deletes the temp folder. |
 | `discardCdiReport()` | Deletes the held temp folder without saving. |
 

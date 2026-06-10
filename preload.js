@@ -53,8 +53,9 @@ contextBridge.exposeInMainWorld('api', {
   startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
 
   getCdiDoctors:            ()                                                      => ipcRenderer.invoke('get-cdi-doctors'),
+  getCdiSkills:             ()                                                      => ipcRenderer.invoke('get-cdi-skills'),
   browseCdiSoapFile:        ()                                                      => ipcRenderer.invoke('browse-cdi-soap-file'),
-  startCdiReview:           (doctorId, mode, pastedText, filePath)                 => ipcRenderer.invoke('start-cdi-review', doctorId, mode, pastedText, filePath),
+  startCdiReview:           (doctorId, skillId, mode, pastedText, filePath)        => ipcRenderer.invoke('start-cdi-review', doctorId, skillId, mode, pastedText, filePath),
   saveCdiReport:            ()                                                      => ipcRenderer.invoke('save-cdi-report'),
   discardCdiReport:         ()                                                      => ipcRenderer.invoke('discard-cdi-report'),
 

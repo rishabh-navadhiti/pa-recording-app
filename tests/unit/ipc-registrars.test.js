@@ -18,6 +18,7 @@ const registrars = [
   require('../../src/ipc/config').registerConfigIpc,
   require('../../src/ipc/audioUpload').registerAudioUploadIpc,
   require('../../src/ipc/status').registerStatusIpc,
+  require('../../src/ipc/cdi').registerCdiIpc,
 ]
 
 // hide-window is registered in windows/mainWindow.js, not a domain registrar.
@@ -42,13 +43,13 @@ function preloadChannels() {
   return out
 }
 
-test('all 8 registrars register without throwing', () => {
+test('all 9 registrars register without throwing', () => {
   assert.doesNotThrow(() => collectRegisteredChannels())
 })
 
-test('registrars register exactly 43 handlers', () => {
+test('registrars register exactly 49 handlers', () => {
   const channels = collectRegisteredChannels()
-  assert.strictEqual(channels.length, 43, `expected 43 handlers, got ${channels.length}: ${channels.join(',')}`)
+  assert.strictEqual(channels.length, 49, `expected 49 handlers, got ${channels.length}: ${channels.join(',')}`)
 })
 
 test('no duplicate channel registrations', () => {
