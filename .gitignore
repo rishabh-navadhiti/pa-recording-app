@@ -9,3 +9,6 @@ Thumbs.db
 # tooltip label, etc.). Must never be committed — staging vs prod is a
 # property of the local install, not of branch contents.
 .staging-marker
+
+__pycache__/
+*.pyc
