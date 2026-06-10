@@ -134,6 +134,10 @@ OK "Python packages OK"
 Step 9 "Installing Node packages..."
 Push-Location $installDir
 npm install --silent
+# electron's post-install download can fail silently with --silent; run it
+# explicitly so we get an error if the binary doesn't download.
+Write-Host "  Downloading Electron binary..." -ForegroundColor Gray
+node node_modules/electron/install.js
 # Rebuild better-sqlite3 for the bundled Electron runtime (native addon — the
 # npm install above builds it for system Node.js, which has a different ABI).
 Write-Host "  Rebuilding native modules for Electron..." -ForegroundColor Gray
