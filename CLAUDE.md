@@ -20,31 +20,75 @@ All output lands in `~/Documents/AI Medical Notes/Cases/{patient}_{YYYY-MM-DD}/`
 ```
 main.js                       Electron main process — tray, popup window, state machine, IPC, pipeline orchestration, child-process management
 preload.js                    contextBridge → window.api — the ONLY surface renderer can use
-renderer/
-  index.html                  Main window UI (280×420, three tabs: Record + Pre-chart + Templates)
-  renderer.js                 State-driven UI; renders by current STATE; owns timer + forms
+renderer/                     ESM module graph (no bundler — native file:// imports; sandboxed, can't require src/shared)
+  index.html                  Main window UI (280×420, three tabs: Record + Pre-chart + Templates); loads app.js as type=module
+  app.js                      viewRouter — renders the active view by current STATE; owns the state subscription
+  views/                      one module per screen ({ mount, update, unmount }) — record, prechart, templates, settings, upload, …
+  components/                 shared building blocks: visible, timer, fileListField, button, confirm
+  ipc/client.js               the single window.api seam — `ipc` Proxy forwarding lazily to window.api
+  constants.js                ESM copies of STATE / STATUS_LABELS / DOCTOR_SPECIALTIES (drift-tested vs src/shared)
   styles.css                  Dark theme, single file
-  status.html / status.js     Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
+  status.html / statusPanel.js  Floating mini-window (300×380) showing per-case background-pipeline progress; opened via tray menu
 python/
   record.py                   Audio capture. Win: PyAudioWPatch / WASAPI loopback. Mac: sounddevice / BlackHole. Reads stdin commands: stop, pause, resume.
-  transcribe.py               ElevenLabs scribe_v1 → diarised transcript.md
   md_to_docx.py               Markdown → .docx via python-docx (run on every transcript and SOAP note)
-  extract_attachments.py      Combines multiple prechart files (.md/.txt/.docx/.pdf) into a single .md for the edit-note skill
+  (transcribe.py + extract_attachments.py ported to Node in Phase 5 — see src/pipeline/elevenLabs.js + src/pipeline/attachments.js)
 notes-claude/                   Bundled Claude Code workspace — copied at runtime to <NOTES_DIR>/.claude
   skills/generate-note/           SOAP-note skill, invoked by `claude -p "generate a note ..."`
   skills/create-doctor-profile/   Template builder skill, invoked by `claude -p "create a doctor profile ..."`
   skills/update-doctor-profile/   Template updater skill, invoked by `claude -p "update doctor profile. Doctor: ..."`
   skills/edit-note/               Pre-chart skill, invoked by `claude -p "edit note. Case: ..."`
+  skills/add-icd-codes/           ICD-10 coding skill, invoked by `claude -p "add ICD codes. Soap note: ..."` — appends an ICD-10-CM Codes table to a SOAP note via the claude.ai ICD-10 MCP connector
   skills/cdi-review/              CDI Co-Pilot skill (v1, ortho only), invoked by `claude -p "review cdi. Case: ..."` — produces <case>_cdi.json + .md. Standalone in v1; app pipeline integration is Plan 2.
   standards/                      Standards packs consumed by cdi-review (and future review engines): icd10_fy2026.md, ahima_acdis_2026.md, specialties/orthopedics.md. README.md explains naming + update policy.
-  scripts/, draft/, settings.json
+  .mcp.json                       Project-scope MCP config — copied verbatim by writeMcpConfig() (config/mcp.js, called from startup/bootstrapNotesDir.js + src/update/autoUpdate.js) to <NOTES_DIR>/.mcp.json on every skills sync so `claude -p` (cwd: NOTES_DIR) always sees the ICD-10 connector
+  settings.json
 assets/tray-icon.png
 docs/                         See "Documentation conventions" below
+src/                          Modular app code (Phases 0-5). main.js is now a thin bootstrap + shims + a deps-assembling registerIpcHandlers.
+  shared/                       Single-sourced enums: state.js, pipeline-status.js, ipc-channels.js (CHANNELS), specialties.js — imported by main.js + preload; the sandboxed renderer keeps drift-tested copies in renderer/constants.js
+  llm/                          LLM seam: provider.js (interface) + claudeCliProvider.js (arg-array spawn, no shell:true), childRunner.js, usage.js; skill-io/{prompts,markers,manifest}.js
+  engines/                      soap/icd/cdi descriptors + registry.js + engineRunner.js (the shared per-engine runner: gates→status→startEvent→runSkill→classify→interpret→finishEvent→persist→service-warning→stage-complete)
+  pipeline/                     chain.js (single+multi per-case chain), ingest.js, transcription.js (+ elevenLabs.js — Node ElevenLabs client/formatter), attachments.js (Node prechart combine — mammoth/.docx, pdf-parse/.pdf), docx.js, multiPatient.js, caseStatus.js, artifacts.js
+  jobs/                         jobDispatcher.js (runJob: acquire lock → ctx.llm.runSkill → abort/finally) + templateCreate/templateUpdate/prechart descriptors. (The lock/state object itself is top-level jobs/jobRunner.js → createJobRunner → ctx.stores.jobs.)
+  ipc/                          envelope.js + 8 per-domain registrars (lifecycle/recording/doctors/templates/prechart/config/audioUpload/status) — 43 handlers
+  update/autoUpdate.js          git-pull updater (Phase 6 → electron-updater)
+context/                      appContext.js (the ctx) + stateMachine, sessionStore, recordingsStore, recorderController
+config/                       paths, settings (cached), secrets, jobState, mcp
+platform/                     index.js + windows.js / macos.js (the platform seam)
+windows/                      mainWindow.js (guarded send facade), statusWindow.js, tray.js
+startup/                      bootstrap.js (ordered whenReady steps) + bootstrapNotesDir.js
+log/logger.js                 levels + redact(PII)
+db/                           hardened: transactional migrations, withDb.js, injectable getDb
 install.ps1, setup.ps1,
-uninstall*.ps1, launch.vbs    Windows installer / launcher scripts
+uninstall*.ps1                Windows installer / launcher scripts
 ```
 
 `<NOTES_DIR>` = the folder the user picked on first launch (stored in repo `.env` as `NOTES_DIR_PATH`). Conventionally `~/Documents/AI Medical Notes`.
+
+---
+
+## Working in the refactored codebase (read before adding features)
+
+The Phase 0–5 refactor dissolved the old `main.js` monolith. main.js is now a ~675-line bootstrap; logic lives in `src/`, `context/`, `config/`, `platform/`, `startup/`, `db/`, `log/`, and (renderer-side) `renderer/views|components|ipc`. The patterns below are how new work should fit in — follow them rather than re-growing main.js.
+
+**The `ctx` object (dependency injection).** Built by `context/appContext.js`, assembled in `startup/bootstrap.js`, held as a single module-level `ctx` in main.js. It carries everything the old globals used to be:
+- `ctx.config` — cached settings store (`config/settings.js`); `ctx.config.get()` / `.save()`.
+- `ctx.llm` — the **LLM provider seam** (`src/llm/claudeCliProvider.js`). All Claude calls go through `ctx.llm.runSkill({ prompt, model, effort, tag, label })`. **There is no `spawnClaude` anymore.** The provider spawns with `shell:false` + an arg array (prompt is a separate argv element, so shell metacharacters are inert) — never reintroduce `shell:true` or string-interpolated prompts.
+- `ctx.paths` — resolved paths (`config/paths.js`), no mutable path globals.
+- `ctx.platform` — Win/Mac seam (`platform/index.js` → `windows.js`/`macos.js`): `isStaging()`, `hideInternal()`, `notify()`, `resolvePython()`. Put OS-specific behavior here, not inline `process.platform` checks.
+- `ctx.stores.{state, session, recordings, recorder, jobs}` — the former ~18 mutable main.js globals, now encapsulated stores (`context/*.js`).
+- `ctx.renderer.send(...)` / `ctx.sendStatus(...)` — the single **guarded** path to the windows (never reach for `win` directly).
+- `ctx.db`, `ctx.log`.
+main.js keeps thin shims (`log`, `setState`, `readSettings`, `spawnDocxConversion`, `spawnTemplateCreation`, …) that just delegate to `ctx` for backwards-compatible call sites; new code should take `ctx` (or `appCtx` + a `deps` bag) as a parameter and never reach for module globals.
+
+**Adding a post-processing engine** (a new "review/generate on the SOAP note" step — e.g. Workers-Comp, E/M scorer): write a descriptor in `src/engines/<name>.js` exposing the standard shape (`id`, `skillId`, `jobKind`, `stage`, `gates(ctx, caseCtx)`, `buildInput()`, `interpret()`, `persist()`, `render()`, `model()`, `effort`) — mirror `icd.js`/`cdi.js`; register it in `src/engines/registry.js` (the ordered array the chain iterates); add a DB migration under `db/migrations/`; add the skill folder under `notes-claude/skills/`. The shared `runEngine()` (`src/engines/engineRunner.js`) drives every descriptor through the same lifecycle. No monolith edits. (See `docs/refactor/02-target-architecture.md` for the full engine-framework design.)
+
+**Adding a renderer view** (a new screen/overlay): create `renderer/views/<name>.js` exporting `{ mount, update, unmount }`, wire it into the router in `renderer/app.js`, and call the backend only through the `ipc` proxy in `renderer/ipc/client.js` (forwards to `window.api`). The renderer is **sandboxed ESM** — it cannot `require` anything from `src/`; shared enums are drift-tested copies in `renderer/constants.js`. Shared widgets live in `renderer/components/` (`fileListField`, `timer`, `button`, `confirm`, `visible`). (Future heavy/stateful screens — e.g. a unified review surface — may adopt React/Vue via the same `{mount,update,unmount}` seam; see `docs/refactor/07` B15.)
+
+**Background jobs** (template-create/update, prechart): defined as descriptors (`src/jobs/{templateCreate,templateUpdate,prechart}.js`) and run through `src/jobs/jobDispatcher.js`'s `runJob()`, which acquires the single-flight lock (`ctx.stores.jobs`, created by top-level `jobs/jobRunner.js`). Don't reintroduce a `templateJobProc` global.
+
+**Tests.** Pure modules are unit-testable in isolation (`tests/unit/`), integration tests cover the migration-replay + recorder protocol (`tests/integration/`), Python has its own suite (`tests/python/`). Add tests with the module you extract — that's the whole point of the seams. `npm test` runs unit+integration; CI runs on push.
 
 ---
 
@@ -60,7 +104,7 @@ uninstall*.ps1, launch.vbs    Windows installer / launcher scripts
 | `PAUSED` | Recording mid-flight, audio paused | Pause button |
 | `PROCESSING` | Patient-name form open, awaiting input | Stop Recording (transient — popped immediately after name resolved) |
 
-Defined identically in [main.js](main.js) (`STATE`) and [renderer/renderer.js](renderer/renderer.js) (`STATE`). They MUST match. Renderer subscribes via `api.onStateChange`.
+Defined identically in [main.js](main.js) (`STATE`, imported from `src/shared/state.js`) and [renderer/constants.js](renderer/constants.js) (`STATE`). They MUST match — guarded by the drift test in [tests/unit/shared-drift.test.js](tests/unit/shared-drift.test.js). Renderer subscribes via `api.onStateChange`.
 
 After a recording completes, `stop-recording` returns to `SESSION_ACTIVE` immediately so the next case can begin while transcription/SOAP generation run in the background.
 
@@ -68,15 +112,16 @@ After a recording completes, `stop-recording` returns to `SESSION_ACTIVE` immedi
 
 ## Recording pipeline (the load-bearing flow)
 
-1. **Start Recording** ([main.js:833](main.js#L833)) — spawn `python/record.py --output <tmp>/rec_<ts>.mp3`. Audio writes incrementally to a WAV in tmp.
-2. **Stop Recording** ([main.js:876](main.js#L876)) — write `stop\n` to the Python process's **stdin** (NOT kill — see Decision #1 in `docs/DECISIONS.md`). Python flushes the WAV, converts to MP3, exits 0.
+1. **Start Recording** (`src/ipc/recording.js`, `start-recording` handler) — spawn `python/record.py --output <tmp>/rec_<ts>.mp3`. Audio writes incrementally to a WAV in tmp. The live process is held by `ctx.stores.recorder` (`context/recorderController.js`).
+2. **Stop Recording** (`src/ipc/recording.js` → `ctx.stores.recorder.stop()` in `context/recorderController.js`) — write `stop\n` to the Python process's **stdin** (NOT kill — see Decision #1 in `docs/DECISIONS.md`). Python flushes the WAV, converts to MP3, exits 0.
 3. Patient-name form shown; main awaits `submit-patient-name`.
 4. Case folder built: `<NOTES_DIR>/Cases/{patient}_{YYYY-MM-DD}/`. Temp MP3 renamed in.
-5. `spawnTranscription` → `python/transcribe.py` → `transcript.md` (diarised).
+5. `spawnTranscription` → ElevenLabs scribe_v2 via Node (`src/pipeline/elevenLabs.js`, native `fetch`) → `transcript.md` (diarised). No longer a Python child.
 6. On transcribe success: `spawnSoapGeneration` → `claude -p "generate a note using template X and transcript Y"` (cwd = `<NOTES_DIR>`). Skill `generate-note` writes one `.md` per patient into the case folder and ends its final response with a single-line JSON manifest declaring what it wrote (paths, patient names, `multi_patient` flag, per-case status). The skill no longer generates DOCX and no longer creates sub-folders.
-7. On SOAP close: `parseSkillManifest()` reads the manifest from the skill's final assistant text.
-   - **Single-patient** (`multi_patient: false`): `spawnDocxConversion` runs against the declared `.md` — generates the `.docx`, hides the `.md` on Windows, updates the existing `cases` row to `completed`. `transcript.docx` is generated in parallel after transcription as before.
-   - **Multi-patient** (`multi_patient: true`): for each `ok`/`partial` entry in `cases[]`, the app creates a child folder next to the recording folder using the single-patient convention (`<slug>_<YYYY-MM-DD>/`), copies the parent's MP3, `transcript.md`, and `transcript.docx` in with single-patient naming, copies the SOAP `.md` in renamed to `<folder>_soap_note.md`, inserts a child `cases` row, and spawns docx on the child. The recording (audit) folder retains the original MP3, transcript, and all the `.md` SOAP files the skill wrote; on Windows those `.md` files are hidden. The parent row is marked `completed` with `soap_note_path=NULL`. Non-DB manifest fields (`visit_type`, `chief_complaint`, `placeholders`, `warnings`, `summary`) are logged to `app.log` only.
+7. On SOAP close (`spawnSoapGeneration` in main.js, a thin shim): `parseSkillManifest()` reads the manifest from the skill's final assistant text, then the per-case post-processing chain runs via **`src/pipeline/chain.js`** — `runCaseChain()` (single-patient) or `runMultiPatientChain()` (multi-patient). The chain runs **ICD → CDI → docx**: ICD and CDI are **engine descriptors** (`src/engines/icd.js`, `src/engines/cdi.js`) executed through `runEngine()` (`src/engines/engineRunner.js`); docx is `spawnDocxConversion()` (`src/pipeline/docx.js`) × {soap, cdi}. There is no `spawnIcdCoding`/`spawnCdiReview` anymore — those are engine descriptors now.
+   - **Single-patient** (`multi_patient: false`): the **ICD engine** appends an `## ICD-10-CM Codes` table to the declared `.md` (best-effort — failure logs + emits `service-warning` but the chain continues). Its `gates()` short-circuit before Claude runs when global `enableIcd` is off. Then the **CDI engine** runs — its `gates()` short-circuit before Claude when global `enableCdi` is off, the doctor has no specialty, or there's no standards file for the specialty (the case is marked skipped). When the gates pass, the skill produces `<case>_cdi.json` + `<case>_cdi.md`. Then `spawnDocxConversion` runs against the soap `.md` (now with ICD codes baked in) — generates the `.docx`, hides the `.md` on Windows, updates the `cases` row to `completed`. When CDI produced an md, a second `spawnDocxConversion` runs on the cdi `.md` (generates `<case>_cdi.docx`, sets `cdi_docx_path`). `transcript.docx` is generated in parallel after transcription.
+     - ⚠️ **KNOWN REGRESSION (flagged 2026-06-09):** the CDI engine's `persist()` is currently a no-op and `runEngine` never calls the engine `render()`, so the `cases.cdi_*` summary columns and `cdi_flags` rows are **not** being written (only `cdi_docx_path` is, via docx.js). CDI still runs and writes its `.json/.md/.docx`; only the DB persistence regressed during the refactor. Re-wire `cdi.persist()` to call `dbCases.updateCaseCdi` + `dbCdiFlags.insertFlags` (reading `<case>_cdi.json`) and have `runEngine` apply `render()` to the status store. See `docs/DB-SCHEMA.md` §3.3 + the DECISIONS entry.
+   - **Multi-patient** (`multi_patient: true`): `runMultiPatientChain()` does a planning pass (`planChildCases` in `src/pipeline/multiPatient.js`) and publishes all children as `queued` to the status UI, then for each `ok`/`partial` entry it creates a child folder (`<slug>_<YYYY-MM-DD>/`), copies the parent's MP3 + `transcript.md` + `transcript.docx` with single-patient naming, copies the SOAP `.md` in renamed to `<folder>_soap_note.md`, inserts a child `cases` row (via `dbCases.createCase`), then runs `runCaseChain()` on the child (ICD → CDI → docx, sequential across children so the MCP connector + Anthropic quota aren't hit in parallel and per-case log blocks don't interleave). The recording (audit) folder retains the original MP3, transcript, and all `.md` SOAP files the skill wrote — **never ICD-coded, never CDI-reviewed, never docx-converted**; on Windows those `.md` files are hidden. The parent row is marked `completed` with `soap_note_path=NULL` and all `cdi_*` columns NULL. Non-DB manifest fields (`visit_type`, `chief_complaint`, `placeholders`, `warnings`, `summary`) are logged to `app.log` only — see [07-open-questions B13](docs/refactor/07-open-questions-and-decisions.md) for the plan to persist `visit_type`/`chief_complaint` for gated engines.
 8. State already returned to `SESSION_ACTIVE` after step 4 — pipeline runs detached.
 
 Per-step logging tagged with `[<case>]` and `[<phase>]` in `<NOTES_DIR>/app.log`.
@@ -87,12 +132,12 @@ Service-warning surface: stderr/stdout of transcribe and claude is regex-scanned
 
 ## Template + Pre-chart pipelines
 
-All three Claude background jobs (template create, template update, pre-chart edit-note) share the same `templateJobProc` lock (only one at a time) and persist their state to `<NOTES_DIR>/.template_job.json`. The job object includes a `type` field (`'create'`, `'update'`, or `'prechart'`) so the renderer banner shows the right verb.
+All three Claude background jobs (template create, template update, pre-chart edit-note) are descriptors (`src/jobs/{templateCreate,templateUpdate,prechart}.js`) run by `runJob()` in `src/jobs/jobDispatcher.js`, which shares a single-flight lock (`ctx.stores.jobs`, only one at a time) and persists state to `<NOTES_DIR>/.template_job.json`. The job object includes a `type` field (`'create'`, `'update'`, or `'prechart'`) so the renderer banner shows the right verb.
 
 **Template create (Templates tab):**
 1. User picks doctor name + sample-note files in the Templates tab.
 2. `start-template-creation` — files staged into `<NOTES_DIR>/Templates/_staging/<lastname>/`.
-3. `spawnTemplateCreation` → `claude -p "create a doctor profile for ... from source folder ..."` with `--model claude-opus-4-7`, `CLAUDE_CODE_EFFORT_LEVEL=max`.
+3. `spawnTemplateCreation` (main.js shim → `runJob(templateCreateJob)`, `src/jobs/templateCreate.js`) → `claude -p "create a doctor profile for ... from source folder ..."` with `--model <templateModel>` (default `claude-opus-4-8`) and `CLAUDE_CODE_EFFORT_LEVEL=<templateEffort>` (default `max`).
 4. Skill `create-doctor-profile` writes `<NOTES_DIR>/templates/<lastname>.md`.
 5. On success: doctor auto-registered in `settings.json`, staging folder deleted.
 
@@ -105,7 +150,7 @@ All three Claude background jobs (template create, template update, pre-chart ed
 **Pre-chart (Record tab → Pre-chart button):**
 1. From SESSION_ACTIVE the user clicks **Pre-chart**, picks an existing patient case (dropdown of recent cases or Browse), types instructions, and optionally attaches one or more files (`.md`/`.txt`/`.docx`/`.pdf`).
 2. `start-prechart-job` — main.js parses `**Doctor:**` from the case's existing `*_soap_note.md` to resolve the doctor's template (falls back to currently-selected doctor).
-3. If files were attached: `python/extract_attachments.py` combines them into a single `prechart_<ts>.md` in OS temp.
+3. If files were attached: `src/pipeline/attachments.js` (Node — `mammoth` for `.docx`, `pdf-parse` for `.pdf`) combines them into a single `prechart_<ts>.md` in OS temp.
 4. `spawnPrechartJob` → `claude -p "edit note. Case: <case>. Template: <tmpl>. Attachment: <combined-or-empty>. Instructions: <text>"` with `--model <soapModel>`, `CLAUDE_CODE_EFFORT_LEVEL=high`.
 5. Skill `edit-note` backs up the existing soap note to `<stem>_soap_note_backup_<ts>.md`, regenerates with the new content, overwrites in place.
 6. On success: temp combined attachment deleted, `spawnDocxConversion` re-runs against the updated soap note.
@@ -121,31 +166,30 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | Method | Purpose |
 |---|---|
 | `getState()` | Current state at startup |
+| `getBuildInfo()` | `{isStaging, version, gitSha}` — used by renderer to show STAGING badge |
 | `startSession() / stopSession()` | Session lifecycle (returns `{ok, error?}` — `no-doctors`, `cancelled`) |
 | `startRecording() / stopRecording()` | Recording lifecycle |
 | `pauseRecording() / resumeRecording() / discardRecording()` | Mid-recording control |
 | `submitPatientName(name)` | Resolves the awaited patient-name promise in stop-recording |
 | `getConfigStatus()` | `{elevenLabsKeyMissing, elevenLabsKeyInvalid, noDoctors, notesDirMissing}` |
+| `getElevenLabsKey()` | Returns the configured ElevenLabs key for the Settings view |
 | `saveElevenLabsKey(key)` | Writes to repo `.env` |
-| `getDoctors() / addDoctor / updateDoctor / updateDoctorTemplate / removeDoctor / selectDoctor` | Doctor CRUD + picker resolution |
-| `browseAudioFile() / processAudioFile(path, name)` | Audio-file upload flow |
-| `browseNotesFiles() / startTemplateCreation / getTemplateJobStatus / cancelTemplateCreation / dismissTemplateJob` | Template-creation flow |
+| `getDoctors() / addDoctor(name) / updateDoctor(id, name) / updateDoctorTemplate(id) / updateDoctorSpecialty(id, specialty) / removeDoctor(id) / selectDoctor(id)` | Doctor CRUD + picker resolution |
+| `browseAudioFile() / processAudioFile(filePath, patientName)` | Audio-file upload flow |
+| `browseNotesFiles() / startTemplateCreation(doctorName, filePaths) / getTemplateJobStatus() / cancelTemplateCreation() / dismissTemplateJob()` | Template-creation flow |
 | `startTemplateUpdate(doctorName, corrections, correctionsFile, sampleFiles) / browseCorrectionsFile() / getDoctorsWithTemplates()` | Template-update flow (corrections can be typed AND/OR loaded from a file; optional extra sample notes for additional context) |
 | `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(doctorId, caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
 | `getSessionRecordings() / openStatusWindow() / closeStatusWindow()` | Floating status window for tracking concurrent background pipelines |
-| `openSoapNote(filePath)` | Opens the SOAP `.docx` in the OS default handler |
-| `getElevenLabsKey()` | Returns the configured ElevenLabs key for the Settings view |
-| `browsePrechartFiles() / listRecentPatientCases() / browsePatientCaseFolder() / startPrechartJob(caseDir, instructions, attachmentPaths)` | Pre-chart (edit-note) flow — status uses the shared `getTemplateJobStatus` channel |
+| `openSoapNote(filePath)` | Opens the SOAP `.docx` in the OS default handler (confined to CASES_DIR) |
 | `getSettings() / saveSettings(s)` | `settings.json` in NOTES_DIR |
 | `listAudioDevices()` | Spawns `record.py --list-devices` |
 | `getNotesDir() / changeNotesDir()` | Notes folder picker |
 | `hideWindow()` | Close popup |
-| `openSoapNote(filePath)` | Opens SOAP note `.docx` via OS default handler |
 
 Events (`on*`):
 `onStateChange`, `onShowPatientForm`, `onSetupWarning`, `onAutoStartRecording`, `onPickDoctor`, `onServiceWarning`, `onTemplateJobStatus`, `onRecordingStatusUpdate` (driving the floating status window).
 
-When adding an IPC method: add to `preload.js`, register handler in `registerIpcHandlers()` in `main.js`, document the call in this table.
+When adding an IPC method: (1) add the literal channel string to `CHANNELS` in [src/shared/ipc-channels.js](src/shared/ipc-channels.js); (2) add the `ipcMain.handle(...)` to the appropriate per-domain registrar in `src/ipc/` (lifecycle / recording / doctors / templates / prechart / config / audioUpload / status — pick by domain). Registrars receive `(ipcMain, appCtx, deps)`; pull any main.js helpers you need from the `deps` bag assembled in `registerIpcHandlers()` in main.js, and prefer `ctx.*` over reaching for state; (3) expose the method in `preload.js` (channel strings are literals there — the preload is sandboxed and can't `require` the CHANNELS module; the drift test asserts they stay in sync); (4) document the call in this table.
 
 ---
 
@@ -154,14 +198,15 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 | File | Owned by | Purpose |
 |---|---|---|
 | `<repo>/.env` | App writes; user-editable | `ELEVENLABS_API_KEY`, `NOTES_DIR_PATH` |
-| `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `soapModel`, `templateModel`, `templateEffort` — **`doctors[]` moved to `app.db` after first launch** |
+| `<NOTES_DIR>/settings.json` | App writes; user-editable | `autoRecord`, `manualDeviceSelection`, `selectedDeviceIndex`, `soapModel`, `templateModel`, `templateEffort`, `enableIcd` (gates the per-case ICD coding step), `enableCdi`, `cdiMode` (the last two gate the per-case CDI review step). **Invariant: `enableCdi` on ⟹ `enableIcd` on** — CDI needs ICD codes in the note, so enabling CDI forces ICD on (enforced in `config/settings.js` — the settings store's normalizer — and the `save-settings` handler in `src/ipc/config.js`). — **`doctors[]` moved to `app.db` after first launch** |
 | `<NOTES_DIR>/app.db` | App writes only | SQLite metadata + index store: `doctors`, `sessions`, `cases`, `processing_events`. Canonical artifacts stay on disk; DB stores references + structured metadata. WAL mode; safe to delete (rebuilt on next launch, doctors restored from `settings.doctors.backup.json`). |
 | `<NOTES_DIR>/settings.doctors.backup.json` | App writes once | One-time backup of `settings.json doctors[]` written when doctors are migrated to `app.db`. Hand-recovery only — not read by app code. |
 | `<NOTES_DIR>/.template_job.json` | App writes only | Live + last-finished background-job state (template create/update + pre-chart share this file) |
 | `<NOTES_DIR>/.claude/` | App copies from `notes-claude/` on every startup | Skills + Claude config consumed by `claude -p` |
+| `<NOTES_DIR>/.mcp.json` | App writes only (via `writeMcpConfig()` in `config/mcp.js` on every skills sync) | Project-scope MCP config — wires the `claude.ai ICD-10` connector for `claude -p` invocations (cwd: `NOTES_DIR`). Verbatim mirror of `notes-claude/.mcp.json`; overwritten on every sync. |
 | `<NOTES_DIR>/app.log` | App appends | Single log stream from main + Python children |
 
-`settings.json` defaults are in `DEFAULT_SETTINGS` ([main.js:77](main.js#L77)) — keep additions there, not scattered.
+`settings.json` defaults are in `DEFAULT_SETTINGS` ([config/settings.js](config/settings.js), imported by main.js) — keep additions there, not scattered.
 
 ---
 
@@ -175,7 +220,7 @@ When adding an IPC method: add to `preload.js`, register handler in `registerIpc
 
 ## Auto-update
 
-On launch, [main.js:538](main.js#L538) runs `git pull --ff-only` in the repo. If new commits land, `notes-claude/` is re-synced into `<NOTES_DIR>/.claude/` and a tray-tooltip + OS notification ask the user to restart. Failures are logged and ignored — never blocks startup.
+On launch, `checkForUpdates()` ([src/update/autoUpdate.js](src/update/autoUpdate.js), wired in via `bootstrap()`) runs `git pull --ff-only` in the repo. If new commits land, `notes-claude/` is re-synced into `<NOTES_DIR>/.claude/`, `.mcp.json` is rewritten, `runPostUpdateSetup` runs `npm install` + `electron-rebuild -f -w better-sqlite3`, then a tray-tooltip + OS notification ask the user to restart. Failures are logged and ignored — never blocks startup. (Replaced by electron-updater in Phase 6 — see `docs/refactor/04`.)
 
 ---
 
@@ -183,10 +228,10 @@ On launch, [main.js:538](main.js#L538) runs `git pull --ff-only` in the repo. If
 
 These are load-bearing. Read [docs/DECISIONS.md](docs/DECISIONS.md) before changing them.
 
-1. **The state machine** — values in `STATE` (main.js + renderer.js) must stay in sync.
-2. **The stdin-stop protocol** ([main.js:888](main.js#L888)) — `stop-recording` writes `stop\n` to Python's stdin. Do NOT switch to `kill()`/`SIGTERM` — TerminateProcess on Windows skips Python's WAV-flush + MP3 convert.
-3. **Skills sync** ([main.js:629](main.js#L629)) — `notes-claude/` is the source of truth, copied to `<NOTES_DIR>/.claude/` on every launch. Don't store skill state inside `<NOTES_DIR>/.claude/` directly.
-4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"` and ends its final response with a **single-line JSON manifest** matching the `schema_version:1` shape defined in [notes-claude/skills/generate-note/SKILL.md](notes-claude/skills/generate-note/SKILL.md) Step 7 (`status` / `multi_patient` / `recording_folder` / `cases[].{patient_name,doctor_lastname,visit_type,chief_complaint,soap_note_md,placeholders,warnings,status}` / `warnings`); main.js consumes that manifest via `parseSkillManifest()` (in [parseSkillManifest.js](parseSkillManifest.js)) — any prose the skill emits before the manifest is fine, but the manifest **must be the last line** of the final assistant text. `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [python/extract_attachments.py](python/extract_attachments.py) before the skill is invoked); `cdi-review` parses `Case: <abs-case-dir>. Specialty: <name>. Mode: <balanced|compliance|aggressive>. Doctor: <name>. Standards: <abs-standards-dir>` and emits one terminal line — `CDI_OK: <path> · <N> flags · quality <X>/100`, `CDI_SKIPPED: unsupported specialty '<name>'`, or `CDI_FAIL: <reason>` (Plan 2 will grep this from main.js). The skills' Step 0/1 expects these exact formats.
+1. **The state machine** — values in `STATE` (main.js via `src/shared/state.js` + `renderer/constants.js`) must stay in sync.
+2. **The stdin-stop protocol** ([context/recorderController.js](context/recorderController.js) — the `stop()` method) — `stop-recording` writes `stop\n` to Python's stdin via the recorder controller. Do NOT switch to `kill()`/`SIGTERM` — TerminateProcess on Windows skips Python's WAV-flush + MP3 convert.
+3. **Skills sync** ([startup/bootstrapNotesDir.js](startup/bootstrapNotesDir.js), also re-run by [src/update/autoUpdate.js](src/update/autoUpdate.js) after a pull) — `notes-claude/` is the source of truth, copied to `<NOTES_DIR>/.claude/` on every launch. Don't store skill state inside `<NOTES_DIR>/.claude/` directly.
+4. **Skill prompt signatures** — `generate-note` parses `using template "X" and transcript "Y"` and ends its final response with a **single-line JSON manifest** matching the `schema_version:1` shape defined in [notes-claude/skills/generate-note/SKILL.md](notes-claude/skills/generate-note/SKILL.md) Step 7 (`status` / `multi_patient` / `recording_folder` / `cases[].{patient_name,doctor_lastname,visit_type,chief_complaint,soap_note_md,placeholders,warnings,status}` / `warnings`); main.js consumes that manifest via `parseSkillManifest()` (in [src/llm/skill-io/manifest.js](src/llm/skill-io/manifest.js)) — any prose the skill emits before the manifest is fine, but the manifest **must be the last line** of the final assistant text. `create-doctor-profile` parses `for "<name>" from source folder "<path>"`; `update-doctor-profile` parses `Doctor: <name>. Template: <path>. Corrections: <text>`; `edit-note` parses `Case: <case>. Template: <tmpl>. Attachment: <path-or-empty>. Instructions: <text>` (single attachment — multi-file Pre-chart is pre-combined by [src/pipeline/attachments.js](src/pipeline/attachments.js) before the skill is invoked); `add-icd-codes` parses `Soap note: "<rel-or-abs-soap-md-path>".` and emits one of `ICD_OK: <N> codes added to <path>` / `ICD_SKIPPED: no diagnoses found in <path>` / `ICD_ERROR: <reason>` on stdout (main.js scans the combined stdout+stderr for MCP-auth and rate-limit patterns to surface `service-warning` IPC); `cdi-review` parses `Case: <abs-case-dir>. Specialty: <name>. Mode: <balanced|compliance|aggressive>. Doctor: <name>. Standards: <abs-standards-dir>` and emits a **JSON manifest** as the last line of its final assistant text — schema in [notes-claude/skills/cdi-review/SKILL.md](notes-claude/skills/cdi-review/SKILL.md) Step 9 (`schema_version:1`, `skill:'cdi-review'`, `status:'ok'|'skipped'|'failed'`, plus `json_path`/`md_path`/`flag_count`/`flag_counts`/`quality_score`/`medical_necessity_status`/`claim_defense_readiness`/`clinician_approval_required`/`icd_validated`/`skipped_reason`/`error`). the **CDI engine** (`src/engines/cdi.js`, run through `runEngine()`) consumes the manifest via `parseSkillManifest()` in its `interpret()` (same defensive layered parser as `generate-note`); if the manifest line is missing or malformed, it falls back to reading the on-disk `<case>_cdi.json` (`synthesizeManifestFromDisk`) to recover the run state — that fallback is the load-bearing reliability layer and is intact. (Note: see the §7 regression flag — the *persistence* of the recovered result into `cdi_*`/`cdi_flags` is currently a no-op and needs re-wiring.) The **per-flag schema inside the full `<case>_cdi.json`** (distinct from the outer manifest above) includes `action` (required — one imperative TL;DR line per flag) and `reimbursement_impact` (optional, nullable — a billing signal in outpatient units, mostly null); both persist to the `cdi_flags` table. See [notes-claude/skills/cdi-review/SKILL.md](notes-claude/skills/cdi-review/SKILL.md) Step 3 for the per-flag schema. **`cdi-review` MUST validate every ICD code it emits (`current_code`, `suggested_codes[]`, `code_validation`) against the ICD-10 MCP connector before output, and must not raise a "needs more specificity" flag unless the connector confirms the more-specific child code exists** — the connector is ground truth and **wins over the prose standards packs** when they disagree about code existence or available specificity (the packs are heuristics and have contained wrong claims, e.g. a false De Quervain laterality axis; see the 2026-06-02 DECISIONS addendum). The skills' Step 0/1 expects these exact formats.
 
 ---
 
@@ -217,13 +262,13 @@ feature/* ──► develop ──► staging ──► main
 
 ### Staging detection
 
-A staging build is **not** identified by branch name — it's identified by the local file `.staging-marker` in the install directory. The marker is written by `install-staging.ps1` and is `.gitignored`, so it can never leak into a user's production install regardless of which branch the code is on. Read by [`isStagingBuild()`](main.js) on startup. When true:
+A staging build is **not** identified by branch name — it's identified by the local file `.staging-marker` in the install directory. The marker is written by `install-staging.ps1` and is `.gitignored`, so it can never leak into a user's production install regardless of which branch the code is on. Read by `ctx.platform.isStaging()` (defined in `platform/windows.js` / `platform/macos.js`, surfaced via `platform/index.js`) on startup. When true:
 
 - The header shows a yellow `STAGING` badge ([renderer/index.html](renderer/index.html), `#staging-badge`).
 - Update notifications and the tray tooltip include `(staging)` in the title.
 - `[Build: STAGING ...]` is logged at startup.
 
-If you add staging-mode behavior, gate it on `isStagingBuild()` in main.js or on `api.getBuildInfo().isStaging` in the renderer — never on branch name and never on a committed file.
+If you add staging-mode behavior, gate it on `ctx.platform.isStaging()` in main-process code or on `api.getBuildInfo().isStaging` in the renderer — never on branch name and never on a committed file.
 
 ---
 
@@ -273,7 +318,7 @@ If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md i
 **Doc edits with two devs:** `DECISIONS.md` is append-only by date — no merge conflicts by construction. For `CLAUDE.md` / `ARCHITECTURE.md`, prefer adding new sections over reflowing existing ones; section headers are stable anchors.
 
 **Periodic audit prompt** (run when docs feel drifted):
-> "Read main.js, preload.js, renderer/renderer.js, and the python/ files. Diff what they actually do against CLAUDE.md and docs/ARCHITECTURE.md. Patch only the parts that have drifted; don't reflow."
+> "Read main.js, preload.js, renderer/app.js (+ renderer/views/), and the python/ files. Diff what they actually do against CLAUDE.md and docs/ARCHITECTURE.md. Patch only the parts that have drifted; don't reflow."
 
 ---
 
@@ -281,8 +326,10 @@ If you give `docs/` to a fresh Claude session without this repo, **OVERVIEW.md i
 
 - Logs: `<NOTES_DIR>/app.log`
 - ElevenLabs key + notes path: `<repo>/.env`
-- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile,edit-note,cdi-review}/SKILL.md`
+- Skills: `notes-claude/skills/{generate-note,create-doctor-profile,update-doctor-profile,edit-note,add-icd-codes,cdi-review}/SKILL.md`
 - Standards (consumed by cdi-review, future review engines): `notes-claude/standards/{icd10_fy2026,ahima_acdis_2026}.md` + `notes-claude/standards/specialties/<specialty>.md` (ortho only in v1)
-- Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-7` (effort=max)
-- Python entry: `record.py`, `transcribe.py`, `md_to_docx.py`
+- CDI Co-Pilot review runs after ICD coding, before docx. Toggled globally in Settings (`enableCdi` + `cdiMode`); specialty is per-doctor in the Templates tab. Produces `<case>_cdi.{json,md,docx}` per case folder. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) → *Per-case post-processing chain*.
+- Default models (overridable via settings.json): SOAP = `claude-sonnet-4-6`, template = `claude-opus-4-8` (effort=max)
+- Python entry: `record.py`, `md_to_docx.py`, `probe_duration.py` (transcription + prechart-extract are Node now)
+- Run tests: `npm test` (Node), `npm run test:py` (Python — stdlib unittest, `tests/python/`)
 - Run: `npm start`

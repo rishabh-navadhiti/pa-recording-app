@@ -130,9 +130,19 @@ body {
 }
 
 .status-transcribing .status-dot,
-.status-generating_note .status-dot  { background: #7b5ea7; animation: pulse 1.4s ease-in-out infinite; }
+.status-generating_note .status-dot,
+.status-coding_icd .status-dot,
+.status-running_cdi .status-dot      { background: #7b5ea7; animation: pulse 1.4s ease-in-out infinite; }
 .status-transcribing span:last-child,
-.status-generating_note span:last-child { color: #9b7ec7; }
+.status-generating_note span:last-child,
+.status-coding_icd span:last-child,
+.status-running_cdi span:last-child   { color: #9b7ec7; }
+
+/* Queued: child case waiting for the per-child sequential post-processing
+   (ICD → docx) to reach it. Static muted dot — distinguishable from the
+   pulsing in-flight stages above. */
+.status-queued .status-dot           { background: #555; }
+.status-queued span:last-child        { color: #888; }
 
 .status-converting .status-dot       { background: #c07a00; animation: pulse 1.4s ease-in-out infinite; }
 .status-converting span:last-child    { color: #e09030; }
@@ -211,6 +221,33 @@ body {
 .open-btn:hover {
   background: #1D9E75;
   color: #fff;
+}
+
+/* CDI variant — slightly different colour so two buttons (Open + CDI) are
+   distinguishable at a glance. Only `margin-left: auto` on the first button
+   in the row; subsequent buttons sit next to each other on the right. */
+.open-btn--cdi {
+  margin-left: 4px;
+  border-color: #5b9bd5;
+  color: #5b9bd5;
+}
+
+.open-btn--cdi:hover {
+  background: #5b9bd5;
+  color: #fff;
+}
+
+/* Critical-flag indicator. Sits between the status label and the open buttons. */
+.cdi-approval-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #f0b840;
+  background: rgba(240, 184, 64, 0.12);
+  border: 1px solid rgba(240, 184, 64, 0.45);
+  border-radius: 8px;
+  flex-shrink: 0;
 }
 
 @keyframes pulse {

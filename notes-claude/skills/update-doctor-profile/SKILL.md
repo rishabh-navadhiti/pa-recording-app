@@ -241,7 +241,15 @@ Write the complete modified template back to `${TEMPLATE_PATH}` using the Write 
 
 ## Step 7: Report to User
 
-Always begin the report with exactly `Updated: <TEMPLATE_PATH>` on its own line — this is the marker `main.js` uses to locate the report in stdout.
+End your **final assistant response** with a single line of valid JSON as the very last line — this is how the app detects success:
+
+```json
+{"schema_version":1,"skill":"update-doctor-profile","status":"ok","template_path":"<TEMPLATE_PATH>","backup_path":"<BACKUP_PATH>"}
+```
+
+You may include a human-readable report **before** the JSON line. If the update failed, emit `{"schema_version":1,"skill":"update-doctor-profile","status":"failed","error":"<reason>"}` as the last line instead.
+
+For reference, a typical readable report looks like:
 
 ```
 Updated: <TEMPLATE_PATH>

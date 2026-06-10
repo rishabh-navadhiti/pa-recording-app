@@ -48,6 +48,28 @@
         <div class="setting-hint">Next recording begins immediately when you save a case</div>
       </div>
 
+      <div class="settings-group">
+        <label class="setting-row">
+          <input type="checkbox" id="chk-enable-icd" />
+          <span>Enable ICD-10 coding</span>
+        </label>
+        <div class="setting-hint">Appends an ICD-10-CM codes table to every new SOAP note (uses the claude.ai ICD-10 connector). Required by CDI review.</div>
+        <label class="setting-row">
+          <input type="checkbox" id="chk-enable-cdi" />
+          <span>Enable CDI review</span>
+        </label>
+        <div class="setting-hint">Runs a clinical documentation integrity review on every new case (requires a specialty set per doctor in the Templates tab).</div>
+        <div id="cdi-mode-row" class="advanced-settings-inner hidden" style="margin-top:8px">
+          <label class="setting-label">CDI mode</label>
+          <select id="cdi-mode-select">
+            <option value="balanced">Balanced (recommended) — flag under- and over-documentation</option>
+            <option value="compliance">Compliance — conservative audit-defense stance</option>
+            <option value="aggressive">Aggressive — surface every revenue-lift opportunity</option>
+          </select>
+          <div class="setting-hint">Applies globally. Per-encounter override is a future option.</div>
+        </div>
+      </div>
+
       <div class="settings-group advanced-settings-group">
         <button id="btn-advanced-toggle" class="advanced-toggle">
           <span>Advanced Settings</span>
@@ -86,7 +108,7 @@
             <select id="soap-model-select">
               <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
               <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — recommended</option>
-              <option value="claude-opus-4-7">Claude Opus 4.7 — most capable</option>
+              <option value="claude-opus-4-8">Claude Opus 4.8 — most capable</option>
             </select>
             <div class="setting-hint">Model used to generate SOAP notes from transcripts</div>
           </div>
@@ -95,7 +117,7 @@
             <select id="template-model-select">
               <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
               <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
-              <option value="claude-opus-4-7">Claude Opus 4.7 — recommended</option>
+              <option value="claude-opus-4-8">Claude Opus 4.8 — recommended</option>
             </select>
             <div class="setting-hint">Model used when creating or updating doctor templates with AI</div>
           </div>
@@ -338,6 +360,6 @@
     </div>
 
   </div>
-  <script src="renderer.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
