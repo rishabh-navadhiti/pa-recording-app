@@ -17,6 +17,7 @@ import { setVisible } from '../components/visible.js'
 export function createSettingsView() {
   let settingsView, btnSettingsClose,
       chkAutoRecord, chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
+      chkEnableEmScore, chkEnablePatientSummary,
       deviceSelect, soapModelSelect, templateModelSelect,
       btnAdvancedToggle, advancedSettingsContent,
       notesDirPath, btnChangeNotesDir,
@@ -61,6 +62,9 @@ export function createSettingsView() {
     if (cdiModeSelect) cdiModeSelect.value = s.cdiMode || 'balanced'
     if (cdiModeRow) setVisible(cdiModeRow, !!s.enableCdi)
     syncIcdLock(!!s.enableCdi)
+    // E/M scoring + patient summary — independent toggles, no coupling.
+    if (chkEnableEmScore) chkEnableEmScore.checked = !!s.enableEmScore
+    if (chkEnablePatientSummary) chkEnablePatientSummary.checked = !!s.enablePatientSummary
     const dir = await ipc.getNotesDir()
     notesDirPath.textContent = dir
     notesDirPath.title = dir
@@ -110,6 +114,8 @@ export function createSettingsView() {
       chkEnableCdi          = root.querySelector('#chk-enable-cdi')
       cdiModeRow            = root.querySelector('#cdi-mode-row')
       cdiModeSelect         = root.querySelector('#cdi-mode-select')
+      chkEnableEmScore      = root.querySelector('#chk-enable-em-score')
+      chkEnablePatientSummary = root.querySelector('#chk-enable-patient-summary')
       deviceSelect          = root.querySelector('#device-select')
       soapModelSelect       = root.querySelector('#soap-model-select')
       templateModelSelect   = root.querySelector('#template-model-select')
@@ -149,6 +155,18 @@ export function createSettingsView() {
       if (cdiModeSelect) {
         on(cdiModeSelect, 'change', () => {
           ipc.saveSettings({ cdiMode: cdiModeSelect.value })
+        })
+      }
+
+      if (chkEnableEmScore) {
+        on(chkEnableEmScore, 'change', () => {
+          ipc.saveSettings({ enableEmScore: chkEnableEmScore.checked })
+        })
+      }
+
+      if (chkEnablePatientSummary) {
+        on(chkEnablePatientSummary, 'change', () => {
+          ipc.saveSettings({ enablePatientSummary: chkEnablePatientSummary.checked })
         })
       }
 

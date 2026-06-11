@@ -79,6 +79,24 @@ function editNote({ caseDir, templatePath, attachmentPath, instructions }) {
   return `edit note. Case: ${caseDir}. Template: ${templatePath}. Attachment: ${attachmentPath || ''}. Instructions: ${instructions}`
 }
 
+/**
+ * @param {object} input
+ * @param {string}  input.caseDir      Absolute path to the case folder
+ * @param {string}  input.specialty    Doctor specialty (e.g. 'orthopedics')
+ * @param {string}  input.standardsDir Absolute path to the standards directory
+ */
+function scoreEm({ caseDir, specialty, standardsDir }) {
+  return `score em. Case: ${caseDir}. Specialty: ${specialty}. Standards: ${standardsDir}`
+}
+
+/**
+ * @param {object} input
+ * @param {string}  input.caseDir  Absolute path to the case folder
+ */
+function patientSummary({ caseDir }) {
+  return `summarize for patient. Case: ${caseDir}`
+}
+
 const BUILDERS = {
   'generate-note':        generateNote,
   'add-icd-codes':        addIcdCodes,
@@ -86,6 +104,8 @@ const BUILDERS = {
   'create-doctor-profile': createDoctorProfile,
   'update-doctor-profile': updateDoctorProfile,
   'edit-note':            editNote,
+  'em-score':             scoreEm,
+  'patient-summary':      patientSummary,
 }
 
 /**

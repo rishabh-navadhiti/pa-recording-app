@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   enableIcd: false,
   enableCdi: false,
   cdiMode:   'balanced',
+  enableEmScore: false,
+  enablePatientSummary: false,
 })
 
 /**
