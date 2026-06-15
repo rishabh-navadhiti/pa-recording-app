@@ -175,7 +175,7 @@ if (-not (Test-Path $electronBin)) {
         $distDir = Join-Path $installDir "node_modules\electron\dist"
         Expand-Archive -Path $zip.FullName -DestinationPath $distDir -Force
         Set-Content -Path (Join-Path $installDir "node_modules\electron\path.txt") `
-                    -Value "electron.exe" -NoNewline -Encoding utf8
+                    -Value "dist/electron.exe" -NoNewline -Encoding utf8
         Write-Host "  Electron binary restored from cache." -ForegroundColor Green
     } else {
         Write-Host "  ERROR: Electron zip not in cache. Delete node_modules\ and re-run this installer." -ForegroundColor Red
