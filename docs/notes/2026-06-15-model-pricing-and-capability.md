@@ -6,7 +6,7 @@
 
 > **One-line framing:** This is a **long-instruction-following + formatting-fidelity** job (pick the note type, fire ~30 conditional boilerplate blocks *verbatim*, obey length rules), **not** a medical-knowledge job. So rank on instruction-following, and let your eval framework — not any leaderboard or this doc — make the final call.
 
-> **⚠️ UPDATE 2026-06-15 — compliance deferred.** The team has **deprioritized HIPAA/BAA for now**: the app is moving off `claude -p` regardless, and compliance will be settled *after* the model is chosen — possibly via cheap PHI **de-identification** (strip identifiers from the transcript before sending → any model becomes usable). **Consequence: nothing below is ruled out by BAA.** OpenRouter, China-hosted DeepSeek, and all open-weight models are back in scope. Read §1's BAA verdicts as a *future* consideration, not a current filter. A dedicated **open-field deep-dive + de-identification analysis is being researched and will be appended as §11–§13.**
+> **⚠️ UPDATE 2026-06-15 — compliance deferred.** The team has **deprioritized HIPAA/BAA for now**: the app is moving off `claude -p` regardless, and compliance will be settled *after* the model is chosen — possibly via cheap PHI **de-identification** (strip identifiers from the transcript before sending → any model becomes usable). **Consequence: nothing below is ruled out by BAA.** OpenRouter, China-hosted DeepSeek, and all open-weight models are back in scope. Read §1's BAA verdicts as a *future* consideration, not a current filter. The **open-field deep-dive + de-identification analysis is in §11–§14** below.
 
 ---
 
@@ -172,3 +172,78 @@ You'll need the Anthropic API no matter what (Opus for template create/update). 
 6. **Migration sizing:** note-gen swap = hours; CDI/ICD = real but unblocked work.
 
 > Non-Anthropic prices are medium-confidence (2026 pricing blogs, not live consoles). Verify on Vertex/OpenAI/Anthropic consoles and confirm BAA terms before contracting. Anthropic prices and all latency/token figures in §3 are either from primary docs or my own measured runs on 2026-06-15.
+
+---
+
+# Open-field deep-dive (compliance deferred) — §11–§14
+
+*Added 2026-06-15 after the team deprioritized BAA. With compliance off the critical path, OpenRouter, open-weight models, and China-hosted DeepSeek are all back in scope. Research is verified June-2026 web sources; model specs/prices are hedged Verified vs Reported where the agents flagged it.*
+
+## 11. The reopened field — open-weight & ultra-cheap models
+
+### 11.1 The structural finding: at this volume, cost is noise
+Once the ~21k template is warm-cached, **every cheap candidate lands ~$0.001–0.013/note** — a sub-1.5-cent spread, vs ~$0.04 (Sonnet) / ~$0.05 (Gemini Flash) baselines. At ~16 notes/day/doctor the gap between the cheapest and dearest cheap model is **rounding error**. So **quality-per-dollar collapses to quality**: the only thing that separates these models for you is whether they fire ~30 conditional boilerplate blocks *verbatim* and hold section-length rules over a 21k-token instruction set. **Decide on fidelity; let near-free price break ties.**
+
+### 11.2 The highest-leverage config knob: instruct model, thinking OFF
+Two independent lines of evidence now point the same way, and it **sharpens the §5 tension**:
+- **"When Thinking Fails" (NeurIPS 2025, Amazon Science)** — enabling chain-of-thought/reasoning **degrades instruction-following**, and *formatting / length / exact-wording constraints suffer most*; explicit recommendation: **avoid reasoning modes when precise formatting is critical**. ([arXiv 2505.11423](https://arxiv.org/pdf/2505.11423))
+- The SOAP-specific study from §4 (reasoning-on GPT was the *worst* config).
+- Mechanism: thinking "improves" prose by **paraphrasing** — which is exactly what breaks verbatim boilerplate.
+
+**Reconciling with my Sabbag test** (where Gemini-*with*-thinking caught a dot-phrase Sonnet-*without* missed): thinking likely helps boilerplate **recall** while hurting verbatim **fidelity**. So the default is **thinking OFF for verbatim templating**, but **run the winner both ways on your eval** — this is now a well-motivated hypothesis to test, not a guess. Every model below has an instruct/non-reasoning mode, so you keep this lever everywhere.
+
+### 11.3 Top open-weight picks (put on the eval)
+| Model | shape / license | ≈$/note | IF evidence | Verified? |
+|---|---|---|---|---|
+| **Qwen3.5-27B** (instruct, `enable_thinking:false`) | 27B MoE, 262K ctx, Apache-2.0, ~1.76M dl/mo | ~$0.011 | IFEval ~95 (family, corroborated) | ✅ HF card |
+| **GLM-4.6** (non-thinking) | 357B MoE, ~200K ctx, MIT | ~$0.013 | solid all-rounder | ✅ most-verified |
+| **DeepSeek V4 Flash** (non-thinking) | 284B/~13B MoE, 1M ctx, MIT-ish | **~$0.001–0.0024** | none for Flash specifically | ◐ reported; China-hosted |
+
+**Eval lanes:** Qwen3.5-27B (lead — best obedience/$), GLM-4.6 (most-verified fallback), DeepSeek V4 Flash (cost floor / quality ceiling check). Tier-2 (no reason to lead): DeepSeek V4 Pro, Qwen3.5-397B, Mistral Large 3 / Medium 3.5, Kimi K2.6. **Rule out for this task:** Llama 4 (no IF lead; Behemoth paused), GLM-5 / MiniMax M3 / Qwen3.6 (coding/agentic axis — wrong skill for verbatim templating; specs blogspam-only).
+
+⚠️ **The big unknown:** Flash-tier instruction-following data is genuinely **sparse** — the strong IFEval numbers belong to the *larger* Qwen variants, **not** Qwen3.5-Flash, and DeepSeek V4 Flash has no published IFEval. This gap is *exactly why the eval is mandatory* — don't assume any cheap model beats Sonnet on verbatim fidelity until it's measured on your template.
+
+## 12. Access (OpenRouter) + speed (fast platforms)
+
+### 12.1 OpenRouter = the right model seam for the bake-off
+- **One OpenAI-compatible endpoint, change one string** (`model`) — drop-in behind your `provider.js` seam; the prompt + manifest contract are unchanged. Lets you A/B many models without integrating each.
+- **No per-token markup** (the "100% Claude markup" claim is false per OpenRouter's own FAQ). **BYOK is effectively free for you** — first 1M BYOK requests/mo free; you do ~3k/mo → you pay provider price with no cut.
+- **Privacy routing** (matters even pre-BAA): `zdr:true`, `data_collection:"deny"`, and `only:[...]` let you run **open-weight DeepSeek on a *US* host (Fireworks/DeepInfra/Together)** — the price floor *without* sending PHI to China. Built-in fallback replaces hand-rolled retry.
+- **Recommendation:** add an `openRouterProvider.js` alongside the current one, BYOK mode, and run the §14 bake-off as one-string swaps. Latency overhead (~20–70ms) is irrelevant — note-gen is a detached background job.
+- Per-call cost via OpenRouter (≈23.5k in / 1.7k out): DeepSeek V4 Flash **$0.004**, V4 Pro **$0.012**, Gemini 3.1 Pro **$0.067**, Sonnet 4.6 **$0.096**. The 25× spread is the decision; the routing fee is noise.
+
+### 12.2 Fast-inference platforms (Harris "fast mode")
+Every platform clears Harris's ~3-min/chart budget **by 6–180×**, so speed is a *tiebreaker among near-equals*, not a gate. But the standout is a happy coincidence:
+- **★ Cerebras · Llama 3.3 70B** — **~1–2s end-to-end** for a 2k-token note from a 24k prompt, *and* Llama 3.3 70B is the **highest-IFEval open model** (~90.4) — so fastest and best-instruction-following coincide. ~$0.60/$0.60.
+- **Groq · Llama 3.3 70B** — value runner-up, ~7s end-to-end, lowest TTFT, $0.59/$0.79. Switching is just an endpoint change.
+- Caveat: gpt-oss-120b and Llama 4 Maverick rank weak on instruction-following — don't pick a fast model that drops boilerplate; validate on Harris's template.
+- **The real lever for Harris is transcription latency** (single-call generation is already fast enough) — i.e., the ElevenLabs-streaming path, not the model.
+
+## 13. De-identification — the escape hatch, and its honest limits
+
+This is the lever that keeps the *entire* cheap/no-BAA field usable. But the research is clear-eyed about what it buys:
+
+**It's risk *reduction*, not a HIPAA guarantee.** No automated de-identifier hits 100% recall: Microsoft Presidio **0.74**, Philter 0.79, GPT-4 zero-shot **0.83** (≈1 in 6 identifiers slips), best research systems ~0.99 *in-distribution* but **mid-80s on real out-of-distribution text**. Routing PHI-stripped text to a cheap/China-hosted model **meaningfully lowers** exposure but **doesn't zero it**.
+
+**Two failure modes, not one:** (1) detection recall (did it find every identifier?) and (2) **round-trip integrity** — the generation model can **drop a placeholder, hallucinate fake PHI, or merge tokens** ("Not What the Doctor Ordered", [arXiv 2509.14464](https://arxiv.org/pdf/2509.14464)), breaking re-insertion. i2b2 F1 numbers do **not** bound the round trip.
+
+**Your app has a structural advantage that makes it practical anyway:** you *already know the canonical PHI* — patient name (from the name form), doctor (from the template), date (= today). So **don't detect those — inject them as deterministic realistic surrogates** (e.g. real name → a consistent fake name; **date-shift** all dates by a per-patient offset to preserve intervals), and use NER (local Presidio + a regex backstop) only for *incidental* PHI the speaker mentioned. Recommended mechanics:
+- **Realistic surrogates, not `[BRACKETS]`** — the model treats "Anne Boleyn" as a normal name and won't drop it; brackets get paraphrased away.
+- **Re-insert from a vault** after generation, and **assert each surrogate appears the expected number of times — fail closed** if a count is off (catches drop/merge).
+- **Keep de-id local** (Presidio + regex, or a local Llama pass) — sending raw PHI to a *cloud* model to strip PHI is self-defeating; to a *China-hosted* model it's the worst case.
+- For CDI on a cheap model: same surrogate swap on the note before, swap back on the output after.
+
+**Verdict:** de-identification is genuinely practical *for this app specifically* (because you inject known PHI rather than detect it) and it lowers breach probability a lot — but it is a **bridge, not a substitute** for the eventual compliance decision. Don't treat any cheap/no-BAA model as "HIPAA-safe" just because de-id ran.
+
+## 14. Revised bottom line (with the field reopened)
+
+1. **Architecture first, unchanged:** agentic → single-call buys ~5–8× on *any* model. Do it regardless.
+2. **Cost is noise; decide on verbatim fidelity.** Every cheap model is ~$0.001–0.013/note — the eval, not the price chart, picks the winner.
+3. **Run the bake-off via OpenRouter (BYOK), all THINKING OFF**, on your real Sabbag template, scoring **note-type accuracy + verbatim-block hit-rate + section-length**. Concrete lanes:
+   - **Baselines:** Sonnet 4.6 (incumbent), Gemini 3.x Flash.
+   - **Challengers:** **Qwen3.5-27B** (lead open pick), **DeepSeek V4 Flash** (cost floor), **GLM-4.6** (verified fallback); optionally GPT-5.4 non-reasoning.
+   - Run the winner **both thinking on/off** to settle §11.2 on *your* template.
+4. **Two profiles:** *accurate* (Sonnet/Opus or the eval winner) for most doctors; *fast* (**Cerebras/Groq Llama 3.3 70B**, ~1–7s) for Harris — though his real bottleneck is transcription latency.
+5. **Compliance via de-identification** (local surrogate-injection + fail-closed re-insert) is the bridge that keeps the cheap field open; settle the BAA once the model is locked. It reduces, not eliminates, risk.
+
+> Open-field specs/prices are June-2026 web research with Verified/Reported hedges as noted; confirm live endpoints + prices before committing. The decisive evidence remains **your eval on your template** — every number here only tells you *which 3–4 models to put on it*.
