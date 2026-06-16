@@ -2,7 +2,12 @@ import sqlite3
 import os
 
 BASE = r"X:\db analysis"
-SCRIBES = ["kiran", "niyaz", "rupa", "sabbag"]
+OUT_DIR = r"X:\db analysis\report"
+SCRIBES = [
+    d for d in os.listdir(BASE)
+    if os.path.isdir(os.path.join(BASE, d))
+    and os.path.isfile(os.path.join(BASE, d, "app.db"))
+]
 
 
 def q(db, sql, params=()):
@@ -297,6 +302,8 @@ def analyze_doctor(db, doc, scribe_folder):
     return "\n".join(lines)
 
 
+sections = ["# AI Medical Scribe — Cost & Time Analysis Report\n"]
+
 for scribe in SCRIBES:
     db_path = os.path.join(BASE, scribe, "app.db")
     db = sqlite3.connect(db_path)
@@ -304,17 +311,15 @@ for scribe in SCRIBES:
 
     print(f"\n[{scribe}] — {len(doctors)} doctor(s)")
     for doc in doctors:
-        report = analyze_doctor(db, doc, scribe)
-        lastname = doc["lastname"] or doc["name"].split()[-1]
-        out_name = f"{lastname}_analysis.md"
-        out_path = os.path.join(BASE, out_name)
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(report)
-        # parse a quick summary line from the markdown for the console
-        case_line = [l for l in report.splitlines() if "| Total |" in l]
-        cost_line = [l for l in report.splitlines() if "| Total |" in l and "$" in l]
-        print(f"  Written: {out_path}")
+        sections.append(analyze_doctor(db, doc, scribe))
+        sections.append("---\n")
+        print(f"  Analysed: {doc['name']}")
 
     db.close()
 
-print("\nDone.")
+out_path = os.path.join(OUT_DIR, "all_doctors_analysis.md")
+with open(out_path, "w", encoding="utf-8") as f:
+    f.write("\n".join(sections))
+
+print(f"\nWritten: {out_path}")
+print("Done.")
