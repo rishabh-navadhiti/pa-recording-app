@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from datetime import datetime, timedelta, timezone
 
 BASE = r"X:\db analysis"
 OUT_DIR = r"X:\db analysis\report"
@@ -8,6 +9,48 @@ SCRIBES = [
     if os.path.isdir(os.path.join(BASE, d))
     and os.path.isfile(os.path.join(BASE, d, "app.db"))
 ]
+
+TZ_OFFSET_HOURS = 5.5          # IST = UTC+5:30
+SHIFT_START_HOUR = 20          # 8 PM local
+SHIFT_END_HOUR   = 5           # 5 AM local next day
+FILTER_DATE_FROM = "2026-06-01"
+FILTER_DATE_TO   = "2026-06-15"
+
+# Per-scribe filter: "shift" = Mon/Wed shift window only
+SCRIBE_FILTER = {
+    "niyaz": "shift",
+}
+
+IST = timezone(timedelta(hours=TZ_OFFSET_HOURS))
+_from_dt = datetime.fromisoformat(FILTER_DATE_FROM).replace(tzinfo=IST)
+_to_dt   = datetime.fromisoformat(FILTER_DATE_TO).replace(tzinfo=IST) + timedelta(days=1)
+
+
+def is_in_shift(recorded_at_utc):
+    """Return True if the case falls within a Mon or Wed evening shift (local time)."""
+    if not recorded_at_utc:
+        return False
+    try:
+        s = recorded_at_utc.rstrip("Z")
+        utc_dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        local = utc_dt.astimezone(IST)
+    except Exception:
+        return False
+
+    # Must be within the overall date range
+    if local < _from_dt or local >= _to_dt:
+        return False
+
+    wd   = local.weekday()   # 0=Mon, 2=Wed, 1=Tue, 3=Thu
+    hour = local.hour + local.minute / 60
+
+    # Evening leg: Mon(0) or Wed(2) at or after 20:00
+    if wd in (0, 2) and hour >= SHIFT_START_HOUR:
+        return True
+    # Overnight leg: Tue(1) or Thu(3) before 05:00
+    if wd in (1, 3) and hour < SHIFT_END_HOUR:
+        return True
+    return False
 
 
 def q(db, sql, params=()):
@@ -55,11 +98,11 @@ def round6(v):
     return round(float(v), 6) if v is not None else None
 
 
-def analyze_doctor(db, doc, scribe_folder):
+def analyze_doctor(db, doc, scribe_folder, filtered_cases=None, filter_label=None):
     did = doc["id"]
 
     # ── Cases ────────────────────────────────────────────────────────────────
-    all_cases = q(db, "SELECT * FROM cases WHERE doctor_id = ?", (did,))
+    all_cases = filtered_cases if filtered_cases is not None else q(db, "SELECT * FROM cases WHERE doctor_id = ?", (did,))
     total_cases    = len(all_cases)
     completed      = sum(1 for c in all_cases if c["status"] == "completed")
     failed         = sum(1 for c in all_cases if c["status"] == "failed")
@@ -107,13 +150,12 @@ def analyze_doctor(db, doc, scribe_folder):
     avg_cases_per_session = sum(case_counts) / len(case_counts) if case_counts else None
 
     # ── Processing events ────────────────────────────────────────────────────
-    # Join through cases to filter by doctor
-    events = q(db, """
-        SELECT pe.*
-        FROM processing_events pe
-        JOIN cases c ON pe.case_id = c.id
-        WHERE c.doctor_id = ?
-    """, (did,))
+    case_ids = [c["id"] for c in all_cases]
+    if case_ids:
+        placeholders = ",".join("?" * len(case_ids))
+        events = q(db, f"SELECT * FROM processing_events WHERE case_id IN ({placeholders})", case_ids)
+    else:
+        events = []
 
     # Cost
     cost_events = [e for e in events if e["cost_usd"] is not None]
@@ -188,11 +230,17 @@ def analyze_doctor(db, doc, scribe_folder):
     def usd(v):
         return f"${float(v):.4f}" if v is not None else na
 
+    def avg_tok(key):
+        return int(total_tokens[key] / total_cases) if total_cases else 0
+
     lines = []
     a = lines.append
 
     a(f"# Analysis Report — {doc['name']}")
     a("")
+    if filter_label:
+        a(f"> {filter_label}")
+        a("")
     a("## Doctor")
     a("")
     a(f"| Field | Value |")
@@ -275,13 +323,13 @@ def analyze_doctor(db, doc, scribe_folder):
 
     a("## Token Usage")
     a("")
-    a(f"| Token Type | Count |")
-    a(f"|---|---|")
-    a(f"| Input | {total_tokens['input']:,} |")
-    a(f"| Output | {total_tokens['output']:,} |")
-    a(f"| Cache Read | {total_tokens['cache_read']:,} |")
-    a(f"| Cache Created | {total_tokens['cache_created']:,} |")
-    a(f"| **Total** | **{total_tokens['total']:,}** |")
+    a(f"| Token Type | Total | Avg per Case |")
+    a(f"|---|---|---|")
+    a(f"| Input | {total_tokens['input']:,} | {avg_tok('input'):,} |")
+    a(f"| Output | {total_tokens['output']:,} | {avg_tok('output'):,} |")
+    a(f"| Cache Read | {total_tokens['cache_read']:,} | {avg_tok('cache_read'):,} |")
+    a(f"| Cache Created | {total_tokens['cache_created']:,} | {avg_tok('cache_created'):,} |")
+    a(f"| **Total** | **{total_tokens['total']:,}** | **{avg_tok('total'):,}** |")
     a("")
 
     a("## Processing Time")
@@ -311,9 +359,21 @@ for scribe in SCRIBES:
 
     print(f"\n[{scribe}] — {len(doctors)} doctor(s)")
     for doc in doctors:
-        sections.append(analyze_doctor(db, doc, scribe))
+        did = doc["id"]
+        all_cases = q(db, "SELECT * FROM cases WHERE doctor_id = ?", (did,))
+        filter_label = None
+
+        if SCRIBE_FILTER.get(scribe) == "shift":
+            filtered = [c for c in all_cases if is_in_shift(c["recorded_at"])]
+            filter_label = (
+                f"Filtered to Mon & Wed shifts, {FILTER_DATE_FROM} to {FILTER_DATE_TO} (IST UTC+5:30). "
+                f"{len(filtered)} of {len(all_cases)} total cases matched."
+            )
+            all_cases = filtered
+
+        sections.append(analyze_doctor(db, doc, scribe, filtered_cases=all_cases, filter_label=filter_label))
         sections.append("---\n")
-        print(f"  Analysed: {doc['name']}")
+        print(f"  Analysed: {doc['name']}" + (f" ({len(all_cases)} shift cases)" if filter_label else ""))
 
     db.close()
 
