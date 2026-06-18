@@ -84,11 +84,7 @@ DOCTOR_NAME=<value>
 STANDARDS_DIR=<value>
 ```
 
-If `CASE_DIR` is empty or doesn't exist on disk, write the failure line and stop:
-
-```
-CDI_FAIL: case_dir_not_found: <value>
-```
+If `CASE_DIR` is empty or doesn't exist on disk, emit a `status: "failed"` manifest (per Step 9) describing the missing input and stop. Example: `{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"case_dir missing","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"case_dir not found: <value>"}`.
 
 ### 0b. Specialty gate
 
@@ -160,12 +156,14 @@ CDI review was not performed for this case.
 
 To enable CDI for another specialty, add \`standards/specialties/<specialty>.md\` and update the doctor's specialty in settings.
 MD
-  echo "CDI_SKIPPED: unsupported specialty '${SPECIALTY}'"
+  echo "SKIP_SPECIALTY: ${SPECIALTY}"   # log marker for app.log; the real signal is the manifest below
   exit 0
 fi
 
 echo "SPECIALTY_FILE=${SPECIALTY_FILE}"
 ```
+
+If the specialty gate fired (the bash block above exited 0 after writing the stub files), your **final response** must be a single-line `status: "skipped"` manifest per Step 9. Set `json_path` and `md_path` to the stub paths you wrote, `skipped_reason` to a short string like `"specialty not yet supported for CDI v1: <specialty>"`, and all the summary numeric fields to `null`. **No prose, no closing summary — only the manifest line.**
 
 If supported, continue to Step 1.
 
@@ -175,11 +173,7 @@ If supported, continue to Step 1.
 
 Use the Read tool, in this order:
 
-1. **SOAP note** — `${EXISTING_NOTE_PATH}` (the `*_soap_note.md` resolved in Step 0b). **Required.** If missing:
-   ```
-   CDI_FAIL: soap_note_not_found in <CASE_DIR>
-   ```
-   Also write a stub JSON with `"error": "soap_note_not_found"` so downstream code has a file. Then exit.
+1. **SOAP note** — `${EXISTING_NOTE_PATH}` (the `*_soap_note.md` resolved in Step 0b). **Required.** If missing: write a stub JSON with `"error": "soap_note_not_found"` so downstream code has a file, then emit a `status: "failed"` manifest (per Step 9) with `error: "soap_note_not_found in <CASE_DIR>"` and `json_path` pointing at the stub. Stop.
 
 2. **Transcript** — try `${CASE_DIR}/transcript.md` then any `${CASE_DIR}/*_transcript.md`. **Optional.** If missing, log a warning and proceed with the SOAP note alone:
    ```
@@ -209,13 +203,7 @@ Read all three standards files, in full:
 2. **`${STANDARDS_DIR}/ahima_acdis_2026.md`** — query compliance rules. Required.
 3. **`${SPECIALTY_FILE}`** — specialty pack (e.g. `orthopedics.md`). Required (already verified in Step 0b).
 
-If any of the universal files is missing, fail loudly:
-
-```
-CDI_FAIL: standards_missing: <which-file>
-```
-
-Also write a stub JSON with the error, so downstream code has something.
+If any of the universal files is missing, write a stub JSON with the error so downstream code has something, then emit a `status: "failed"` manifest (per Step 9) with `error: "standards_missing: <which-file>"` and stop.
 
 Extract the `**Standards version:**` line from each file for the `meta.standards_versions` block of the output JSON.
 
@@ -284,6 +272,42 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
 - **Problem-to-plan linkage** — every active Dx must have a corresponding Plan item OR a stated reason no action is needed (e.g., "patient declines"). Missing → `category: "Linkage"` flag.
 - **Medical necessity narrative** — the note must explain why **this** visit / test / procedure / therapy is reasonable and necessary. Missing or weak → drives `summary.medical_necessity_status`; entirely absent → raise an `Audit-defense` flag.
 
+### Connector validation — MANDATORY before you emit ANY ICD code
+
+**You have the ICD-10 MCP connector available in this session. Use it. Never emit a code you have not confirmed against the connector.** This is the single most important rule in this skill: a hallucinated code that doesn't exist gets the claim rejected, and a "needs more specificity" flag suggesting a child code that doesn't exist actively breaks a correctly-coded note.
+
+The connector is the **ground truth for code existence and available specificity**. The prose standards packs (`standards/specialties/<x>.md`) are heuristics layered on top and are the **most error-prone** part of this system — they have contained outright-wrong claims (e.g., asserting a laterality axis on a code that has none). The universal `icd10_fy2026.md` is the reference for coding *rules / conventions*. **When any prose doc and the connector disagree about whether a code exists or what specificity is available, THE CONNECTOR WINS** — and the prose doc is the thing that's wrong.
+
+The connector may be registered under either namespace — use whichever appears in your tool list (prefer the project-scope `icd10` one if both are present):
+- `mcp__claude_ai_ICD-10_Codes__validate_code` / `…__lookup_code` / `…__search_codes`
+- `mcp__icd10__validate_code` / `…__lookup_code` / `…__search_codes`
+
+**Two mandatory checks, performed during analysis, before the code reaches the output JSON:**
+
+1. **Existence check — every code you emit.** For every code you would put in a flag's `current_code`, in any `suggested_codes[].code`, or anywhere in the `code_validation` block (`codes_in_note` / `supported` / `flagged` / `missing_codes`): call `validate_code` (or `lookup_code`) and confirm it exists and is `valid_for_hipaa_transactions`. **If a code fails validation, do not emit it.** If you intended to suggest a more-specific code and it turns out not to exist, drop the suggestion (and the flag that depended on it). Don't substitute a guess — re-`search_codes` to find what actually exists, or omit.
+
+2. **Specificity-flag guard — before claiming "this needs more specificity."** Before you raise a flag asserting that a documented code needs a more specific replacement (laterality, digit, stage, etc.), **confirm via `search_codes` (by code, prefix) that the more-specific code actually exists.** Look at the real children the connector returns. If the documented code is already complete and billable and has **no** more-specific child for the axis you were about to flag, **DO NOT raise the specificity flag** — the note's code is correct. The prose pack may say the condition "requires laterality"; the connector may show there is no laterality child. The connector wins.
+
+**Worked example — De Quervain (the exact bug this guard prevents):** The ortho pack once listed "De Quervain tenosynovitis → Laterality." A scribe note coded it `M65.4`. Before flagging "M65.4 needs laterality, use M65.41/M65.411," you call `search_codes(query="M65.4", search_by="code")`. The connector returns **exactly one code: `M65.4` "Radial styloid tenosynovitis [de Quervain]", billable, no children.** M65.41 / M65.411 / M65.42 / M65.412 **do not exist.** Correct action: **raise no specificity flag.** `M65.4` is the complete, correct code. (Contrast: `search_codes(query="G56.0")` returns G56.00/01/02/03 — carpal tunnel genuinely *does* have a laterality axis, so a laterality flag there is valid. The connector tells you which case you're in; never assume from the prose pack.)
+
+Validating a handful of codes per run adds a few connector calls — fine, CDI is already a long job. Don't validate the same code twice in one run; reuse the result.
+
+### ICD code validation (when codes are present in the SOAP note)
+
+In production, the SOAP note often already contains ICD-10 codes appended by an earlier pipeline step. The codes typically live in a markdown table at the end of the note (default format: *Diagnosis | Code | Description*), but doctor-template variants may place them inline within sections, in the Assessment list, or in prose. **You don't need a separate detection step** — you're already reading the entire note in Step 1, so you'll see any codes naturally.
+
+**If you find ICD codes already in the note:** validate them as part of your analysis.
+
+1. For each existing code, verify it's supported by the documentation (clinical indicators, laterality, acuity, etc.).
+2. Flag any code that's NOT supported by the documentation (over-coding risk) as a `critical` flag of category `Audit-defense` with `current_code` populated. This is one of the auto-critical conditions from the table above (#6 — "Suggested ICD-10 code doesn't match the documented Dx language").
+3. Flag any documented diagnosis that *should* have a code but isn't in the existing list (under-coding risk) as a `warning` of category `Specificity`.
+4. Flag any code that doesn't reflect the documented specificity (e.g., G56.00 unspecified when laterality is documented — and you've **confirmed via `search_codes` that G56.01/02/03 exist**) as a `warning` of category `Specificity` with `current_code` populated and `suggested_codes` showing the more specific alternative. **Apply the specificity-flag guard above**: if the connector shows the documented code has no more-specific child for that axis (the M65.4 case), raise no flag.
+5. Populate the optional `code_validation` block in the output JSON (schema below) summarising what you found. Every code listed in it must have passed the existence check.
+
+**If you find no ICD codes in the note:** omit the `code_validation` field entirely from the output JSON. Proceed with the standard CDI analysis. Your `suggested_codes` arrays on individual flags still propose codes that *should* be assigned — that's the existing behavior for code-less notes and stays the same.
+
+The presence vs. absence of the `code_validation` field is the signal to downstream code (rendering, app integration) that validation happened.
+
 ### Summary-field determination rules
 
 `summary.medical_necessity_status`:
@@ -333,9 +357,10 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
       "type": "<critical|warning|suggestion|opportunity>",
       "category": "<Specificity|Linkage|HCC|Completeness|Audit-defense>",
       "title": "<short title, ≤ 12 words>",
+      "action": "<single imperative line: WHAT TO DO about this flag — the scannable TL;DR>",
       "body": "<1-3 sentence rationale that cites a guideline reference>",
       "guideline_reference": "<e.g. 'ICD-10-CM Sec IV.A' or 'Ortho pack §3 (fracture coding)'>",
-      "drg_impact": null,
+      "reimbursement_impact": "<short reimbursement signal in outpatient units, or null — see field rules>",
       "current_code": "<code in the note that should change, or null>",
       "suggested_codes": [
         { "code": "<ICD-10 code>", "description": "<human description>" }
@@ -344,24 +369,52 @@ Beyond the specificity checks in the specialty pack, the engine also evaluates:
       "evidence_found": ["<verbatim or near-verbatim from the note>", "..."],
       "evidence_missing": ["<what would be needed to upgrade or defend>", "..."]
     }
-  ]
+  ],
+  "code_validation": {
+    "codes_in_note": ["<ICD-10 code>", "..."],
+    "supported":     ["<ICD-10 code>", "..."],
+    "flagged": [
+      {
+        "code":           "<ICD-10 code>",
+        "issue":          "<one-sentence explanation of why the code is unsupported / mismatched / under-specific>",
+        "linked_flag_id": "<flag-XXX or null>"
+      }
+    ],
+    "missing_codes": [
+      {
+        "documented_dx":  "<verbatim or near-verbatim diagnosis statement from the note>",
+        "suggested_code": "<ICD-10 code that should have been assigned>",
+        "linked_flag_id": "<flag-XXX or null>"
+      }
+    ]
+  }
 }
 ```
 
 **Field constraints:**
 - `type` ∈ {`critical`, `warning`, `suggestion`, `opportunity`}. `opportunity` only in `aggressive` mode.
 - `category` ∈ {`Specificity`, `Linkage`, `HCC`, `Completeness`, `Audit-defense`}.
+- `action` is **required** on every flag — a single imperative line stating WHAT TO DO. This is the scannable TL;DR a busy clinician/scribe reads instead of the full body. Write it as a direct instruction (start with a verb), one sentence (occasionally two if two distinct steps). Examples:
+  - title "Finkelstein's test result contradicts between note sections" → action: `"Correct the PE section to reflect positive Finkelstein's findings; reconcile the ROM contradiction before claim submission."`
+  - title "Right lateral periostitis: 'history of' vs. active status conflict" → action: `"Clarify whether periostitis is currently active or resolved. If active, add to Assessment and code per Sec IV.J."`
+  - title "Thumb ROM limitation documented without degree measurements" → action: `"Document thumb abduction and extension ROM in degrees bilaterally at this visit."`
 - `confidence` is an integer 0–100.
 - `evidence_found` and `evidence_missing` each have 0–4 entries (strings).
 - `suggested_codes` has 0–N entries; each has both `code` and `description`.
-- `drg_impact` is always `null` in v1 (we're outpatient).
+- `reimbursement_impact` is **mostly `null`** — most CDI flags are quality / audit-defense and carry no direct revenue signal. Populate it **only** when a flag has a real reimbursement consequence, expressed in the units of the care setting:
+  - **Outpatient (the primary use case):** an E/M-level, HCC-capture, or modifier signal — e.g., `"Supports 99214 over 99213 if data-reviewed is documented"`, `"Additional billable Dx — captures HCC if validated"`, `"Supports modifier-25 add-on for the procedure billing"`.
+  - **Inpatient (if ever):** a DRG shift — e.g., `"Moves to a higher-paying DRG with MCC"`. The field is generic across settings; only the unit varies. Do **not** fabricate a signal to fill it — `null` is the correct value most of the time.
 - `current_code` is the code currently in the note that this flag would replace; `null` if none.
+- `code_validation` is **optional** — include it ONLY when codes were found in the note. Omit the field entirely when the note contained no codes (downstream code uses presence/absence of the field as the validation signal).
+- Within `code_validation`: `linked_flag_id` should reference an `id` from the `flags[]` array when a code-validation entry has a corresponding flag, or `null` if standalone. Downstream code tolerates dangling references (UI shows the entry as standalone if the linked flag isn't found).
 
 ### Behavior rules
 
-- **No hallucination.** Every `suggested_codes` entry should be a plausible FY2026 code. If you're not confident the code exists, use a more general code in the same family OR omit the entry — never invent codes.
+- **No hallucination — connector-enforced.** Every code you emit (`suggested_codes`, `current_code`, `code_validation`) must be confirmed to exist via the ICD-10 connector (see *Connector validation* above). "Plausible" is not enough — validate it. If validation fails, drop the code; never invent one or trust the prose pack over the connector.
 - **Quote evidence verbatim** where reasonable. `evidence_found` should read like sentence fragments lifted from the note, not paraphrases.
 - **Cite the guideline.** `guideline_reference` should name the specific section that governs the rule (e.g., `ICD-10-CM Sec IV.H`, `Ortho pack §3`, `AHIMA/ACDIS 2026 §2`).
+- **Every flag gets an `action`.** Write the imperative TL;DR before you write the body — it forces you to be clear about what the scribe should actually do. The body justifies; the action instructs. Never leave `action` empty.
+- **`reimbursement_impact` defaults to `null`.** Only fill it when the flag genuinely changes what can be billed (E/M level, HCC capture, modifier). Quality and audit-defense flags — the majority — have no reimbursement signal; leave the field `null`. Don't invent one.
 - **Confidence honesty.** Don't inflate. A laterality gap with the side documented unambiguously in HPI = 95+. A suggestion based on a single indirect mention = 30–50.
 - **Don't repeat the same gap.** If two diagnoses in the note both have laterality issues, consolidate into one flag with multiple suggested codes, not two flags.
 - **Mode discipline.** In compliance mode, suppress `suggestion` and `opportunity` flags entirely. In balanced, no `opportunity`. In aggressive, surface `opportunity` for HCC hints, MDM upgrade paths, and missed specificity that wouldn't normally rise to a warning.
@@ -550,6 +603,44 @@ lines.append("")
 lines.append("---")
 lines.append("")
 
+# Code validation summary — rendered ONLY when the JSON has a code_validation
+# block (i.e. the SOAP note already had ICD codes that the model validated).
+code_val = data.get("code_validation")
+if isinstance(code_val, dict):
+    lines.append("## Code validation summary")
+    lines.append("")
+    in_note   = code_val.get("codes_in_note") or []
+    supported = code_val.get("supported") or []
+    flagged   = code_val.get("flagged") or []
+    missing   = code_val.get("missing_codes") or []
+
+    if in_note:
+        lines.append(f"**Codes in note ({len(in_note)}):** " + ", ".join(f"`{c}`" for c in in_note))
+        lines.append("")
+    if supported:
+        lines.append(f"**Supported ({len(supported)}):** " + ", ".join(f"`{c}`" for c in supported))
+        lines.append("")
+    if flagged:
+        lines.append(f"**Flagged ({len(flagged)}):**")
+        for entry in flagged:
+            code = entry.get("code", "")
+            issue = entry.get("issue", "")
+            link = entry.get("linked_flag_id")
+            tail = f" (see {link})" if link else ""
+            lines.append(f"- `{code}` — {issue}{tail}")
+        lines.append("")
+    if missing:
+        lines.append(f"**Missing codes ({len(missing)}):**")
+        for entry in missing:
+            dx = entry.get("documented_dx", "")
+            sc = entry.get("suggested_code", "")
+            link = entry.get("linked_flag_id")
+            tail = f" (see {link})" if link else ""
+            lines.append(f"- {dx} → `{sc}`{tail}")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+
 # Render flags by severity
 def render_flag(flag):
     out = []
@@ -559,6 +650,12 @@ def render_flag(flag):
     sev   = (flag.get("type") or "").upper()
     out.append(f"## {e} {sev} · {title} · {conf}% confidence")
     out.append("")
+    # Action line first — the scannable TL;DR, rendered prominently above the
+    # detailed body so a busy clinician can act without reading every paragraph.
+    action = flag.get("action", "")
+    if action:
+        out.append(f"**→ Action:** {action}")
+        out.append("")
     body = flag.get("body", "")
     if body:
         out.append(body)
@@ -566,6 +663,8 @@ def render_flag(flag):
     out.append(f"**Category:** {flag.get('category', '—')}  ")
     if flag.get("guideline_reference"):
         out.append(f"**Guideline:** {flag['guideline_reference']}  ")
+    if flag.get("reimbursement_impact"):
+        out.append(f"**Reimbursement impact:** {flag['reimbursement_impact']}  ")
     if flag.get("current_code"):
         out.append(f"**Current code:** `{flag['current_code']}`  ")
     out.append("")
@@ -624,26 +723,87 @@ Set `JSON_PATH` and `MD_PATH` as env vars before running, or substitute the path
 
 ---
 
-## Step 9: Confirm Completion
+## Step 9: Emit the Manifest (Last Line of Your Final Response)
 
-Print exactly one terminal status line that the calling pipeline can grep for:
+After writing the `_cdi.json` and `_cdi.md` files in Step 8, your **final assistant text response** (the message you write at the end) must end with **a single line of valid JSON** matching the schema below. The app's `parseSkillManifest` helper reads this line directly from your final response to drive everything that happens next — DB writes, status popup, file hiding, docx conversion.
 
-**On success:**
-```
-CDI_OK: <abs JSON_PATH> · <total flag count> flags · quality <overall_score>/100
+**Important:** This means you must literally type the JSON into your final response text — not print it via a bash or python subprocess, since subprocess output goes into a tool result, not your final message. Assemble the manifest mentally from the data you tracked in Steps 4–7, then write it out as one JSON line.
+
+**No closing summary.** After all the tool calls in earlier steps, you may feel like writing a closing summary for the operator — DO NOT. Your only final emission is the manifest line below. Any case-summary information already lives in the `_cdi.md` rendered in Step 8.
+
+### Output rules
+
+1. The manifest is **a single line** of valid JSON in your final response. No pretty-printing, no newlines inside the JSON.
+2. **No markdown code fences** (no ```` ```json ```` ... ```` ``` ````) around it.
+3. **No prose after** the manifest line. Any chief-complaint summaries, scoring narrative, etc. must appear **before** the manifest, not after — and even before is discouraged; the `_cdi.md` is the human-readable artifact.
+4. **All paths are absolute**, using the OS path separator the skill is running on (forward slashes on macOS/Linux, backslashes on Windows).
+5. If something goes wrong such that no CDI output could be written, emit a manifest with `status: "failed"` and `json_path: null`. **Never** end your response without a manifest line — downstream code uses the manifest to decide whether to mark the run failed.
+
+### Schema
+
+```json
+{
+  "schema_version": 1,
+  "skill": "cdi-review",
+  "status": "ok|skipped|failed",
+  "summary": "<one-line human description of what was produced>",
+  "json_path": "<absolute path to <case>_cdi.json, or null if not written>",
+  "md_path": "<absolute path to <case>_cdi.md, or null if not written>",
+  "flag_count": <total flag count after mode filtering, or null on skipped/failed>,
+  "flag_counts": { "critical": <n>, "warning": <n>, "suggestion": <n>, "opportunity": <n> },
+  "quality_score": <0-100 overall, or null on skipped/failed>,
+  "medical_necessity_status": "supported|weak|missing|null",
+  "claim_defense_readiness": "ready|needs_edits|hold_for_review|null",
+  "clinician_approval_required": <true|false|null>,
+  "icd_validated": <true if you populated code_validation in the JSON; false if you didn't; null on skipped/failed>,
+  "skipped_reason": "<set when status='skipped'; null otherwise>",
+  "error": "<set when status='failed'; null otherwise>"
+}
 ```
 
-**On failure** (couldn't write either file at all):
-```
-CDI_FAIL: <reason>
+Field semantics:
+
+- `schema_version` — always `1` for this version.
+- `skill` — always `"cdi-review"`.
+- `status` — `ok` when the review ran and produced flags + summary; `skipped` when a gate fired (unsupported specialty, missing standards file, etc. — Step 0b path); `failed` when something prevented producing a usable `_cdi.json`.
+- `summary` — free string for the operator / log; not parsed.
+- `json_path` — absolute path to `${JSON_PATH}` from Step 1. **Required** for `status: "ok"`. May be set for `status: "skipped"` (stub JSON) or `null` for `status: "failed"`.
+- `md_path` — absolute path to `${MD_PATH}` from Step 1. Same rules as `json_path`.
+- `flag_count` — total flags emitted after Step 6 mode filtering. `null` on skipped/failed.
+- `flag_counts` — per-severity breakdown matching `summary.flag_counts` in the JSON. All zeros on skipped/failed.
+- `quality_score` — `summary.overall_quality_score` from the JSON. `null` on skipped/failed.
+- `medical_necessity_status` — echo of the JSON's `summary.medical_necessity_status`. `null` on skipped/failed.
+- `claim_defense_readiness` — echo of the JSON's `summary.claim_defense_readiness`. `null` on skipped/failed.
+- `clinician_approval_required` — echo of the JSON's `summary.clinician_approval_required`. `null` on skipped/failed.
+- `icd_validated` — `true` if you populated the optional `code_validation` block in the JSON (codes were present in the SOAP note); `false` if you didn't (note had no codes); `null` on skipped/failed.
+- `skipped_reason` — short reason string. Set when `status: "skipped"`; `null` otherwise.
+- `error` — one-line error description. Set when `status: "failed"`; `null` otherwise.
+
+The full per-flag detail lives in `_cdi.json` — the manifest just carries the at-a-glance summary. The app reads `_cdi.json` directly for the `cdi_flags` rows; the manifest is for the case-row summary and the routing decision.
+
+### Worked examples
+
+**Example 1 — status `ok`, ICD codes were in the note and you validated them:**
+
+```json
+{"schema_version":1,"skill":"cdi-review","status":"ok","summary":"5 flags surfaced; quality 73/100; ICD codes validated.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.md","flag_count":5,"flag_counts":{"critical":1,"warning":2,"suggestion":2,"opportunity":0},"quality_score":73,"medical_necessity_status":"weak","claim_defense_readiness":"hold_for_review","clinician_approval_required":true,"icd_validated":true,"skipped_reason":null,"error":null}
 ```
 
-**On clean specialty-skip** (already emitted in Step 0b):
-```
-CDI_SKIPPED: unsupported specialty '<specialty>'
+**Example 2 — status `skipped`, specialty unsupported (Step 0b fired):**
+
+```json
+{"schema_version":1,"skill":"cdi-review","status":"skipped","summary":"Specialty 'cardiology' is not supported by CDI v1.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.md","flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":"specialty not yet supported for CDI v1: cardiology","error":null}
 ```
 
-That's the contract. The app's downstream pipeline parses one of these three lines to decide what to do next.
+**Example 3 — status `failed`, JSON validation failed after the one retry:**
+
+```json
+{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"JSON validation failed after retry; raw output saved.","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"JSON validation failed after 1 retry"}
+```
+
+You may write a short human-readable comment **before** the manifest line in your final response if it helps your own reasoning — but it's strictly optional and the `_cdi.md` is the canonical human-readable artifact. The only thing the app reads structurally is the JSON line at the very end of your response.
+
+**If the manifest line is missing or malformed**, the app falls back to reading the `_cdi.json` directly from disk to recover the run state. That fallback is the safety net; the manifest is the fast happy path. Don't rely on the fallback — emit the manifest.
 
 ---
 
@@ -653,5 +813,6 @@ That's the contract. The app's downstream pipeline parses one of these three lin
 - Does **not** call external tools (no ICD-10 MCP connector in v1).
 - Does **not** write outside `${CASE_DIR}` (no log files, no scratch dirs, no caches).
 - Does **not** modify the SOAP note. It is read-only against the case folder except for its own three output files.
-- Does **not** retry on transient failures beyond the one JSON-validation retry in Step 5. Fail loudly via the `CDI_FAIL:` line.
+- Does **not** retry on transient failures beyond the one JSON-validation retry in Step 5. Fail loudly via the manifest (`status: "failed"`).
 - Does **not** repeat itself across invocations. Each run is stateless; the app maintains the per-patient query log (v1.1).
+- Does **not** print a closing summary, "done!" message, or any other prose after the manifest line. The manifest is the final emission.

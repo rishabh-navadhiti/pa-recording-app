@@ -147,37 +147,51 @@ def get_loopback_device(p):
     if not loopback_devices:
         return None, None
 
+    i, dev, reason = select_loopback_index(loopback_devices, default_name)
+    if i is not None:
+        msg = f'Matched loopback ({reason}): [{i}] {dev["name"]}'
+        # Passes 4-5 are sketchy fallbacks (no name match) — keep them at warning level.
+        (log.warning if reason in ('speaker-type', 'first-available') else log.info)(msg)
+    return i, dev
+
+
+def select_loopback_index(loopback_devices, default_name):
+    """Pure 5-pass WASAPI-loopback matcher (no PyAudio dependency — pytest-able).
+
+    loopback_devices: list of (index, dev_dict) where dev_dict has 'name'.
+    Returns (index, dev, reason) or (None, None, None) when the list is empty.
+    The pass order/conditions mirror the original get_loopback_device heuristic
+    exactly; only the logging moved out to the caller.
+    """
     # Pass 1: loopback name starts with the default output name
     # (WASAPI loopback names are typically "<output name> [Loopback]")
     for i, dev in loopback_devices:
         if dev['name'].startswith(default_name):
-            log.info(f'Matched loopback by startswith: [{i}] {dev["name"]}')
-            return i, dev
+            return i, dev, 'startswith'
 
     # Pass 2: default output name is contained in the loopback name (substring)
     for i, dev in loopback_devices:
         if default_name in dev['name']:
-            log.info(f'Matched loopback by substring: [{i}] {dev["name"]}')
-            return i, dev
+            return i, dev, 'substring'
 
     # Pass 3: loopback name is contained in the default output name (reverse substring)
     # Handles cases where the loopback name is slightly shorter than the output name
     for i, dev in loopback_devices:
         loopback_base = dev['name'].replace(' [Loopback]', '').strip()
         if loopback_base in default_name:
-            log.info(f'Matched loopback by reverse substring: [{i}] {dev["name"]}')
-            return i, dev
+            return i, dev, 'reverse-substring'
 
     # Pass 4: prefer a loopback whose name contains "Speakers" over digital/S/PDIF outputs
     for i, dev in loopback_devices:
         if 'Speakers' in dev['name'] or 'Headphone' in dev['name'] or 'Headset' in dev['name']:
-            log.warning(f'No name match found; preferring speaker-type loopback: [{i}] {dev["name"]}')
-            return i, dev
+            return i, dev, 'speaker-type'
 
     # Pass 5: last resort — first available loopback
-    i, dev = loopback_devices[0]
-    log.warning(f'No suitable match found; using first available loopback: [{i}] {dev["name"]}')
-    return i, dev
+    if loopback_devices:
+        i, dev = loopback_devices[0]
+        return i, dev, 'first-available'
+
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +201,6 @@ def get_loopback_device(p):
 def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     import sounddevice as sd
     import soundfile as sf
-    import numpy as np
 
     if device_index_override is not None:
         device_index = device_index_override
@@ -205,7 +218,10 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
             sys.exit(1)
         log.info(f'Using BlackHole device [{device_index}]: {dev_info["name"]}')
 
-    sample_rate = 48000  # Standard for BlackHole / Audio MIDI Setup
+    # Use the device's reported default rate (parity with Windows) rather than a
+    # hardcoded 48k — BlackHole can be set to 44.1/96k in Audio MIDI Setup, and
+    # opening the stream at a rate the device doesn't run at can fail.
+    sample_rate = int(dev_info.get('default_samplerate') or 48000)
     channels = min(int(dev_info['max_input_channels']), 2)
 
     wav_path = output_mp3.replace('.mp3', '_tmp.wav')
@@ -215,6 +231,11 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     def callback(indata, frames, time_info, status):
         if status:
             log.warning(f'sounddevice status: {status}')
+        # Don't capture frames after stop is requested (parity with the Windows
+        # callback's paComplete short-circuit). The InputStream context exit
+        # below performs the actual stream teardown.
+        if stop_event.is_set():
+            return
         if not pause_event.is_set():
             wav_file.write(indata)
 
@@ -232,19 +253,58 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     # tell() returns current write position = total frames written
     total_frames = wav_file.tell()
     wav_file.close()
-    if total_frames > 0:
-        print(f'DURATION_SECONDS: {total_frames / sample_rate:.3f}', flush=True)
+
+    log.info(f'Recorded {total_frames} frames.')
+
+    # 0-frames guard (parity with Windows): a silent capture means BlackHole
+    # isn't receiving system audio. Delete the empty WAV and fail rather than
+    # producing a silent MP3 that gets sent to transcription.
+    if total_frames == 0:
+        log.error('No audio frames captured — BlackHole is not receiving system audio. '
+                  'Check that a Multi-Output Device (including BlackHole) is selected as the system output.')
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+        sys.exit(1)
+
+    print(f'DURATION_SECONDS: {total_frames / sample_rate:.3f}', flush=True)
     log.info('Stopped recording. Converting to MP3...')
     wav_to_mp3(wav_path, output_mp3, sample_rate)
     log.info(f'Saved: {output_mp3}')
 
 
+# Known macOS virtual-audio loopback drivers, in auto-select priority order.
+# These all expose *system audio* as an input device; an ordinary input (e.g. the
+# built-in mic) is deliberately NOT a fallback — capturing the mic instead of
+# system audio would be silently wrong.
+MACOS_CAPTURE_NEEDLES = ('blackhole', 'aggregate', 'loopback', 'soundflower')
+
+
+def is_macos_capture_candidate(name):
+    """True if `name` looks like a system-audio loopback device (case-insensitive)."""
+    n = (name or '').lower()
+    return any(needle in n for needle in MACOS_CAPTURE_NEEDLES)
+
+
+def select_macos_input_index(devices):
+    """Pure macOS capture-device matcher (no sounddevice dependency — pytest-able).
+
+    devices: list of dicts with 'name' + 'max_input_channels' (sd.query_devices()
+    shape). Returns (index, dev) for the highest-priority input-capable virtual
+    device, or (None, None). Priority follows MACOS_CAPTURE_NEEDLES (BlackHole
+    first); never returns an arbitrary input device.
+    """
+    for needle in MACOS_CAPTURE_NEEDLES:
+        for i, dev in enumerate(devices):
+            if needle in (dev['name'] or '').lower() and dev.get('max_input_channels', 0) > 0:
+                return i, dev
+    return None, None
+
+
 def get_blackhole_device():
     import sounddevice as sd
-    for i, dev in enumerate(sd.query_devices()):
-        if 'BlackHole' in dev['name'] and dev['max_input_channels'] > 0:
-            return i, dev
-    return None, None
+    return select_macos_input_index(list(sd.query_devices()))
 
 
 # ---------------------------------------------------------------------------
@@ -297,13 +357,15 @@ def list_devices_json():
             p.terminate()
     elif sys.platform == 'darwin':
         import sounddevice as sd
+        all_devices = list(sd.query_devices())
+        best_idx, _ = select_macos_input_index(all_devices)
         devices = []
-        for i, dev in enumerate(sd.query_devices()):
-            if 'BlackHole' in dev['name'] and dev['max_input_channels'] > 0:
+        for i, dev in enumerate(all_devices):
+            if is_macos_capture_candidate(dev['name']) and dev['max_input_channels'] > 0:
                 devices.append({
                     'index': i,
                     'name': dev['name'],
-                    'isDefault': True
+                    'isDefault': i == best_idx
                 })
         print(json.dumps({'devices': devices, 'defaultOutput': 'BlackHole'}))
     else:

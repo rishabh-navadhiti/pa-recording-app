@@ -35,16 +35,16 @@ try:
     from docx.shared import Pt, RGBColor, Inches
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
-except ImportError:
-    import subprocess
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "python-docx", "--break-system-packages", "-q"],
-        stdout=subprocess.DEVNULL
+except ImportError as e:
+    # Do NOT auto-install: the old `pip install --break-system-packages` band-aid
+    # mutated the user's global Python. Fail with a clear message instead; deps
+    # come from requirements.txt (and the bundled runtime in Phase 6).
+    print(
+        f'ERROR: python-docx is not installed ({e}). '
+        'Install dependencies with: pip install -r requirements.txt',
+        file=sys.stderr
     )
-    from docx import Document
-    from docx.shared import Pt, RGBColor, Inches
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

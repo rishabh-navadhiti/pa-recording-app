@@ -1,0 +1,125 @@
+'use strict'
+
+/**
+ * Owns the live record.py child process and the stdin communication protocol.
+ *
+ * **Decision #1 (load-bearing — do NOT change the protocol strings):**
+ * record.py reads commands from stdin. The exact strings are:
+ *   stop   → 'stop\n'   + stdin.end()   (both stop-recording AND discard-recording)
+ *   pause  → 'pause\n'
+ *   resume → 'resume\n'
+ * TerminateProcess (kill()) on Windows skips Python's WAV→MP3 flush — that is why
+ * stop writes to stdin instead of calling kill(). See docs/DECISIONS.md Decision #1.
+ *
+ * Also owns the patientNameResolver cross-handler promise — set in stop-recording
+ * and resolved by submit-patient-name — as awaitPatientName / resolvePatientName.
+ *
+ * @returns {RecorderController}
+ */
+function createRecorderController() {
+  let _proc             = null   // live record.py child process
+  let _tempMp3Path      = null   // tmp path while recording (before case folder exists)
+  let _pendingDuration  = null   // parsed from DURATION_SECONDS: stdout line
+  let _patientResolve   = null   // pending patient-name Promise resolver
+
+  return {
+    // ---- process lifecycle ------------------------------------------------
+
+    /** Store the spawned record.py process. */
+    setProcess(proc, tempMp3Path) {
+      _proc        = proc
+      _tempMp3Path = tempMp3Path
+    },
+
+    isRecording() { return _proc !== null },
+    getProcess()  { return _proc },
+    getTempMp3Path() { return _tempMp3Path },
+
+    /** Write 'stop\n' to stdin and end the stream. Behavior-preserving: see Decision #1. */
+    stop() {
+      if (!_proc) return
+      const proc = _proc
+      _proc = null          // null before write so a second stop() is a no-op
+      try {
+        proc.stdin.write('stop\n')
+        proc.stdin.end()
+      } catch (e) {
+        // Process may have already exited.
+        console.error(`[recorder] stdin write(stop) failed: ${e.message}`)
+      }
+      return proc           // caller awaits exit to get the WAV→MP3 duration
+    },
+
+    /** Write 'pause\n' to stdin. */
+    pause() {
+      if (!_proc) return
+      try { _proc.stdin.write('pause\n') } catch {}
+    },
+
+    /** Write 'resume\n' to stdin. */
+    resume() {
+      if (!_proc) return
+      try { _proc.stdin.write('resume\n') } catch {}
+    },
+
+    /**
+     * Discard the recording — same stdin protocol as stop (Decision #1).
+     * Callers must also fs.unlink the temp MP3 after Python exits.
+     */
+    discard() {
+      if (!_proc) return
+      const proc = _proc
+      _proc        = null
+      _tempMp3Path = null
+      try {
+        proc.stdin.write('stop\n')
+        proc.stdin.end()
+      } catch {}
+      return proc
+    },
+
+    clearProcess() {
+      _proc        = null
+      _tempMp3Path = null
+    },
+
+    // ---- audio duration side-channel -------------------------------------
+
+    /** Called when record.py emits 'DURATION_SECONDS: <float>' on stdout. */
+    setPendingDuration(seconds) { _pendingDuration = seconds },
+
+    /** Consume and return the pending duration (clears after read). */
+    consumePendingDuration() {
+      const d = _pendingDuration
+      _pendingDuration = null
+      return d
+    },
+
+    // ---- patient-name cross-handler promise ------------------------------
+
+    /**
+     * Await the patient name entered by the scribe.
+     * Called from stop-recording; resolves when submit-patient-name fires.
+     * Only one patient-name promise may be pending at a time.
+     */
+    awaitPatientName() {
+      if (_patientResolve) throw new Error('A patient-name request is already pending')
+      return new Promise(resolve => { _patientResolve = resolve })
+    },
+
+    /**
+     * Deliver the patient name from submit-patient-name IPC handler.
+     * Resolves the promise started by awaitPatientName().
+     */
+    resolvePatientName(name) {
+      if (_patientResolve) { _patientResolve(name); _patientResolve = null }
+    },
+
+    /** Cancel a pending patient-name prompt (e.g. on discard or stop-session). */
+    cancelPatientName() {
+      if (_patientResolve) { _patientResolve(null); _patientResolve = null }
+    },
+  }
+}
+
+module.exports = { createRecorderController }

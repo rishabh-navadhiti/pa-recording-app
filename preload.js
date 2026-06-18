@@ -1,5 +1,14 @@
 'use strict'
 
+// IMPORTANT: this preload runs SANDBOXED (Electron's default — webPreferences
+// has no `sandbox:false`). A sandboxed preload's require() is a limited polyfill
+// that can ONLY load `electron` + a few builtins — NOT local files. So we must
+// NOT pull in the shared ipc-channels module here (it would throw → window.api
+// never gets exposed → the whole UI silently loses its data). Channel strings are kept
+// as literals; the drift test (tests/unit/shared-drift.test.js) asserts they all
+// exist in the CHANNELS map, which is the single source the main-process side uses.
+// (A bundler in Phase 6 will let the renderer/preload import shared constants.)
+
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
@@ -17,11 +26,13 @@ contextBridge.exposeInMainWorld('api', {
   getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
   getElevenLabsKey:  ()     => ipcRenderer.invoke('get-elevenlabs-key'),
   saveElevenLabsKey: (key)   => ipcRenderer.invoke('save-elevenlabs-key', key),
-
+  getAnthropicKey:   ()     => ipcRenderer.invoke('get-anthropic-key'),
+  saveAnthropicKey:  (key)   => ipcRenderer.invoke('save-anthropic-key', key),
   getDoctors:         ()     => ipcRenderer.invoke('get-doctors'),
   addDoctor:              (name) => ipcRenderer.invoke('add-doctor', name),
   updateDoctor:          (id, name) => ipcRenderer.invoke('update-doctor', id, name),
   updateDoctorTemplate:  (id)   => ipcRenderer.invoke('update-doctor-template', id),
+  updateDoctorSpecialty: (id, specialty) => ipcRenderer.invoke('update-doctor-specialty', id, specialty),
   removeDoctor:           (id)   => ipcRenderer.invoke('remove-doctor', id),
   selectDoctor:       (id)   => ipcRenderer.invoke('select-doctor', id),
 
