@@ -19,15 +19,37 @@ function stripFrontmatter(text) {
  * @param {string} opts.caseDir          Absolute path to the case folder (for the manifest)
  * @param {string} opts.soapNoteMdPath   Absolute path where the app will write the SOAP note
  * @param {string} opts.doctorLastname   Doctor lastname (e.g. "sabbag")
+ * @param {string} [opts.patientName]    Patient name from the patient-name form (optional)
+ * @param {string} [opts.dateOfService]  Date of service MM/DD/YYYY (optional)
+ * @param {string} [opts.doctorFullName] Doctor full name (optional, falls back to lastname)
+ * @param {string} [opts.targetPatient]  For multi-patient fan-out: generate only this patient
  * @returns {{ system: string, user: string }}
  */
-function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseDir, soapNoteMdPath, doctorLastname }) {
+function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseDir, soapNoteMdPath, doctorLastname,
+  patientName, dateOfService, doctorFullName, targetPatient }) {
   const system = stripFrontmatter(skillText)
 
+  const patientLine  = patientName  ? patientName  : '(not provided — use transcript or placeholder)'
+  const dateLine     = dateOfService ? dateOfService : '(not provided — use transcript or placeholder)'
+  const doctorLine   = doctorFullName || doctorLastname
+
+  const injectedFacts = [
+    'INJECTED FACTS (authoritative — use exactly where given):',
+    `- Patient Name: ${patientLine}`,
+    `- Date of Service: ${dateLine}`,
+    `- Doctor: ${doctorLine}`,
+    `- recording_folder: ${caseDir}`,
+    `- soap_note_md: ${soapNoteMdPath}`,
+  ]
+
+  if (targetPatient) {
+    injectedFacts.push(`- Target patient (multi-patient fan-out — generate ONLY this patient, ignore the others): ${targetPatient}`)
+  }
+
   const parts = [
-    `Generate a SOAP note for doctor ${doctorLastname}.`,
-    `recording_folder: "${caseDir}"`,
-    `soap_note_md: "${soapNoteMdPath}"`,
+    `Generate the SOAP note for doctor ${doctorLastname}.`,
+    '',
+    injectedFacts.join('\n'),
     '',
     'DOCTOR TEMPLATE:',
     '---',
@@ -39,9 +61,7 @@ function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseD
     transcriptText,
     '---',
     '',
-    'Write the complete SOAP note as plain text directly in your reply (no code fences, no preamble). ' +
-    'End your reply with the single-line JSON manifest exactly as Step 7 defines, ' +
-    'using the recording_folder and soap_note_md paths given above.',
+    'Write the full SOAP note now, following the DOCTOR TEMPLATE and the rules, then the manifest line.',
   ]
 
   return { system, user: parts.join('\n') }

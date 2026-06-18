@@ -464,7 +464,21 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
 
   const caseDir = path.dirname(soapNoteMdPath)
   const doctorLastname = templatePath ? path.basename(templatePath, '.md') : 'unknown'
-  const { system, user } = buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseDir, soapNoteMdPath, doctorLastname })
+
+  // Derive injected facts from caseTag (e.g. "jackie_2026-06-18")
+  const dateMatch = caseTag ? caseTag.match(/_(\d{4}-\d{2}-\d{2})$/) : null
+  const dateOfService = dateMatch
+    ? dateMatch[1].replace(/(\d{4})-(\d{2})-(\d{2})/, '$2/$3/$1')
+    : null
+  const patientSlug = dateMatch ? caseTag.slice(0, caseTag.length - dateMatch[0].length) : caseTag
+  const patientName = patientSlug
+    ? patientSlug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    : null
+
+  const { system, user } = buildSingleCallNoteGen({
+    skillText, templateText, transcriptText, caseDir, soapNoteMdPath,
+    doctorLastname, patientName, dateOfService,
+  })
 
   const runResult = await ctx.api.runSingleCall({ system, user, model, tag, label: 'soap:api' })
   const { ok, text: resultText, rawUsage, durationMs, errText, statusCode } = runResult
