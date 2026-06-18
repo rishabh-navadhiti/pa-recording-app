@@ -5,11 +5,14 @@
  *
  * **Decision #1 (load-bearing — do NOT change the protocol strings):**
  * record.py reads commands from stdin. The exact strings are:
- *   stop   → 'stop\n'   + stdin.end()   (both stop-recording AND discard-recording)
- *   pause  → 'pause\n'
- *   resume → 'resume\n'
+ *   stop    → 'stop\n'    + stdin.end()   (stop-recording: triggers WAV→MP3 flush)
+ *   discard → 'discard\n' + stdin.end()   (discard-recording: skips transcriber + WAV→MP3, cleans up silently)
+ *   pause   → 'pause\n'
+ *   resume  → 'resume\n'
  * TerminateProcess (kill()) on Windows skips Python's WAV→MP3 flush — that is why
  * stop writes to stdin instead of calling kill(). See docs/DECISIONS.md Decision #1.
+ * The discard command is a separate protocol extension: on discard we intentionally
+ * skip the flush, so Python exits cleanly without printing any ERROR to stderr.
  *
  * Also owns the patientNameResolver cross-handler promise — set in stop-recording
  * and resolved by submit-patient-name — as awaitPatientName / resolvePatientName.
@@ -63,8 +66,9 @@ function createRecorderController() {
     },
 
     /**
-     * Discard the recording — same stdin protocol as stop (Decision #1).
-     * Callers must also fs.unlink the temp MP3 after Python exits.
+     * Discard the recording — sends 'discard\n' so Python skips the realtime
+     * transcriber and WAV→MP3 conversion and exits silently (Decision #1 extension).
+     * Callers must also fs.unlink the temp MP3/WAV after Python exits.
      */
     discard() {
       if (!_proc) return
@@ -72,7 +76,7 @@ function createRecorderController() {
       _proc        = null
       _tempMp3Path = null
       try {
-        proc.stdin.write('stop\n')
+        proc.stdin.write('discard\n')
         proc.stdin.end()
       } catch {}
       return proc

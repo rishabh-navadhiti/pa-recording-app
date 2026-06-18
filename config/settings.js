@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   cdiMode:   'balanced',
   enableEmScore: false,
   enablePatientSummary: false,
+  realtimeTranscription: false,
 })
 
 // Valid soapModel option ids. Kept inline to avoid a runtime require in the normalizer.

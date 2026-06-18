@@ -33,6 +33,7 @@ function ingestAudio(opts) {
     doctorId, templatePath, capturedDuration,
     moveAudio = false, probeDuration = false,
     ctx, spawnTranscription,
+    realtimeTranscriptSrc = null,
   } = opts
 
   const { log } = ctx
@@ -53,6 +54,18 @@ function ingestAudio(opts) {
   } catch (e) {
     log(`[ingest] ERROR copying audio: ${e.message}`)
     return { ok: false, caseId: null, caseDir }
+  }
+
+  // ---- 2a. Copy realtime transcript JSON (if present) ----------------------
+  if (realtimeTranscriptSrc && fs.existsSync(realtimeTranscriptSrc)) {
+    const realtimeJsonDest = audioDest.replace(/\.mp3$/, '_realtime.json')
+    try {
+      fs.copyFileSync(realtimeTranscriptSrc, realtimeJsonDest)
+      try { fs.unlinkSync(realtimeTranscriptSrc) } catch (_) {}
+      log(`[ingest] Realtime transcript → ${realtimeJsonDest}`)
+    } catch (e) {
+      log(`[ingest] realtime JSON copy failed: ${e.message}`)
+    }
   }
 
   // ---- 3. Create DB case row ------------------------------------------------
