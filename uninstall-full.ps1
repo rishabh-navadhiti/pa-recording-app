@@ -169,6 +169,22 @@ if ($removeNotes -eq "y" -or $removeNotes -eq "Y") {
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# STEP 6b — Clear electron cache
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Write-Host ""
+Write-Host "  Clearing electron cache..." -ForegroundColor Gray
+# Remove cached electron zips so a future reinstall always downloads a fresh
+# copy — avoids the silent extract-zip failure on locked dist/locales/ folder.
+$electronCache = "$env:LOCALAPPDATA\electron\Cache"
+if (Test-Path $electronCache) {
+    Get-ChildItem $electronCache -Recurse -Filter "electron-*-win32-x64.zip" -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    OK "Electron cache cleared"
+} else {
+    SKIP "Electron cache"
+}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # STEP 7 — Remove install directory
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Step 7 "Removing app install directory..."

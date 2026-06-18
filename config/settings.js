@@ -6,13 +6,16 @@ const DEFAULT_SETTINGS = Object.freeze({
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  soapModel:      'claude-sonnet-4-6',
+  soapModel:      'sonnet-4-6-api',
   templateModel:  'claude-opus-4-8',
   templateEffort: 'max',
   enableIcd: false,
   enableCdi: false,
   cdiMode:   'balanced',
 })
+
+// Valid soapModel option ids. Kept inline to avoid a runtime require in the normalizer.
+const VALID_SOAP_OPTIONS = new Set(['sonnet-4-6-api', 'sonnet-4-6-agentic'])
 
 /**
  * Atomic write with retry for transient Windows AV / file-indexer locks.
@@ -37,6 +40,9 @@ function safeWrite(filePath, data) {
 }
 
 function applyInvariants(s) {
+  // Map legacy raw model ids (e.g. 'claude-sonnet-4-6') and unknown values
+  // to the default API option id. Non-destructive: only soapModel is touched.
+  if (!VALID_SOAP_OPTIONS.has(s.soapModel)) s.soapModel = 'sonnet-4-6-api'
   // Invariant: CDI runs after ICD and needs codes baked into the note.
   // Normalize so every consumer sees consistent state — including legacy
   // settings.json that has enableCdi without enableIcd.

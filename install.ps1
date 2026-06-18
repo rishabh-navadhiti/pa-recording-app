@@ -133,7 +133,31 @@ OK "Python packages OK"
 # ---- 9. Node packages -------------------------------------------------------
 Step 9 "Installing Node packages..."
 Push-Location $installDir
-npm install --silent
+npm install
+# electron's postinstall hook downloads the binary and extracts it via
+# extract-zip. On Windows, extract-zip can fail silently (exit 1) when a
+# pre-existing dist/locales/ folder is file-locked from a prior partial
+# install — npm absorbs the non-zero postinstall exit and still reports
+# success, so electron.exe ends up missing with no visible error.
+# Detect this and recover using Expand-Archive -Force (handles locked folders).
+$electronBin = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+if (-not (Test-Path $electronBin)) {
+    Write-Host "  electron.exe missing after npm install — recovering from cache..." -ForegroundColor Yellow
+    $zipCache = "$env:LOCALAPPDATA\electron\Cache"
+    $zip = Get-ChildItem $zipCache -Recurse -Filter "electron-*-win32-x64.zip" `
+           | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($zip) {
+        $distDir = Join-Path $installDir "node_modules\electron\dist"
+        Expand-Archive -Path $zip.FullName -DestinationPath $distDir -Force
+        Set-Content -Path (Join-Path $installDir "node_modules\electron\path.txt") `
+                    -Value "dist/electron.exe" -NoNewline -Encoding utf8
+        Write-Host "  Electron binary restored from cache." -ForegroundColor Green
+    } else {
+        Write-Host "  ERROR: Electron zip not in cache. Delete node_modules\ and re-run this installer." -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+}
 # Rebuild better-sqlite3 for the bundled Electron runtime (native addon — the
 # npm install above builds it for system Node.js, which has a different ABI).
 Write-Host "  Rebuilding native modules for Electron..." -ForegroundColor Gray
@@ -163,7 +187,10 @@ if (Test-Path $electronPathTxt) {
 }
 if (-not (Test-Path $electronExe)) {
     Write-Host "  ERROR: Electron binary not found at: $electronExe" -ForegroundColor Red
-    Write-Host "  Re-run 'npm install' inside $installDir then launch manually." -ForegroundColor Yellow
+    Write-Host "  Reboot, then open an Admin PowerShell and run:" -ForegroundColor Yellow
+    Write-Host "    cd `"$installDir`"" -ForegroundColor Yellow
+    Write-Host "    npm install" -ForegroundColor Yellow
+    Write-Host "    npx electron-rebuild -f -w better-sqlite3" -ForegroundColor Yellow
     exit 1
 }
 
@@ -228,4 +255,10 @@ Write-Host ""
 Write-Host "IMPORTANT: Run 'claude login' once in a terminal to authenticate Claude CLI." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Launching AI Medical Scribe..." -ForegroundColor Cyan
-Start-Process $electronExe -ArgumentList "." -WorkingDirectory $installDir
+if (Test-Path $electronExe) {
+    Start-Process $electronExe -ArgumentList "." -WorkingDirectory $installDir
+} else {
+    Write-Host "ERROR: Cannot launch — electron.exe not found at:" -ForegroundColor Red
+    Write-Host "       $electronExe" -ForegroundColor Red
+    Write-Host "       Re-run this installer or run Step 9 manually." -ForegroundColor Yellow
+}

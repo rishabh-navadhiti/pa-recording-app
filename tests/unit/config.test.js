@@ -41,7 +41,7 @@ test('settings get() returns merged defaults when file missing', () => {
   const store = createSettingsStore('/nonexistent/path/settings.json')
   const s = store.get()
   assert.strictEqual(s.autoRecord, false)
-  assert.strictEqual(s.soapModel, 'claude-sonnet-4-6')
+  assert.strictEqual(s.soapModel, 'sonnet-4-6-api')
 })
 
 test('settings get() caches (reads disk once)', () => {

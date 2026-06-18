@@ -55,6 +55,16 @@ if ($removeNotes -eq "y" -or $removeNotes -eq "Y") {
     }
 }
 
+# ---- Clear electron cache ---------------------------------------------------
+# Remove cached electron zips so a future reinstall always downloads a fresh
+# copy — avoids the silent extract-zip failure on locked dist/locales/ folder.
+Write-Host "Clearing electron cache..." -ForegroundColor Yellow
+$electronCache = "$env:LOCALAPPDATA\electron\Cache"
+if (Test-Path $electronCache) {
+    Get-ChildItem $electronCache -Recurse -Filter "electron-*-win32-x64.zip" -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 # ---- Remove install directory (deferred - this script lives inside it) ------
 Write-Host ""
 Write-Host "Removing app files..." -ForegroundColor Yellow
