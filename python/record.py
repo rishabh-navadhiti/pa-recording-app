@@ -7,15 +7,22 @@ macOS:   BlackHole virtual audio driver via sounddevice.
 Usage:
     python record.py --output /path/to/output.mp3
     python record.py --output /path/to/output.mp3 --device 3
+    python record.py --output /path/to/output.mp3 --realtime --api-key sk_... --realtime-output /tmp/transcript.json
 """
 
 import argparse
+import array as _array
+import asyncio
+import base64
+import json
 import os
+import queue as _queue
 import sys
 import signal
 import tempfile
 import threading
 import logging
+import urllib.parse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,14 +37,161 @@ def parse_args():
     parser.add_argument('--output', required=False, help='Path for output .mp3 file')
     parser.add_argument('--device', type=int, default=None, help='Device index override')
     parser.add_argument('--list-devices', action='store_true', help='List loopback devices as JSON and exit')
+    parser.add_argument('--realtime', action='store_true', help='Stream audio to ElevenLabs in real time during recording')
+    parser.add_argument('--api-key', default='', help='ElevenLabs API key (required when --realtime is set)')
+    parser.add_argument('--realtime-output', default='', help='Path to write the realtime transcript JSON')
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Real-time streaming transcriber
+# ---------------------------------------------------------------------------
+
+class RealtimeTranscriber:
+    """Streams PCM audio chunks to the ElevenLabs streaming STT WebSocket in a
+    background thread while recording is in progress.  When stop() is called the
+    thread flushes the queue, waits for the server's final response, and writes
+    a JSON file that Node reads instead of making a fresh batch API call.
+
+    Output file format mirrors the ElevenLabs batch response so the existing
+    formatTranscript() in elevenLabs.js works unchanged:
+        {"words": [...], "text": "..."}
+
+    NOTE: The exact ElevenLabs streaming STT WebSocket protocol (init message
+    fields, binary audio format, event shapes) should be verified against their
+    current API docs.  The implementation below follows the documented protocol
+    as of mid-2025 and is the starting point for integration testing.
+    """
+
+    _WS_URI = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
+
+    def __init__(self, api_key, output_path, sample_rate, channels):
+        self._api_key     = api_key
+        self._output_path = output_path
+        self._sample_rate = sample_rate
+        self._channels    = channels
+        self._audio_q     = _queue.Queue()
+        self._words       = []
+        self._text_parts  = []
+        self._done        = threading.Event()
+        self._error       = None
+
+    def start(self):
+        """Spawn the background WebSocket thread (non-blocking)."""
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def send_audio(self, pcm_bytes):
+        """Thread-safe.  Called from the audio capture callback with each PCM chunk."""
+        self._audio_q.put(pcm_bytes)
+
+    def stop(self, timeout=30):
+        """Signal end of audio and wait for the final transcript (max timeout seconds).
+        Raises RuntimeError if the transcriber encountered an error or timed out;
+        caller logs to stderr so Node falls back to batch transcription.
+        """
+        self._audio_q.put(None)   # sentinel → producer sends {"type":"end"} and exits
+        if not self._done.wait(timeout=timeout):
+            self._error = f'Realtime transcriber did not complete within {timeout}s'
+        if self._error:
+            raise RuntimeError(self._error)
+
+    def _run(self):
+        try:
+            asyncio.run(self._stream())
+        except Exception as e:
+            self._error = str(e)
+        finally:
+            self._done.set()
+
+    async def _stream(self):
+        from elevenlabs.realtime.scribe import ScribeRealtime, AudioFormat, CommitStrategy
+        from elevenlabs.realtime.connection import RealtimeEvents
+
+        # Map device sample rate to the nearest supported AudioFormat.
+        _format_map = {
+            8000:  AudioFormat.PCM_8000,
+            16000: AudioFormat.PCM_16000,
+            22050: AudioFormat.PCM_22050,
+            24000: AudioFormat.PCM_24000,
+            44100: AudioFormat.PCM_44100,
+            48000: AudioFormat.PCM_48000,
+        }
+        audio_fmt = _format_map.get(self._sample_rate, AudioFormat.PCM_16000)
+
+        scribe = ScribeRealtime(api_key=self._api_key)
+        conn = await scribe.connect({
+            "model_id":           "scribe_v2_realtime",
+            "audio_format":       audio_fmt,
+            "sample_rate":        self._sample_rate,
+            "commit_strategy":    CommitStrategy.VAD,
+            "include_timestamps": True,
+        })
+
+        def _on_transcript(data):
+            words = data.get("words", [])
+            if isinstance(words, list):
+                self._words.extend(
+                    w for w in words
+                    if isinstance(w, dict) and w.get("type") == "word"
+                )
+            t = data.get("text", "")
+            if t:
+                self._text_parts.append(t)
+
+        _errors = []
+        conn.on(RealtimeEvents.COMMITTED_TRANSCRIPT,                _on_transcript)
+        conn.on(RealtimeEvents.COMMITTED_TRANSCRIPT_WITH_TIMESTAMPS, _on_transcript)
+        conn.on(RealtimeEvents.ERROR, lambda d: _errors.append(d.get("error", str(d))))
+
+        # Stream audio chunks until sentinel None arrives.
+        # ElevenLabs realtime expects MONO PCM — downmix stereo before sending.
+        loop = asyncio.get_running_loop()
+        while True:
+            chunk = await loop.run_in_executor(None, self._audio_q.get)
+            if chunk is None:
+                break
+            if self._channels == 2:
+                # Stereo 16-bit interleaved [L0,R0,L1,R1,...] -> left channel only.
+                arr = _array.array('h', chunk)
+                chunk = _array.array('h', arr[::2]).tobytes()
+            await conn.send({"audio_base_64": base64.b64encode(chunk).decode()})
+
+        # Flush remaining audio and wait for final committed_transcript.
+        await conn.commit()
+        await asyncio.sleep(10.0)
+
+        # Check for real API errors (auth, quota) — filter out close-frame noise.
+        fatal_errors = [
+            e for e in _errors
+            if "sent 1000" not in e and "no close frame" not in e
+        ]
+        if fatal_errors:
+            raise RuntimeError(f"ElevenLabs: {fatal_errors[0]}")
+
+        # Write output BEFORE closing — a failed close must not discard the transcript.
+        result = {
+            "words": self._words,
+            "text":  " ".join(self._text_parts),
+        }
+        with open(self._output_path, "w", encoding="utf-8") as f:
+            json.dump(result, f)
+        log.info(f"Realtime transcript written: {self._output_path}")
+
+        try:
+            await conn.close()
+        except Exception:
+            pass  # server not sending a close frame is non-fatal
 
 
 # ---------------------------------------------------------------------------
 # Windows — WASAPI loopback via PyAudioWPatch
 # ---------------------------------------------------------------------------
 
-def record_windows(output_mp3, device_index_override, stop_event, pause_event):
+def record_windows(output_mp3, device_index_override, stop_event, pause_event, realtime_args=None, discard_event=None):
+    """
+    realtime_args: argparse.Namespace with .api_key and .realtime_output set,
+                   or None if realtime transcription is disabled.
+    """
     import pyaudiowpatch as pyaudio
     import wave
     import io
@@ -60,6 +214,18 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event):
         channels = device_info['maxInputChannels'] or 2
         chunk = 1024
 
+        # Create the realtime transcriber now that we know the device format.
+        transcriber = None
+        if realtime_args:
+            transcriber = RealtimeTranscriber(
+                api_key=realtime_args.api_key,
+                output_path=realtime_args.realtime_output,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            transcriber.start()
+            log.info(f'Realtime transcriber started ({sample_rate}Hz, {channels}ch)')
+
         # Write to a temp WAV file first
         wav_path = output_mp3.replace('.mp3', '_tmp.wav')
         wf = wave.open(wav_path, 'wb')
@@ -76,6 +242,8 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event):
                 return (None, pyaudio.paComplete)
             if not pause_event.is_set():
                 wf.writeframes(in_data)
+                if transcriber:
+                    transcriber.send_audio(in_data)
                 frames_written[0] += frame_count
             return (None, pyaudio.paContinue)
 
@@ -101,6 +269,17 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event):
 
         log.info(f'Recorded {frames_written[0]} frames.')
 
+        # Discard path: abandon realtime transcriber (daemon thread dies with
+        # the process), delete the temp WAV, and exit cleanly with no ERROR output.
+        if discard_event and discard_event.is_set():
+            if transcriber:
+                log.info('Discarding — realtime transcriber abandoned.')
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            return
+
         if frames_written[0] == 0:
             log.error('No audio frames captured — wrong loopback device or no system audio playing.')
             # Clean up the empty WAV
@@ -109,6 +288,18 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event):
             except OSError:
                 pass
             sys.exit(1)
+
+        # Finalize realtime transcript (drain WS queue, await server final response).
+        # Must run after the stream closes so no more audio arrives in the queue,
+        # and before WAV→MP3 so the total wall-time is accurate.
+        if transcriber:
+            try:
+                log.info('Waiting for realtime transcript to finalize...')
+                transcriber.stop()
+                log.info('Realtime transcript complete.')
+            except Exception as e:
+                print(f'ERROR: Realtime transcriber: {e}', file=sys.stderr)
+                # Node will detect the missing/empty JSON and fall back to batch.
 
         duration_seconds = frames_written[0] / sample_rate
         print(f'DURATION_SECONDS: {duration_seconds:.3f}', flush=True)
@@ -198,7 +389,11 @@ def select_loopback_index(loopback_devices, default_name):
 # macOS — BlackHole via sounddevice
 # ---------------------------------------------------------------------------
 
-def record_macos(output_mp3, device_index_override, stop_event, pause_event):
+def record_macos(output_mp3, device_index_override, stop_event, pause_event, realtime_args=None, discard_event=None):
+    """
+    realtime_args: argparse.Namespace with .api_key and .realtime_output set,
+                   or None if realtime transcription is disabled.
+    """
     import sounddevice as sd
     import soundfile as sf
 
@@ -224,6 +419,18 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
     sample_rate = int(dev_info.get('default_samplerate') or 48000)
     channels = min(int(dev_info['max_input_channels']), 2)
 
+    # Create the realtime transcriber now that we know the device format.
+    transcriber = None
+    if realtime_args:
+        transcriber = RealtimeTranscriber(
+            api_key=realtime_args.api_key,
+            output_path=realtime_args.realtime_output,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        transcriber.start()
+        log.info(f'Realtime transcriber started ({sample_rate}Hz, {channels}ch)')
+
     wav_path = output_mp3.replace('.mp3', '_tmp.wav')
     wav_file = sf.SoundFile(wav_path, mode='w', samplerate=sample_rate,
                              channels=channels, subtype='PCM_16')
@@ -238,6 +445,9 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
             return
         if not pause_event.is_set():
             wav_file.write(indata)
+            if transcriber:
+                # indata is a numpy int16 array; convert to raw bytes for the WS.
+                transcriber.send_audio(indata.tobytes())
 
     log.info(f'Recording started at {sample_rate}Hz, {channels}ch')
 
@@ -256,6 +466,16 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
 
     log.info(f'Recorded {total_frames} frames.')
 
+    # Discard path: abandon realtime transcriber, delete temp WAV, exit cleanly.
+    if discard_event and discard_event.is_set():
+        if transcriber:
+            log.info('Discarding — realtime transcriber abandoned.')
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+        return
+
     # 0-frames guard (parity with Windows): a silent capture means BlackHole
     # isn't receiving system audio. Delete the empty WAV and fail rather than
     # producing a silent MP3 that gets sent to transcription.
@@ -267,6 +487,15 @@ def record_macos(output_mp3, device_index_override, stop_event, pause_event):
         except OSError:
             pass
         sys.exit(1)
+
+    # Finalize realtime transcript before WAV→MP3 (same reasoning as Windows path).
+    if transcriber:
+        try:
+            log.info('Waiting for realtime transcript to finalize...')
+            transcriber.stop()
+            log.info('Realtime transcript complete.')
+        except Exception as e:
+            print(f'ERROR: Realtime transcriber: {e}', file=sys.stderr)
 
     print(f'DURATION_SECONDS: {total_frames / sample_rate:.3f}', flush=True)
     log.info('Stopped recording. Converting to MP3...')
@@ -383,8 +612,9 @@ def main():
         print('ERROR: --output is required when not using --list-devices', file=sys.stderr)
         sys.exit(1)
 
-    stop_event = threading.Event()
-    pause_event = threading.Event()
+    stop_event    = threading.Event()
+    pause_event   = threading.Event()
+    discard_event = threading.Event()
 
     def handle_stop(signum, frame):
         log.info(f'Signal {signum} received — stopping...')
@@ -409,6 +639,11 @@ def main():
                     log.info('stdin: stop')
                     stop_event.set()
                     break
+                elif cmd == 'discard':
+                    log.info('stdin: discard')
+                    discard_event.set()
+                    stop_event.set()
+                    break
                 elif cmd == 'pause':
                     log.info('stdin: pause')
                     pause_event.set()
@@ -427,10 +662,25 @@ def main():
     log.info(f'Output: {args.output}')
     log.info(f'Platform: {sys.platform}')
 
+    if args.realtime:
+        if not args.api_key:
+            print('ERROR: --api-key is required when --realtime is set', file=sys.stderr)
+            sys.exit(1)
+        if not args.realtime_output:
+            print('ERROR: --realtime-output is required when --realtime is set', file=sys.stderr)
+            sys.exit(1)
+        log.info(f'Realtime transcription enabled -> {args.realtime_output}')
+
+    # realtime_args is passed to the platform function so it can create the
+    # RealtimeTranscriber after learning the device sample_rate and channels.
+    realtime_args = args if args.realtime else None
+
     if sys.platform == 'win32':
-        record_windows(args.output, args.device, stop_event, pause_event)
+        record_windows(args.output, args.device, stop_event, pause_event,
+                       realtime_args=realtime_args, discard_event=discard_event)
     elif sys.platform == 'darwin':
-        record_macos(args.output, args.device, stop_event, pause_event)
+        record_macos(args.output, args.device, stop_event, pause_event,
+                     realtime_args=realtime_args, discard_event=discard_event)
     else:
         print(f'ERROR: Unsupported platform: {sys.platform}', file=sys.stderr)
         sys.exit(1)

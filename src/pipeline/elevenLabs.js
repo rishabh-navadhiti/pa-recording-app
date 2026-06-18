@@ -137,10 +137,31 @@ async function transcribeToFile(opts) {
   return { markdown }
 }
 
+/**
+ * Read the realtime transcript JSON written by Python's RealtimeTranscriber.
+ * Returns the parsed object if it contains usable data, or null if missing,
+ * unreadable, or empty — callers fall back to the batch API in that case.
+ *
+ * @param {string} jsonPath  Absolute path to the <name>_realtime.json file.
+ * @returns {object|null}
+ */
+function readRealtimeTranscript(jsonPath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+    if (!data) return null
+    const hasWords = Array.isArray(data.words) && data.words.length > 0
+    const hasText  = typeof data.text === 'string' && data.text.trim().length > 0
+    return (hasWords || hasText) ? data : null
+  } catch {
+    return null
+  }
+}
+
 module.exports = {
   formatTranscript,
   requestTranscription,
   transcribeToFile,
+  readRealtimeTranscript,
   ELEVENLABS_API_URL,
   ELEVENLABS_MODEL,
 }

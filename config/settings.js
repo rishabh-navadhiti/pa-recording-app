@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   enableIcd: false,
   enableCdi: false,
   cdiMode:   'balanced',
+  realtimeTranscription: false,
 })
 
 /**
