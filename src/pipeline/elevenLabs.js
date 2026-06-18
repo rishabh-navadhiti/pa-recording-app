@@ -13,9 +13,30 @@
 const fs   = require('fs')
 const path = require('path')
 
-const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/speech-to-text'
-const ELEVENLABS_MODEL   = 'scribe_v2'
-const DEFAULT_TIMEOUT_MS  = 300000  // matches transcribe.py's requests timeout=300
+const ELEVENLABS_API_URL         = 'https://api.elevenlabs.io/v1/speech-to-text'
+const ELEVENLABS_MODEL            = 'scribe_v2'
+const DEFAULT_TIMEOUT_MS          = 300000  // matches transcribe.py's requests timeout=300
+const SCRIBE_V2_COST_PER_HOUR_USD = 0.22   // verify at elevenlabs.io/pricing
+
+/**
+ * Extract per-call metrics from a raw ElevenLabs scribe_v2 response.
+ * All fields are nullable — callers can pass the result straight to finishEvent().
+ *
+ * @param {object} data  Parsed ElevenLabs JSON response.
+ * @returns {{ languageCode: string|null, speakerCount: number|null, audioDurationSeconds: number|null }}
+ */
+function extractTranscriptMetrics(data) {
+  const words = (data && data.words) || []
+  const speakerIds = new Set()
+  for (const w of words) {
+    if (w && w.type === 'word' && 'speaker_id' in w) speakerIds.add(w.speaker_id)
+  }
+  return {
+    languageCode:         (data && data.language_code)  ?? null,
+    speakerCount:         speakerIds.size > 0 ? speakerIds.size : null,
+    audioDurationSeconds: (data && data.audio_duration) ?? null,
+  }
+}
 
 /**
  * Build markdown from the words[] array returned by ElevenLabs. Groups
@@ -134,13 +155,16 @@ async function transcribeToFile(opts) {
   const markdown = formatTranscript(data)
   fs.mkdirSync(path.dirname(transcriptDest), { recursive: true })
   fs.writeFileSync(transcriptDest, markdown, 'utf8')
-  return { markdown }
+  const { languageCode, speakerCount, audioDurationSeconds } = extractTranscriptMetrics(data)
+  return { markdown, languageCode, speakerCount, audioDurationSeconds }
 }
 
 module.exports = {
   formatTranscript,
+  extractTranscriptMetrics,
   requestTranscription,
   transcribeToFile,
   ELEVENLABS_API_URL,
   ELEVENLABS_MODEL,
+  SCRIBE_V2_COST_PER_HOUR_USD,
 }
