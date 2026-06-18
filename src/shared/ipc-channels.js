@@ -19,6 +19,8 @@ const CHANNELS = Object.freeze({
   CHANGE_NOTES_DIR:     'change-notes-dir',
   GET_ELEVENLABS_KEY:   'get-elevenlabs-key',
   SAVE_ELEVENLABS_KEY:  'save-elevenlabs-key',
+  GET_ANTHROPIC_KEY:    'get-anthropic-key',
+  SAVE_ANTHROPIC_KEY:   'save-anthropic-key',
   HIDE_WINDOW:          'hide-window',
 
   // ---- session & recording ----

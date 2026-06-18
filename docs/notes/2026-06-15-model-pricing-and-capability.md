@@ -160,6 +160,22 @@ You'll need the Anthropic API no matter what (Opus for template create/update). 
 
 **The June 15 2026 billing change:** subscription `claude -p` / Agent SDK calls now draw from a **separate capped credit pool** ($20/$100/$200 per plan, no rollover, then full API rates). So continuing on the CLI is both **non-compliant for PHI** and **economically capped**. The decision: **move note-gen to the Messages API regardless**; *then* decide whether a cheaper/faster vendor (Gemini-on-Vertex) beats Anthropic on your eval. Keep Anthropic in the stack for Opus templates either way.
 
+### 9.1 Two API facts that came up (effort + structured outputs)
+
+- **`effort` IS the thinking dial.** `output_config: {effort: low|medium|high|max}` (default `high`) "controls thinking depth and overall token spend." With **thinking OFF (single forward pass) effort has ~no effect** — there's nothing to deepen. So for verbatim note-gen, effort is *not* a separate quality knob: higher effort = more thinking = the lever our Sabbag test + the NeurIPS paper showed *doesn't help and can hurt*. (The bake-off used default `effort:high`; on Sonnet 4.6 the recommended way to do thinking is `thinking:{type:"adaptive"}` + `effort`, not the deprecated `budget_tokens` the test used.)
+- **Structured outputs for the manifest.** `output_config: {format: {type:"json_schema", schema:{…}}}` constrains the *entire* response to valid JSON (constrained decoding — can't emit schema-violating tokens). Since our reply is *markdown note + trailing JSON manifest*, you can't mix the two in one structured-output call. Options: **(a) keep the tail-parse contract** (portable across vendors, already reliable — baseline), or **(b)** wrap the reply as `{"note_markdown":…,"manifest":{…}}` for a hard guarantee. Supported on Sonnet 4.6 / Opus 4.8 / Haiku 4.5 (+ OpenAI `json_schema strict`, Gemini `responseSchema`). Not urgent — the manifest parses reliably today.
+
+### 9.2 How skills execute after the migration (skills stay — only the runner changes)
+
+| Option | What it is | Skills? | HIPAA | Fit |
+|---|---|---|---|---|
+| **A. Single-call Messages API** | skill→system prompt; app does file IO + manifest parse; one HTTP call | skill = system prompt | eligible | ★ note-gen, edit-note, patient-card, E/M |
+| **B. Claude Agent SDK** | API-key version of `claude -p` — same agentic loop + tools + MCP + **native skills**, pay-as-you-go | native `skills[]` | core API eligible; MCP/code-exec not | keeps *agentic* skills (CDI) without rewrite, staying on Claude |
+| **C. Managed Agents** | Anthropic runs the loop + hosts a per-session container; versioned Agent (model+system+tools+**skills**+MCP) → Sessions | native `skills[]` | **NOT eligible** | overkill for a desktop scribe; powerful for server-side stateful agents |
+| **D. Open-source harness** (LangGraph/Goose/Codex CLI) | a loop you drive against any vendor's API; SKILL.md folder format is portable across coding-agent CLIs | folder format only | depends | only if you need agentic + a non-Claude model (re-adds token overhead) |
+
+Non-Anthropic hosted APIs (OpenAI/Gemini) have **no "load a skill" endpoint** — there a skill *is* the system prompt (Option A). Net: **A for the daily tasks; B if a skill genuinely needs the agentic loop and you stay on Claude.**
+
 ---
 
 ## 10. Bottom line / what to put on the eval
@@ -192,16 +208,29 @@ Two independent lines of evidence now point the same way, and it **sharpens the 
 
 **Reconciling with my Sabbag test** (where Gemini-*with*-thinking caught a dot-phrase Sonnet-*without* missed): thinking likely helps boilerplate **recall** while hurting verbatim **fidelity**. So the default is **thinking OFF for verbatim templating**, but **run the winner both ways on your eval** — this is now a well-motivated hypothesis to test, not a guess. Every model below has an instruct/non-reasoning mode, so you keep this lever everywhere.
 
-### 11.3 Top open-weight picks (put on the eval)
-| Model | shape / license | ≈$/note | IF evidence | Verified? |
-|---|---|---|---|---|
-| **Qwen3.5-27B** (instruct, `enable_thinking:false`) | 27B MoE, 262K ctx, Apache-2.0, ~1.76M dl/mo | ~$0.011 | IFEval ~95 (family, corroborated) | ✅ HF card |
-| **GLM-4.6** (non-thinking) | 357B MoE, ~200K ctx, MIT | ~$0.013 | solid all-rounder | ✅ most-verified |
-| **DeepSeek V4 Flash** (non-thinking) | 284B/~13B MoE, 1M ctx, MIT-ish | **~$0.001–0.0024** | none for Flash specifically | ◐ reported; China-hosted |
+### 11.3 Candidate models — pricing + per-note cost (Sabbag & Spencer)
 
-**Eval lanes:** Qwen3.5-27B (lead — best obedience/$), GLM-4.6 (most-verified fallback), DeepSeek V4 Flash (cost floor / quality ceiling check). Tier-2 (no reason to lead): DeepSeek V4 Pro, Qwen3.5-397B, Mistral Large 3 / Medium 3.5, Kimi K2.6. **Rule out for this task:** Llama 4 (no IF lead; Behemoth paused), GLM-5 / MiniMax M3 / Qwen3.6 (coding/agentic axis — wrong skill for verbatim templating; specs blogspam-only).
+**Two tracks, kept separate** (corrected 2026-06-15): for **hosted** use with compliance deferred, cost is noise, so **don't prefer small over big — pick the most capable instruction-follower**. The small models matter only for the *self-hosting* track (a separate, client-specific decision — parked).
 
-⚠️ **The big unknown:** Flash-tier instruction-following data is genuinely **sparse** — the strong IFEval numbers belong to the *larger* Qwen variants, **not** Qwen3.5-Flash, and DeepSeek V4 Flash has no published IFEval. This gap is *exactly why the eval is mandatory* — don't assume any cheap model beats Sonnet on verbatim fidelity until it's measured on your template.
+Per-note cost = (single-call input × $in) + (output × $out), no caching. Profiles: **Sabbag ≈ 31k in / 3k out** (measured); **Spencer ≈ 14k in / 1.2k out** (estimated — 739-line template + ~2-min visits). Caching the static template cuts the input term further.
+
+| Model | $/1M in | $/1M out | **$/Sabbag note** | **$/Spencer note** | track / note |
+|---|--:|--:|--:|--:|---|
+| **DeepSeek V4 Pro** | 0.435 | 0.87 | **$0.016** | **$0.007** | ★ hosted — strong + dirt cheap (you rate it) |
+| **DeepSeek V4 Flash** | 0.14 | 0.28 | **$0.005** | **$0.002** | hosted cost-floor; China-hosted (flag) |
+| **Qwen3.5-397B** (instruct) | 0.39 | 2.34 | **$0.019** | **$0.008** | ★ hosted — big, strong IF pedigree |
+| **GLM-4.6** (non-thinking) | 0.43 | 1.74 | **$0.019** | **$0.008** | hosted — most-verified |
+| **Llama 4 Maverick** | 0.15 | 0.60 | **$0.006** | **$0.003** | hosted/open; weaker IF rank |
+| **Gemini 3.1 Flash-Lite** | 0.25 | 1.50 | **$0.012** | **$0.005** | US-hosted cheap, no PRC exposure |
+| **Gemini 3.5 Flash** | 1.50 | 9.00 | **$0.074** | **$0.032** | what I tested; fabricates on Sabbag |
+| **GPT-5.4 mini** | 0.75 | 4.50 | **$0.037** | **$0.016** | US-hosted; verify IF on eval |
+| *Sonnet 4.6 (baseline)* | 3.00 | 15.00 | **$0.138** *(measured ~$0.13–0.15)* | **$0.060** | incumbent, Sabbag-proven |
+| *Opus 4.8 (ceiling)* | 5.00 | 25.00 | **$0.230** | **$0.100** | hardest templates / fallback |
+| **Qwen3.5-27B** (instruct) | 0.26 | 2.60 | $0.016 | $0.007 | *self-hosting track* (small, obedient) |
+
+**Hosted eval lanes (lead with these):** **DeepSeek V4 Pro** + **Qwen3.5-397B** (big, cheap, strong IF) as the primary challengers to Sonnet, plus **Gemini 3.1 Flash-Lite** as the US-hosted safe pick. DeepSeek V4 Flash as the absolute cost floor. **Rule out for verbatim templating:** Llama 4 (no IF lead), GLM-5 / MiniMax M3 (coding/agentic axis).
+
+⚠️ **The big unknown:** Flash-tier instruction-following data is **sparse** (the strong IFEval numbers belong to the *larger* variants). This is *why the eval is mandatory* — don't assume any cheap model beats Sonnet on verbatim fidelity until measured on your template. And per the Sabbag finding (§14.1): a model can be cheap *and* unusable if it **fabricates into attestable fields** — score hallucination, not just structure.
 
 ## 12. Access (OpenRouter) + speed (fast platforms)
 
@@ -217,7 +246,7 @@ Every platform clears Harris's ~3-min/chart budget **by 6–180×**, so speed is
 - **★ Cerebras · Llama 3.3 70B** — **~1–2s end-to-end** for a 2k-token note from a 24k prompt, *and* Llama 3.3 70B is the **highest-IFEval open model** (~90.4) — so fastest and best-instruction-following coincide. ~$0.60/$0.60.
 - **Groq · Llama 3.3 70B** — value runner-up, ~7s end-to-end, lowest TTFT, $0.59/$0.79. Switching is just an endpoint change.
 - Caveat: gpt-oss-120b and Llama 4 Maverick rank weak on instruction-following — don't pick a fast model that drops boilerplate; validate on Harris's template.
-- **The real lever for Harris is transcription latency** (single-call generation is already fast enough) — i.e., the ElevenLabs-streaming path, not the model.
+- **Correction (2026-06-15) on what Harris actually needs:** his bar is *5 notes generated → read → edited → pasted to Epic → signed, within ~15 min* (total human-in-the-loop turnaround, scribe overlapping across patients) — **not** raw generation speed. The DB shows transcription is already fast (11–45s) and the slow part was the **agentic SOAP gen (~233s)**, which single-call collapses to ~10–60s — so the note is ready ~1 min after "stop" on *any* single-call config. The dominant remaining cost is then **human edit time**, so **note *quality* (fewest edits) helps the Harris scribe more than shaving generation seconds.** A faster model saves seconds; a *better* note saves minutes of editing. Streaming transcription (ElevenLabs) is a real but minor saver (~15–20s). **Net: for Harris, prioritise the highest-quality single-call model that's "fast enough" (≤~60s); reach for Cerebras/Groq only if a chosen model is genuinely too slow.**
 
 ## 13. De-identification — the escape hatch, and its honest limits
 
@@ -237,12 +266,21 @@ This is the lever that keeps the *entire* cheap/no-BAA field usable. But the res
 
 ## 14. Revised bottom line (with the field reopened)
 
+### 14.1 The Sabbag empirical verdict (3-way, dedicated Sabbag chat — most authoritative result we have)
+Tested gold-standard (scribe-finalised) vs app-agentic vs 4 single-call variants (Sonnet/Gemini × think on/off), old deployed template, on two real cases:
+- **Single-call Sonnet 4.6, thinking-OFF = the pick for Sabbag.** Matches agentic quality on transcript-derivable content, leaves honest placeholders (`[MRN]`, `[Scribe Name]`), ~5× cheaper, ~7× faster. Not flawless (one hallucinated exam finding) — pair with demographics-injection + a verification pass.
+- **Gemini 3.5 Flash is DISQUALIFIED for Sabbag**, verified: it **fabricates into legally-attestable fields** — patient names absent from the transcript, wrong dates, invented carriers, fabricated scribe identities in penalty-of-perjury attestations, invented WC fee-schedule legal text. Cheap is irrelevant if it perjures the record. (Keep it as a candidate for *simpler* doctors — Spencer/Tsai — where the attestation/legal surface is smaller.)
+- **Thinking OFF wins:** thinking doubled cost/time and *regressed* (invented a "second injection 50% cure", an unrequested A1c auth). Matches the NeurIPS "When Thinking Fails" evidence.
+- **Lever for both providers:** **inject known demographics** (patient/doctor/date from the app DB) into the prompt — kills the placeholder/fabricated-name class outright (same mechanism as the §13 de-id surrogate injection), and **split the manifest off** to surface placeholders/warnings in the UI.
+
+### 14.2 Bottom line
 1. **Architecture first, unchanged:** agentic → single-call buys ~5–8× on *any* model. Do it regardless.
-2. **Cost is noise; decide on verbatim fidelity.** Every cheap model is ~$0.001–0.013/note — the eval, not the price chart, picks the winner.
-3. **Run the bake-off via OpenRouter (BYOK), all THINKING OFF**, on your real Sabbag template, scoring **note-type accuracy + verbatim-block hit-rate + section-length**. Concrete lanes:
-   - **Baselines:** Sonnet 4.6 (incumbent), Gemini 3.x Flash.
-   - **Challengers:** **Qwen3.5-27B** (lead open pick), **DeepSeek V4 Flash** (cost floor), **GLM-4.6** (verified fallback); optionally GPT-5.4 non-reasoning.
-   - Run the winner **both thinking on/off** to settle §11.2 on *your* template.
+2. **Cost is noise; decide on verbatim fidelity AND hallucination.** Every cheap model is ~$0.002–0.02/note — the eval, not the price chart, picks the winner; and a cheap model that fabricates (Gemini-on-Sabbag) is *unusable*, not just worse.
+3. **Run the bake-off via OpenRouter (BYOK), all THINKING OFF**, on your real Sabbag template, scoring **note-type accuracy + verbatim-block hit-rate + section-length + hallucination-into-attestable-fields**. Concrete lanes:
+   - **Baselines:** Sonnet 4.6 (incumbent, Sabbag-proven), Gemini 3.x Flash (still a candidate for simpler doctors).
+   - **Hosted challengers (lead):** **DeepSeek V4 Pro** + **Qwen3.5-397B** (big, cheap, strong IF), **Gemini 3.1 Flash-Lite** (US-hosted safe pick); DeepSeek V4 Flash as cost floor.
+   - *Self-hosting track (parked):* Qwen3.5-27B / GLM-4.6.
+   - Run the winner **both thinking on/off** to confirm §11.2 on *your* template.
 4. **Two profiles:** *accurate* (Sonnet/Opus or the eval winner) for most doctors; *fast* (**Cerebras/Groq Llama 3.3 70B**, ~1–7s) for Harris — though his real bottleneck is transcription latency.
 5. **Compliance via de-identification** (local surrogate-injection + fail-closed re-insert) is the bridge that keeps the cheap field open; settle the BAA once the model is locked. It reduces, not eliminates, risk.
 

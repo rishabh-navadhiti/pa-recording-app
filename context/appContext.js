@@ -14,7 +14,8 @@ const { createSessionStore }  = require('./sessionStore')
 const { createRecordingsStore } = require('./recordingsStore')
 const { createRecorderController } = require('./recorderController')
 const { createJobRunner }     = require('../jobs/jobRunner')
-const { createClaudeCliProvider } = require('../src/llm/claudeCliProvider')
+const { createClaudeCliProvider }    = require('../src/llm/claudeCliProvider')
+const { createAnthropicApiProvider } = require('../src/llm/anthropicApiProvider')
 
 /**
  * Atomic file write with EPERM/EBUSY retry (shared across config modules).
@@ -102,6 +103,11 @@ function createAppContext(notesDir) {
   // Replaced by a future agentSdkProvider.js by swapping this one line.
   const llm = createClaudeCliProvider({ cwd: notesDir, log })
 
+  // Direct Anthropic Messages API provider (single-call, no tools).
+  // Key is read lazily from secrets on every call so a key saved in Settings
+  // is picked up without requiring an app restart.
+  const api = createAnthropicApiProvider({ getKey: () => secrets.getAnthropicKey(), log })
+
   // ---- context object -------------------------------------------------------
   const ctx = {
     paths,
@@ -112,6 +118,7 @@ function createAppContext(notesDir) {
     secrets,
     jobState,
     llm,
+    api,
 
     get db() { return _db },
     setDb(db) { _db = db },

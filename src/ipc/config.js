@@ -21,7 +21,7 @@ const { spawn } = require('child_process')
 //      byte-equivalent in behavior.
 function registerConfigIpc(ipcMain, appCtx, deps) {
   const {
-    log, appRoot, readEnv, writeEnvKey, validateElevenLabsKey, getAllDoctors,
+    log, appRoot, readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, getAllDoctors,
     readSettings, writeSettings, copyDirSync, extractLastname,
     resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup, setGlobalCtx,
   } = deps
@@ -38,9 +38,18 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
       elevenLabsKeyInvalid = status === 'invalid'
     }
     const notesDirEnv = readEnv().NOTES_DIR_PATH
+    const anthropicKey = readEnv()['ANTHROPIC_API_KEY'] || ''
+    const anthropicKeyMissing = !anthropicKey || anthropicKey === 'your_key_here'
+    let anthropicKeyInvalid = false
+    if (!anthropicKeyMissing) {
+      const status = await validateAnthropicKey(anthropicKey)
+      anthropicKeyInvalid = status === 'invalid'
+    }
     return {
       elevenLabsKeyMissing: keyMissing,
       elevenLabsKeyInvalid,
+      anthropicKeyMissing,
+      anthropicKeyInvalid,
       noDoctors: getAllDoctors().length === 0,
       notesDirMissing: !notesDirEnv || !notesDirEnv.trim()
     }
@@ -79,6 +88,27 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
       return { ok: true }
     } catch (e) {
       log(`ERROR saving settings: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // ---- get-anthropic-key ----
+  ipcMain.handle(CHANNELS.GET_ANTHROPIC_KEY, () => {
+    return appCtx.secrets.getAnthropicKey() || ''
+  })
+
+  // ---- save-anthropic-key ----
+  ipcMain.handle(CHANNELS.SAVE_ANTHROPIC_KEY, async (_, key) => {
+    try {
+      const trimmed = (key || '').trim()
+      if (!trimmed) return { ok: false, error: 'Key cannot be empty' }
+      const status = await validateAnthropicKey(trimmed)
+      if (status === 'invalid') return { ok: false, error: 'Key rejected by Anthropic — check it and try again' }
+      appCtx.secrets.setAnthropicKey(trimmed)
+      log('Anthropic API key saved')
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving Anthropic key: ${e.message}`)
       return { ok: false, error: e.message }
     }
   })

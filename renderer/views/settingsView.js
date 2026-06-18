@@ -21,7 +21,9 @@ export function createSettingsView() {
       btnAdvancedToggle, advancedSettingsContent,
       notesDirPath, btnChangeNotesDir,
       apiKeyMasked, apiKeyDisplayRow, apiKeyEditRow, apiKeyInput,
-      btnEditApiKey, btnSaveApiKey
+      btnEditApiKey, btnSaveApiKey,
+      anthropicKeyMasked, anthropicKeyDisplayRow, anthropicKeyEditRow, anthropicKeyInput,
+      btnEditAnthropicKey, btnSaveAnthropicKey
 
   let onCloseCb = null
 
@@ -68,6 +70,10 @@ export function createSettingsView() {
     apiKeyMasked.textContent = maskApiKey(key)
     setVisible(apiKeyDisplayRow, true)
     setVisible(apiKeyEditRow, false)
+    const anthropicKey = await ipc.getAnthropicKey()
+    if (anthropicKeyMasked) anthropicKeyMasked.textContent = maskApiKey(anthropicKey)
+    if (anthropicKeyDisplayRow) setVisible(anthropicKeyDisplayRow, true)
+    if (anthropicKeyEditRow) setVisible(anthropicKeyEditRow, false)
   }
 
   async function loadDeviceList(selectedIndex) {
@@ -123,6 +129,12 @@ export function createSettingsView() {
       apiKeyInput           = root.querySelector('#api-key-input')
       btnEditApiKey         = root.querySelector('#btn-edit-api-key')
       btnSaveApiKey         = root.querySelector('#btn-save-api-key')
+      anthropicKeyMasked    = root.querySelector('#anthropic-key-masked')
+      anthropicKeyDisplayRow = root.querySelector('#anthropic-key-display-row')
+      anthropicKeyEditRow   = root.querySelector('#anthropic-key-edit-row')
+      anthropicKeyInput     = root.querySelector('#anthropic-key-input')
+      btnEditAnthropicKey   = root.querySelector('#btn-edit-anthropic-key')
+      btnSaveAnthropicKey   = root.querySelector('#btn-save-anthropic-key')
 
       on(btnSettingsClose, 'click', close)
 
@@ -162,7 +174,7 @@ export function createSettingsView() {
           btnAdvancedToggle.classList.add('open')
           const s = await ipc.getSettings()
           await loadDeviceList(s.selectedDeviceIndex)
-          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'claude-sonnet-4-6'
+          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'sonnet-4-6-api'
           if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
         }
       })
@@ -205,6 +217,32 @@ export function createSettingsView() {
 
       on(apiKeyInput, 'keydown', e => {
         if (e.key === 'Enter') btnSaveApiKey.click()
+      })
+
+      on(btnEditAnthropicKey, 'click', () => {
+        if (!anthropicKeyInput) return
+        anthropicKeyInput.value = ''
+        setVisible(anthropicKeyDisplayRow, false)
+        setVisible(anthropicKeyEditRow, true)
+        anthropicKeyInput.focus()
+      })
+
+      on(btnSaveAnthropicKey, 'click', async () => {
+        if (!anthropicKeyInput) return
+        const key = anthropicKeyInput.value.trim()
+        if (!key) return
+        btnSaveAnthropicKey.disabled = true
+        const res = await ipc.saveAnthropicKey(key)
+        btnSaveAnthropicKey.disabled = false
+        if (res.ok) {
+          if (anthropicKeyMasked) anthropicKeyMasked.textContent = maskApiKey(key)
+          setVisible(anthropicKeyEditRow, false)
+          setVisible(anthropicKeyDisplayRow, true)
+        }
+      })
+
+      on(anthropicKeyInput, 'keydown', e => {
+        if (e.key === 'Enter') btnSaveAnthropicKey && btnSaveAnthropicKey.click()
       })
 
       on(btnChangeNotesDir, 'click', async () => {

@@ -24,6 +24,9 @@ try {
   _dbStartupError = e
 }
 const { parseSkillManifest } = require('./src/llm/skill-io/manifest')
+const { buildSingleCallNoteGen, splitNoteAndManifest } = require('./src/llm/skill-io/singleCall')
+const { normalizeApiUsage } = require('./src/llm/pricing')
+const { resolveOption } = require('./src/llm/modelOptions')
 const { extractUsage, logSkillStream } = require('./src/llm/usage')
 const {
   CLAUDE_RATE_LIMITED,
@@ -259,6 +262,18 @@ function validateElevenLabsKey(apiKey) {
   })
 }
 
+function validateAnthropicKey(apiKey) {
+  return new Promise(resolve => {
+    const req = https.request(
+      { hostname: 'api.anthropic.com', path: '/v1/models', method: 'GET',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' } },
+      res => resolve(res.statusCode === 200 ? 'valid' : res.statusCode === 401 ? 'invalid' : 'unknown')
+    )
+    req.on('error', () => resolve('unknown'))
+    req.end()
+  })
+}
+
 // extractUsage and logSkillStream imported from src/llm/usage.js above.
 // logSkillStream call sites pass log as first arg: logSkillStream(log, tag, kind, ev)
 
@@ -275,12 +290,20 @@ function _callSpawnTranscription(mp3Path, transcriptDest, soapNotePath, caseTag,
 }
 
 function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry = false, templatePath = null, caseId = null) {
+  const cfg = readSettings()
+  const opt = resolveOption(cfg.soapModel)
+
+  if (opt.provider === 'api') {
+    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model)
+    return
+  }
+
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   const relTranscript = path.relative(ctx.paths.notesDir, transcriptAbsPath).replace(/\\/g, '/')
   const relTemplate   = templatePath ? path.relative(ctx.paths.notesDir, templatePath).replace(/\\/g, '/') : null
 
-  const soapModel = readSettings().soapModel
+  const soapModel = cfg.soapModel
   if (isRetry) log(`${tag}[soap] retry attempt`)
 
   const startedAt = nowIso()
@@ -396,6 +419,252 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   })
 }
 
+
+// ---------------------------------------------------------------------------
+// generateSoapViaApi — single-call Anthropic Messages API path.
+// Sibling of the CLI path inside spawnSoapGeneration; the CLI path is
+// byte-for-byte untouched. Called when opt.provider === 'api'.
+// ---------------------------------------------------------------------------
+async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, model) {
+  const tag = caseTag ? `[${caseTag}] ` : ''
+  if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
+  if (isRetry) log(`${tag}[soap:api] retry attempt`)
+
+  const startedAt = nowIso()
+  let eventId = null
+  try {
+    eventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: model, startedAt })
+  } catch (e) { log(`[db] startEvent(soap:api) failed: ${e.message}`) }
+
+  const fail = async (status, errorMessage) => {
+    try {
+      dbEvents.finishEvent(eventId, { status, errorMessage: (errorMessage || '').slice(0, 1024), finishedAt: nowIso() })
+      dbCases.setCaseStatus(caseId, 'failed')
+      dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: true })
+    } catch {}
+    if (caseTag) updateRecordingStatus(caseTag, 'failed')
+  }
+
+  // Read inputs
+  let templateText = ''
+  let transcriptText = ''
+  let skillText = ''
+  try {
+    if (templatePath && fs.existsSync(templatePath)) {
+      templateText = fs.readFileSync(templatePath, 'utf8')
+    }
+    transcriptText = fs.readFileSync(transcriptAbsPath, 'utf8')
+    const skillPath = path.join(ctx.paths.claudeDir, 'skills', 'generate-note-api', 'SKILL.md')
+    skillText = fs.readFileSync(skillPath, 'utf8')
+  } catch (e) {
+    log(`${tag}[soap:api] [DEV-ALERT] ERROR reading inputs: ${e.message}`)
+    await fail('failed', `read inputs: ${e.message}`)
+    return
+  }
+
+  const caseDir = path.dirname(soapNoteMdPath)
+  const doctorLastname = templatePath ? path.basename(templatePath, '.md') : 'unknown'
+
+  // Derive injected facts from caseTag (e.g. "jackie_2026-06-18")
+  const dateMatch = caseTag ? caseTag.match(/_(\d{4}-\d{2}-\d{2})$/) : null
+  const dateOfService = dateMatch
+    ? dateMatch[1].replace(/(\d{4})-(\d{2})-(\d{2})/, '$2/$3/$1')
+    : null
+  const patientSlug = dateMatch ? caseTag.slice(0, caseTag.length - dateMatch[0].length) : caseTag
+  const patientName = patientSlug
+    ? patientSlug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    : null
+
+  const { system, user } = buildSingleCallNoteGen({
+    skillText, templateText, transcriptText, caseDir, soapNoteMdPath,
+    doctorLastname, patientName, dateOfService,
+  })
+
+  const runResult = await ctx.api.runSingleCall({ system, user, model, tag, label: 'soap:api' })
+  const { ok, text: resultText, rawUsage, durationMs, errText, statusCode } = runResult
+  const usageFields = normalizeApiUsage({ model, rawUsage, durationMs })
+
+  if (!ok) {
+    const isAuthError = !!(errText?.includes('ANTHROPIC_API_KEY not set') || statusCode === 401)
+    const isRateLimit = statusCode === 429 || statusCode === 529
+    const title   = isAuthError ? 'Anthropic API key missing or invalid'
+                  : isRateLimit ? 'Anthropic API rate limit reached'
+                  : 'Note generation failed'
+    const message = isAuthError
+      ? 'Set your Anthropic API key in Settings → Advanced → Anthropic API Key.'
+      : isRateLimit
+      ? 'Your recording has been saved. Notes could not be generated — try again in a moment.'
+      : `Your recording has been saved. Error: ${(errText || 'unknown').slice(0, 200)}`
+    log(`${tag}[soap:api] [DEV-ALERT] API call failed: ${errText}`)
+    ctx.renderer.send('service-warning', { title, message })
+    await fail('failed', errText)
+    return
+  }
+
+  const { noteBody, manifest } = splitNoteAndManifest(resultText)
+
+  if (!manifest) {
+    log(`${tag}[soap:api] [DEV-ALERT] could not parse manifest from API output`)
+    await fail('failed', 'manifest parse failed')
+    return
+  }
+
+  try { log(`${tag}[soap:api][manifest] ${JSON.stringify(manifest)}`) } catch {}
+
+  if (manifest.schema_version !== 1) {
+    log(`${tag}[soap:api] ERROR: unsupported schema_version=${manifest.schema_version}`)
+    await fail('failed', `unsupported schema_version=${manifest.schema_version}`)
+    return
+  }
+
+  if (manifest.status === 'failed' || !Array.isArray(manifest.cases) || manifest.cases.length === 0) {
+    log(`${tag}[soap:api] manifest status=${manifest.status || '?'} cases=${(manifest.cases || []).length} — marking failed`)
+    await fail('failed', `manifest status=${manifest.status || '?'}`)
+    return
+  }
+
+  // Multi-patient: detect → bail → fan out (M2).
+  if (manifest.multi_patient) {
+    const detectedCases = manifest.cases || []
+    if (detectedCases.length === 0) {
+      log(`${tag}[soap:api] [DEV-ALERT] multi_patient:true but no cases in detection manifest — falling back to single-note`)
+      // No patients detected — treat as single-patient fallback
+    } else {
+      log(`${tag}[soap:api] multi-patient detection: ${detectedCases.length} patients — fanning out`)
+
+      // Finish the detection event (cheap — no note was written)
+      try { dbEvents.finishEvent(eventId, { status: 'success', ...usageFields, finishedAt: nowIso() }) } catch {}
+
+      const syntheticCases = []
+      for (let i = 0; i < detectedCases.length; i++) {
+        const c = detectedCases[i]
+        const slug = (c.patient_name ? sanitizeName(c.patient_name) : null) || `unknown_${i + 1}`
+        const targetNotePath = path.join(caseDir, `${slug}_soap_note.md`)
+
+        log(`${tag}[soap:api] fan-out ${i + 1}/${detectedCases.length}: "${c.patient_name}" → ${path.basename(targetNotePath)}`)
+
+        const { system: tSys, user: tUser } = buildSingleCallNoteGen({
+          skillText, templateText, transcriptText,
+          caseDir, soapNoteMdPath: targetNotePath,
+          doctorLastname, dateOfService,
+          patientName: c.patient_name,
+          targetPatient: c.patient_name,
+        })
+
+        let tEventId = null
+        try { tEventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: model, startedAt: nowIso() }) } catch {}
+
+        const tResult = await ctx.api.runSingleCall({ system: tSys, user: tUser, model, tag, label: `soap:api:p${i + 1}` })
+        const tUsage  = normalizeApiUsage({ model, rawUsage: tResult.rawUsage, durationMs: tResult.durationMs })
+
+        if (!tResult.ok) {
+          log(`${tag}[soap:api] [DEV-ALERT] fan-out "${c.patient_name}" API error: ${tResult.errText}`)
+          try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+          syntheticCases.push({ ...c, soap_note_md: targetNotePath, status: 'failed' })
+          continue
+        }
+
+        const { noteBody: tBody, manifest: tManifest } = splitNoteAndManifest(tResult.text)
+
+        // Guard: a targeted call must never bail again — no recursion
+        if (tManifest?.multi_patient) {
+          log(`${tag}[soap:api] [DEV-ALERT] targeted call for "${c.patient_name}" returned multi_patient:true — skipping, no recursion`)
+          try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+          syntheticCases.push({ ...c, soap_note_md: targetNotePath, status: 'failed' })
+          continue
+        }
+
+        try {
+          fs.mkdirSync(caseDir, { recursive: true })
+          fs.writeFileSync(targetNotePath, tBody, 'utf8')
+          log(`${tag}[soap:api] fan-out note written: ${targetNotePath}`)
+        } catch (e) {
+          log(`${tag}[soap:api] [DEV-ALERT] fan-out write failed for "${c.patient_name}": ${e.message}`)
+          try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+          syntheticCases.push({ ...c, soap_note_md: targetNotePath, status: 'failed' })
+          continue
+        }
+
+        try { dbEvents.finishEvent(tEventId, { status: 'success', ...tUsage, finishedAt: nowIso() }) } catch {}
+        const tc = tManifest?.cases?.[0] || {}
+        syntheticCases.push({
+          patient_name:    c.patient_name,
+          doctor_lastname: tc.doctor_lastname || doctorLastname,
+          visit_type:      tc.visit_type      || c.visit_type      || null,
+          chief_complaint: tc.chief_complaint || c.chief_complaint || null,
+          soap_note_md:    targetNotePath,
+          placeholders:    tc.placeholders    || [],
+          warnings:        tc.warnings        || [],
+          status:          tc.status          || 'ok',
+        })
+      }
+
+      if (!syntheticCases.some(c => c.status !== 'failed')) {
+        log(`${tag}[soap:api] all fan-out patients failed`)
+        await fail('failed', 'all fan-out patients failed')
+        return
+      }
+
+      const syntheticManifest = {
+        schema_version:   1,
+        skill:            'generate-note',
+        status:           syntheticCases.every(c => c.status === 'ok') ? 'ok' : 'partial',
+        multi_patient:    true,
+        recording_folder: caseDir,
+        cases:            syntheticCases,
+        warnings:         [],
+      }
+
+      try { dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: null }) } catch {}
+
+      const _mpDoctorId = ctx.stores.session.get().doctorId
+      let _mpDoctor = null
+      try { _mpDoctor = dbDoctors?.getDoctor(_mpDoctorId) || null } catch {}
+
+      await runMultiPatientChain(ctx, {
+        caseTag,
+        parentCaseId: caseId,
+        manifest:     syntheticManifest,
+        recordingFolder: caseDir,
+        doctor:       _mpDoctor,
+      })
+      return
+    }
+  }
+
+  // Single-patient: validate case status then write the note.
+  const c = manifest.cases[0] || {}
+  if (c.status === 'failed') {
+    log(`${tag}[soap:api] manifest case status=failed`)
+    await fail('failed', 'manifest case status=failed')
+    return
+  }
+
+  // Write the note to the app's authoritative path — never use the model-supplied path.
+  try {
+    fs.mkdirSync(caseDir, { recursive: true })
+    fs.writeFileSync(soapNoteMdPath, noteBody, 'utf8')
+    log(`${tag}[soap:api] SOAP note written: ${soapNoteMdPath}`)
+  } catch (e) {
+    log(`${tag}[soap:api] [DEV-ALERT] ERROR writing SOAP note: ${e.message}`)
+    await fail('failed', `write failed: ${e.message}`)
+    return
+  }
+
+  try { dbEvents.finishEvent(eventId, { status: 'success', ...usageFields, finishedAt: nowIso() }) } catch (e) { log(`[db] soap:api finishEvent failed: ${e.message}`) }
+  try { dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: soapNoteMdPath }) } catch (e) { log(`[db] soap:api path update failed: ${e.message}`) }
+
+  const doctorId = ctx.stores.session.get().doctorId
+  let doctor = null
+  try { doctor = dbDoctors?.getDoctor(doctorId) || null } catch {}
+  await runCaseChain(ctx, {
+    caseId, caseTag,
+    patientFolderName: null,
+    doctor,
+    soapNoteMdPath,
+    caseDir,
+  })
+}
 
 // spawnDocxConversion — extracted to src/pipeline/docx.js.
 // This local wrapper injects ctx so call sites remain identical.
@@ -650,7 +919,7 @@ function registerIpcHandlers(appCtx) {
   const deps = {
     log, setState, STATE, nowIso,
     getAllDoctors, createSessionFolder,
-    readEnv, writeEnvKey, validateElevenLabsKey,
+    readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey,
     extractLastname, sanitizeName, notifyUser,
     readSettings, writeSettings, copyDirSync, waitForExit,
     readTemplateJob, writeTemplateJob,
