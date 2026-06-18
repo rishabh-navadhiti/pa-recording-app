@@ -104,11 +104,22 @@
             <div class="setting-hint">Used for speech-to-text transcription</div>
           </div>
           <div class="advanced-settings-inner">
+            <label class="setting-label">Anthropic API Key</label>
+            <div id="anthropic-key-display-row" class="notes-dir-row">
+              <span id="anthropic-key-masked" class="notes-dir-path"></span>
+              <button id="btn-edit-anthropic-key" class="small">Edit</button>
+            </div>
+            <div id="anthropic-key-edit-row" class="notes-dir-row hidden">
+              <input id="anthropic-key-input" type="text" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" style="flex:1;min-width:0;" />
+              <button id="btn-save-anthropic-key" class="small">Save</button>
+            </div>
+            <div class="setting-hint">Used for SOAP note generation (API path)</div>
+          </div>
+          <div class="advanced-settings-inner">
             <label class="setting-label">Note Generation Model</label>
             <select id="soap-model-select">
-              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — recommended</option>
-              <option value="claude-opus-4-8">Claude Opus 4.8 — most capable</option>
+              <option value="sonnet-4-6-api">Sonnet 4.6 (API) — recommended</option>
+              <option value="sonnet-4-6-agentic">Sonnet 4.6 (Agentic)</option>
             </select>
             <div class="setting-hint">Model used to generate SOAP notes from transcripts</div>
           </div>
@@ -165,6 +176,14 @@
           <input id="elevenlabs-input" type="text" placeholder="sk_..." autocomplete="off" spellcheck="false" />
           <button id="btn-save-elevenlabs" class="small">Save</button>
         </div>
+      </div>
+      <div id="warn-anthropic" class="config-warn hidden">
+        <div class="warn-header"><span class="warn-icon">&#9888;</span> Anthropic API key missing</div>
+        <div class="warn-input-row">
+          <input id="anthropic-warn-input" type="text" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+          <button id="btn-save-anthropic-warn" class="small">Save</button>
+        </div>
+        <div id="anthropic-warn-error" class="setting-hint hidden" style="color:#c0392b;margin-top:4px"></div>
       </div>
       <div id="warn-doctor" class="config-warn hidden">
         <div class="warn-header"><span class="warn-icon">&#9888;</span> Doctor not set up</div>

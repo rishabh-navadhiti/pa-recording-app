@@ -26,7 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
   getElevenLabsKey:  ()     => ipcRenderer.invoke('get-elevenlabs-key'),
   saveElevenLabsKey: (key)   => ipcRenderer.invoke('save-elevenlabs-key', key),
-
+  getAnthropicKey:   ()     => ipcRenderer.invoke('get-anthropic-key'),
+  saveAnthropicKey:  (key)   => ipcRenderer.invoke('save-anthropic-key', key),
   getDoctors:         ()     => ipcRenderer.invoke('get-doctors'),
   addDoctor:              (name) => ipcRenderer.invoke('add-doctor', name),
   updateDoctor:          (id, name) => ipcRenderer.invoke('update-doctor', id, name),

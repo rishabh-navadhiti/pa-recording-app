@@ -49,6 +49,12 @@ function createSecretStore(envPath) {
     setNotesDirPath(p) {
       writeKey('NOTES_DIR_PATH', p)
     },
+    getAnthropicKey() {
+      return readEnv()['ANTHROPIC_API_KEY'] || null
+    },
+    setAnthropicKey(key) {
+      writeKey('ANTHROPIC_API_KEY', key)
+    },
   }
 }
 

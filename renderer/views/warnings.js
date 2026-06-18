@@ -3,7 +3,7 @@
 //
 //  - Setup warning: BlackHole / ffmpeg / Claude not installed (push-driven).
 //  - Service warning: ElevenLabs / Claude runtime errors (push-driven + dismiss).
-//  - Config warnings: missing ElevenLabs key / no doctor (queried at startup).
+//  - Config warnings: missing ElevenLabs key / Anthropic key / no doctor (queried at startup).
 //
 // The config-warnings container historically toggled with inline
 // `style.display`. To honour the "one visibility mechanism" rule we now drive
@@ -16,7 +16,9 @@ import { setVisible } from '../components/visible.js'
 export function createWarnings() {
   let setupWarning, serviceWarning, serviceWarningTitle, serviceWarningMessage,
       btnServiceWarningDismiss, configWarnings, warnElevenLabs, elevenLabsInput,
-      btnSaveElevenLabs, warnDoctor, doctorInput, btnSaveDoctor
+      btnSaveElevenLabs, warnAnthropic, anthropicWarnInput, btnSaveAnthropicWarn, anthropicWarnError,
+      warnDoctor, doctorInput, btnSaveDoctor,
+      tabBar, actionButtons
 
   // Stored listeners so unmount can detach them.
   const listeners = []
@@ -28,8 +30,12 @@ export function createWarnings() {
 
   function updateConfigWarningsVisibility() {
     const anyVisible = !warnElevenLabs.classList.contains('hidden') ||
+                       !warnAnthropic.classList.contains('hidden') ||
                        !warnDoctor.classList.contains('hidden')
     setVisible(configWarnings, anyVisible)
+
+    setVisible(tabBar, !anyVisible)
+    setVisible(actionButtons, !anyVisible)
   }
 
   function showSetupWarning(msg) {
@@ -57,6 +63,17 @@ export function createWarnings() {
       setVisible(warnElevenLabs, true)
     }
 
+    if (cfg.anthropicKeyMissing) {
+      setVisible(warnAnthropic, true)
+    }
+
+    if (cfg.anthropicKeyInvalid) {
+      showServiceWarning({
+        title: 'Anthropic API key invalid',
+        message: 'Your API key was rejected. Update it in Settings → Advanced → Anthropic API Key.'
+      })
+    }
+
     if (cfg.elevenLabsKeyInvalid) {
       showServiceWarning({
         title: 'ElevenLabs API key invalid',
@@ -82,7 +99,13 @@ export function createWarnings() {
       warnElevenLabs          = root.querySelector('#warn-elevenlabs')
       elevenLabsInput         = root.querySelector('#elevenlabs-input')
       btnSaveElevenLabs       = root.querySelector('#btn-save-elevenlabs')
+      warnAnthropic           = root.querySelector('#warn-anthropic')
+      anthropicWarnInput      = root.querySelector('#anthropic-warn-input')
+      btnSaveAnthropicWarn    = root.querySelector('#btn-save-anthropic-warn')
+      anthropicWarnError      = root.querySelector('#anthropic-warn-error')
       warnDoctor              = root.querySelector('#warn-doctor')
+      tabBar                  = root.querySelector('#tab-bar')
+      actionButtons           = root.querySelector('#action-buttons')
       doctorInput             = root.querySelector('#doctor-input')
       btnSaveDoctor           = root.querySelector('#btn-save-doctor')
 
@@ -104,6 +127,26 @@ export function createWarnings() {
 
       on(elevenLabsInput, 'keydown', e => {
         if (e.key === 'Enter') btnSaveElevenLabs.click()
+      })
+
+      on(btnSaveAnthropicWarn, 'click', async () => {
+        const key = anthropicWarnInput.value.trim()
+        if (!key) return
+        btnSaveAnthropicWarn.disabled = true
+        if (anthropicWarnError) setVisible(anthropicWarnError, false)
+        const res = await ipc.saveAnthropicKey(key)
+        btnSaveAnthropicWarn.disabled = false
+        if (res.ok) {
+          setVisible(warnAnthropic, false)
+          updateConfigWarningsVisibility()
+        } else if (anthropicWarnError) {
+          anthropicWarnError.textContent = res.error || 'Could not save key'
+          setVisible(anthropicWarnError, true)
+        }
+      })
+
+      on(anthropicWarnInput, 'keydown', e => {
+        if (e.key === 'Enter') btnSaveAnthropicWarn.click()
       })
 
       on(btnSaveDoctor, 'click', async () => {

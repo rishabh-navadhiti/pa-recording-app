@@ -46,9 +46,9 @@ test('all 8 registrars register without throwing', () => {
   assert.doesNotThrow(() => collectRegisteredChannels())
 })
 
-test('registrars register exactly 43 handlers', () => {
+test('registrars register exactly 45 handlers', () => {
   const channels = collectRegisteredChannels()
-  assert.strictEqual(channels.length, 43, `expected 43 handlers, got ${channels.length}: ${channels.join(',')}`)
+  assert.strictEqual(channels.length, 45, `expected 45 handlers, got ${channels.length}: ${channels.join(',')}`)
 })
 
 test('no duplicate channel registrations', () => {
