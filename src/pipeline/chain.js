@@ -4,8 +4,10 @@ const fs   = require('fs')
 const path = require('path')
 
 const { runEngine } = require('../engines/engineRunner')
-const icd = require('../engines/icd')
-const cdi = require('../engines/cdi')
+const icd            = require('../engines/icd')
+const cdi            = require('../engines/cdi')
+const emScore        = require('../engines/emScore')
+const patientSummary = require('../engines/patientSummary')
 // Namespace import (not destructured) so tests can stub docx.spawnDocxConversion.
 const docx = require('./docx')
 const { planChildCases, materializeChild } = require('./multiPatient')
@@ -14,10 +16,12 @@ const { planChildCases, materializeChild } = require('./multiPatient')
 
 /**
  * Run the per-case post-processing chain after SOAP generation:
- *   ICD coding → CDI review → docx(soap) → docx(cdi)
+ *   ICD coding → CDI review → E/M scoring → patient summary → docx(soap) → docx(cdi)
  *
  * Best-effort: each step resolves cleanly on failure; the chain always
- * continues. docx conversion is a fixed post-step, NOT an engine.
+ * continues. em-score + patient-summary are toggle-gated (skipped when off)
+ * and JSON-only — they get no docx. docx conversion is a fixed post-step,
+ * NOT an engine.
  *
  * @param {AppContext}  ctx
  * @param {CaseContext} caseCtx  Must include: caseId, caseTag, soapNoteMdPath,
@@ -30,6 +34,11 @@ async function runCaseChain(ctx, caseCtx) {
   // ICD → CDI (sequential: CDI needs ICD codes in the note)
   await runEngine(icd, ctx, caseCtx)
   const cdiResult = await runEngine(cdi, ctx, caseCtx)
+
+  // E/M scoring → patient summary (toggle-gated; each self-gates off when its
+  // setting is off, so no conditional here). JSON-only — no docx for these.
+  await runEngine(emScore, ctx, caseCtx)
+  await runEngine(patientSummary, ctx, caseCtx)
 
   // Status update → converting
   if (patientFolderName) {
