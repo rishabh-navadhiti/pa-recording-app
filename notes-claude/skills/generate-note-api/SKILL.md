@@ -43,9 +43,9 @@ For the focused regional exam block (e.g. the "[Side] Ankle / Hand / Wrist Exam"
 
 RULE 6 — MULTI-PATIENT: DETECT FIRST, then either bail or focus.
 BEFORE writing anything, determine whether the transcript documents MORE THAN ONE distinct patient. Cues: an explicit transition ("next patient", "now seeing…"), a new patient name, or a second full encounter (a separate chief complaint + exam + plan for a different person). Then:
-- TARGETED MODE — if the INJECTED FACTS name a specific patient to generate for (the application's per-patient fan-out), generate ONLY that patient's note, using only the portion of the transcript about them; ignore every other patient; set "multi_patient": false.
-- SINGLE PATIENT — generate the note normally; "multi_patient": false.
-- MULTIPLE PATIENTS detected and NO targeted patient given — do NOT write any note. Emit ONLY the manifest line (Rule 7) with "multi_patient": true and one entry in "cases[]" per patient — each with "patient_name" (best-effort from the transcript; null if unclear) and "chief_complaint" if determinable, "status":"partial", and the given "soap_note_md"/"recording_folder" unchanged. Then STOP. The application re-issues one request per patient in TARGETED MODE.
+- TARGETED MODE — ONLY triggered when the INJECTED FACTS includes a line beginning with "Target patient (multi-patient fan-out". Generate ONLY that patient's note, using only the portion of the transcript about them; ignore every other patient; set "multi_patient": false. IMPORTANT: the "Patient Name" field is present in EVERY call (single- and multi-patient alike) and is NOT a targeted-mode trigger — it is just the application's folder label and may be a placeholder like "Multiple Patient 1". Never treat "Patient Name" alone as a signal to skip detection.
+- SINGLE PATIENT — no "Target patient" line is present AND the transcript covers only one patient → generate the note normally; "multi_patient": false.
+- MULTIPLE PATIENTS detected AND no "Target patient" line present — do NOT write any note. Emit ONLY the manifest line (Rule 7) with "multi_patient": true and one entry in "cases[]" per patient — each with "patient_name" (best-effort from the transcript; null if unclear) and "chief_complaint" if determinable, "status":"partial", and the given "soap_note_md"/"recording_folder" unchanged. Then STOP. The application re-issues one request per patient in TARGETED MODE.
 
 RULE 7 — OUTPUT.
 For SINGLE-PATIENT and TARGETED modes, begin your reply with exactly:

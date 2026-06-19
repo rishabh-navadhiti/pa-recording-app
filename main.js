@@ -543,12 +543,15 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
 
         log(`${tag}[soap:api] fan-out ${i + 1}/${detectedCases.length}: "${c.patient_name}" → ${path.basename(targetNotePath)}`)
 
+        // Use positional fallback for unnamed patients so the "Target patient" line
+        // is always present — without it the model re-enters detection mode and bails.
+        const targetPatientLabel = c.patient_name || `(patient ${i + 1} in transcript, unnamed)`
         const { system: tSys, user: tUser } = buildSingleCallNoteGen({
           skillText, templateText, transcriptText,
           caseDir, soapNoteMdPath: targetNotePath,
           doctorLastname, dateOfService,
           patientName: c.patient_name,
-          targetPatient: c.patient_name,
+          targetPatient: targetPatientLabel,
         })
 
         let tEventId = null
