@@ -1,7 +1,7 @@
 'use strict'
 
 const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../llm/skill-io/markers')
-const { transcribeToFile } = require('./elevenLabs')
+const { transcribeToFile, ELEVENLABS_MODEL, SCRIBE_V2_COST_PER_HOUR_USD } = require('./elevenLabs')
 
 /**
  * Transcribe an MP3 via ElevenLabs (in-process, Node — see elevenLabs.js) and
@@ -22,6 +22,15 @@ const { transcribeToFile } = require('./elevenLabs')
  *                                         Typically triggers SOAP generation.
  * @param {Function} opts.spawnDocx        spawnDocxConversion(mdPath, caseTag, null, caseId) — for transcript.docx.
  */
+// Parse cases.audio_duration ('HH:MM:SS' string) back to seconds for cost calculation.
+function parseHHMMSS(raw) {
+  if (raw == null) return null
+  if (typeof raw === 'number') return raw
+  const parts = String(raw).split(':').map(Number)
+  if (parts.length !== 3 || parts.some(isNaN)) return null
+  return parts[0] * 3600 + parts[1] * 60 + parts[2]
+}
+
 function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, templatePath, caseId, ctx, onSuccess, spawnDocx }) {
   const { log } = ctx
   const tag = caseTag ? `[${caseTag}] ` : ''
@@ -31,7 +40,7 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
   let eventId = null
   try {
     const { dbEvents } = requireDb()
-    eventId = dbEvents.startEvent({ caseId, jobKind: 'transcribe', startedAt })
+    eventId = dbEvents.startEvent({ caseId, jobKind: 'transcribe', modelUsed: ELEVENLABS_MODEL, startedAt })
   } catch (e) { log(`[db] startEvent(transcribe) failed: ${e.message}`) }
 
   log(`${tag}Transcription started for: ${mp3Path}`)
@@ -43,7 +52,7 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       if (!apiKey) throw new Error('ELEVENLABS_API_KEY not configured')
       return transcribeToFile({ mp3Path, transcriptDest, apiKey })
     })
-    .then(() => {
+    .then(({ languageCode, speakerCount, audioDurationSeconds }) => {
       // Transcription itself succeeded — record it. The post-success callbacks
       // (SOAP gen + transcript docx) run in the FINAL .then below, OUTSIDE the
       // .catch — so a synchronous throw in their setup is a SOAP/docx defect, not
@@ -51,8 +60,21 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       log(`${tag}[transcribe] completed`)
       const durationMs = Date.now() - wallStart
       const { dbEvents, dbCases } = requireDb()
+      // ElevenLabs doesn't return audio_duration; read cases.audio_duration instead.
+      // That column stores a formatted 'HH:MM:SS' string (see db/cases.js formatDuration).
+      const rawDuration = audioDurationSeconds
+        ?? (caseId ? (dbCases.getCaseRow(caseId) || {}).audio_duration : null)
+      const resolvedDuration = parseHHMMSS(rawDuration)
+      const costUsd = resolvedDuration != null
+        ? (resolvedDuration / 3600) * SCRIBE_V2_COST_PER_HOUR_USD
+        : null
       try {
-        dbEvents.finishEvent(eventId, { status: 'success', durationMs, finishedAt: new Date().toISOString() })
+        dbEvents.finishEvent(eventId, {
+          status: 'success', durationMs, finishedAt: new Date().toISOString(),
+          costUsd,
+          transcriptLanguage:     languageCode,
+          transcriptSpeakerCount: speakerCount,
+        })
         dbCases.updateCasePaths(caseId, { status: 'generating_note', transcript_path: transcriptDest })
       } catch (e) { log(`[db] transcribe success update failed: ${e.message}`) }
       return true
