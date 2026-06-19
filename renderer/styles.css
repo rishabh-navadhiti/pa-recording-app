@@ -543,8 +543,10 @@ button.outline:hover { opacity: 0.85; }
   display: block;
 }
 
-#device-select {
+#settings-view select {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 6px 8px;
   background: #1a1a1a;
   border: 1px solid #3a3a3a;
@@ -554,7 +556,7 @@ button.outline:hover { opacity: 0.85; }
   outline: none;
 }
 
-#device-select:focus {
+#settings-view select:focus {
   border-color: #1D9E75;
 }
 
