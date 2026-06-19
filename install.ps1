@@ -135,11 +135,15 @@ Step 9 "Installing Node packages..."
 Push-Location $installDir
 npm install
 # electron's postinstall hook downloads the binary and extracts it via
-# extract-zip. On Windows, extract-zip can fail silently (exit 1) when a
-# pre-existing dist/locales/ folder is file-locked from a prior partial
-# install — npm absorbs the non-zero postinstall exit and still reports
-# success, so electron.exe ends up missing with no visible error.
-# Detect this and recover using Expand-Archive -Force (handles locked folders).
+# extract-zip. On Windows this can fail silently: extract-zip can exit 1 when a
+# pre-existing dist/locales/ folder is file-locked from a prior partial install,
+# and npm absorbs the non-zero postinstall exit and still reports success — so
+# electron.exe ends up missing with no visible error.
+# Belt and suspenders: (1) run install.js explicitly so a download error
+# surfaces, then (2) if the binary is still missing, recover from the cached
+# zip with Expand-Archive -Force (handles locked folders).
+Write-Host "  Downloading Electron binary..." -ForegroundColor Gray
+node node_modules/electron/install.js
 $electronBin = Join-Path $installDir "node_modules\electron\dist\electron.exe"
 if (-not (Test-Path $electronBin)) {
     Write-Host "  electron.exe missing after npm install — recovering from cache..." -ForegroundColor Yellow
