@@ -63,7 +63,10 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
         fs.writeFileSync(transcriptDest, markdown, 'utf8')
         return { markdown, isRealtime: true }
       }
-      throw new Error('Realtime transcript missing — streaming did not produce output')
+      // No realtime JSON — fall back to batch API (scribe_v2, $0.22/hr).
+      log(`${tag}[transcribe] No realtime transcript — using batch API`)
+      return transcribeToFile({ mp3Path, transcriptDest, apiKey })
+        .then(result => ({ ...result, isRealtime: false }))
     })
     .then(({ languageCode, speakerCount, audioDurationSeconds, isRealtime }) => {
       // Transcription itself succeeded — record it. The post-success callbacks
