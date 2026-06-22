@@ -46,6 +46,11 @@
           <span>Auto-start recording after save</span>
         </label>
         <div class="setting-hint">Next recording begins immediately when you save a case</div>
+        <label class="setting-row">
+          <input type="checkbox" id="chk-realtime-transcription" />
+          <span>Realtime transcription</span>
+        </label>
+        <div class="setting-hint">Stream audio to ElevenLabs during recording so the transcript is ready instantly when you stop. Requires a stable network connection while recording. Falls back to normal if streaming fails.</div>
       </div>
 
       <div class="settings-group">
@@ -128,7 +133,8 @@
           <div class="advanced-settings-inner">
             <label class="setting-label">Note Generation Model</label>
             <select id="soap-model-select">
-              <option value="sonnet-4-6-api">Sonnet 4.6 (API) — recommended</option>
+              <option value="gemini-3.5-flash">Gemini 3.5 Flash — recommended</option>
+              <option value="sonnet-4-6-api">Sonnet 4.6 (API)</option>
               <option value="sonnet-4-6-agentic">Sonnet 4.6 (Agentic)</option>
             </select>
             <div class="setting-hint">Model used to generate SOAP notes from transcripts</div>

@@ -16,7 +16,8 @@ const path = require('path')
 const ELEVENLABS_API_URL         = 'https://api.elevenlabs.io/v1/speech-to-text'
 const ELEVENLABS_MODEL            = 'scribe_v2'
 const DEFAULT_TIMEOUT_MS          = 300000  // matches transcribe.py's requests timeout=300
-const SCRIBE_V2_COST_PER_HOUR_USD = 0.22   // verify at elevenlabs.io/pricing
+const SCRIBE_V2_COST_PER_HOUR_USD          = 0.22   // batch  scribe_v2         — verify at elevenlabs.io/pricing
+const SCRIBE_V2_REALTIME_COST_PER_HOUR_USD = 0.39   // stream scribe_v2_realtime — verify at elevenlabs.io/pricing
 
 /**
  * Extract per-call metrics from a raw ElevenLabs scribe_v2 response.
@@ -159,12 +160,34 @@ async function transcribeToFile(opts) {
   return { markdown, languageCode, speakerCount, audioDurationSeconds }
 }
 
+/**
+ * Read the realtime transcript JSON written by Python's RealtimeTranscriber.
+ * Returns the parsed object if it contains usable data, or null if missing,
+ * unreadable, or empty — callers fall back to the batch API in that case.
+ *
+ * @param {string} jsonPath  Absolute path to the <name>_realtime.json file.
+ * @returns {object|null}
+ */
+function readRealtimeTranscript(jsonPath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+    if (!data) return null
+    const hasWords = Array.isArray(data.words) && data.words.length > 0
+    const hasText  = typeof data.text === 'string' && data.text.trim().length > 0
+    return (hasWords || hasText) ? data : null
+  } catch {
+    return null
+  }
+}
+
 module.exports = {
   formatTranscript,
   extractTranscriptMetrics,
   requestTranscription,
   transcribeToFile,
+  readRealtimeTranscript,
   ELEVENLABS_API_URL,
   ELEVENLABS_MODEL,
   SCRIBE_V2_COST_PER_HOUR_USD,
+  SCRIBE_V2_REALTIME_COST_PER_HOUR_USD,
 }

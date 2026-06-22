@@ -1,7 +1,10 @@
 'use strict'
 
+const fs   = require('fs')
+const path = require('path')
+
 const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../llm/skill-io/markers')
-const { transcribeToFile, ELEVENLABS_MODEL, SCRIBE_V2_COST_PER_HOUR_USD } = require('./elevenLabs')
+const { transcribeToFile, ELEVENLABS_MODEL, SCRIBE_V2_COST_PER_HOUR_USD, SCRIBE_V2_REALTIME_COST_PER_HOUR_USD, readRealtimeTranscript, formatTranscript } = require('./elevenLabs')
 
 /**
  * Transcribe an MP3 via ElevenLabs (in-process, Node — see elevenLabs.js) and
@@ -49,10 +52,23 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
 
   Promise.resolve()
     .then(() => {
-      if (!apiKey) throw new Error('ELEVENLABS_API_KEY not configured')
+      // Check for a realtime transcript written by Python alongside the MP3.
+      // If present and non-empty, use it immediately (no API call needed).
+      const realtimeJsonPath = mp3Path.replace(/\.mp3$/, '_realtime.json')
+      const realtimeData = readRealtimeTranscript(realtimeJsonPath)
+      if (realtimeData) {
+        log(`${tag}[transcribe] Using realtime transcript from ${realtimeJsonPath}`)
+        const markdown = formatTranscript(realtimeData)
+        fs.mkdirSync(path.dirname(transcriptDest), { recursive: true })
+        fs.writeFileSync(transcriptDest, markdown, 'utf8')
+        return { markdown, isRealtime: true }
+      }
+      // No realtime JSON — fall back to batch API (scribe_v2, $0.22/hr).
+      log(`${tag}[transcribe] No realtime transcript — using batch API`)
       return transcribeToFile({ mp3Path, transcriptDest, apiKey })
+        .then(result => ({ ...result, isRealtime: false }))
     })
-    .then(({ languageCode, speakerCount, audioDurationSeconds }) => {
+    .then(({ languageCode, speakerCount, audioDurationSeconds, isRealtime }) => {
       // Transcription itself succeeded — record it. The post-success callbacks
       // (SOAP gen + transcript docx) run in the FINAL .then below, OUTSIDE the
       // .catch — so a synchronous throw in their setup is a SOAP/docx defect, not
@@ -65,8 +81,10 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       const rawDuration = audioDurationSeconds
         ?? (caseId ? (dbCases.getCaseRow(caseId) || {}).audio_duration : null)
       const resolvedDuration = parseHHMMSS(rawDuration)
+      // Realtime (scribe_v2_realtime) is billed at $0.39/hr; batch at $0.22/hr.
+      const ratePerHour = isRealtime ? SCRIBE_V2_REALTIME_COST_PER_HOUR_USD : SCRIBE_V2_COST_PER_HOUR_USD
       const costUsd = resolvedDuration != null
-        ? (resolvedDuration / 3600) * SCRIBE_V2_COST_PER_HOUR_USD
+        ? (resolvedDuration / 3600) * ratePerHour
         : null
       try {
         dbEvents.finishEvent(eventId, {

@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  soapModel:      'sonnet-4-6-api',
+  soapModel:      'gemini-3.5-flash',
   templateModel:  'claude-opus-4-8',
   templateEffort: 'max',
   enableIcd: false,
@@ -14,10 +14,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   cdiMode:   'balanced',
   enableEmScore: false,
   enablePatientSummary: false,
+  realtimeTranscription: false,
 })
 
 // Valid soapModel option ids. Kept inline to avoid a runtime require in the normalizer.
-const VALID_SOAP_OPTIONS = new Set(['sonnet-4-6-api', 'sonnet-4-6-agentic'])
+const VALID_SOAP_OPTIONS = new Set(['gemini-3.5-flash', 'sonnet-4-6-api', 'sonnet-4-6-agentic'])
 
 /**
  * Atomic write with retry for transient Windows AV / file-indexer locks.

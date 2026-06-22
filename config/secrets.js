@@ -55,6 +55,15 @@ function createSecretStore(envPath) {
     setAnthropicKey(key) {
       writeKey('ANTHROPIC_API_KEY', key)
     },
+    getGeminiKey() {
+      return readEnv()['GEMINI_API_KEY'] || null
+    },
+    setGeminiKey(key) {
+      writeKey('GEMINI_API_KEY', key)
+    },
+    getGeminiBaseUrl() {
+      return readEnv()['GOOGLE_AI_BASE_URL'] || null
+    },
   }
 }
 

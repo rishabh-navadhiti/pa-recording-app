@@ -4,11 +4,12 @@
 // Each id encodes both the model AND the execution path (provider).
 // The renderer shows label; settings.json stores id.
 const NOTE_GEN_OPTIONS = {
-  'sonnet-4-6-api':     { label: 'Sonnet 4.6 (API)',     provider: 'api', model: 'claude-sonnet-4-6' },
-  'sonnet-4-6-agentic': { label: 'Sonnet 4.6 (Agentic)', provider: 'cli', model: 'claude-sonnet-4-6' },
+  'gemini-3.5-flash':   { label: 'Gemini 3.5 Flash',     provider: 'gemini', model: 'gemini-3.5-flash' },
+  'sonnet-4-6-api':     { label: 'Sonnet 4.6 (API)',     provider: 'api',    model: 'claude-sonnet-4-6' },
+  'sonnet-4-6-agentic': { label: 'Sonnet 4.6 (Agentic)', provider: 'cli',    model: 'claude-sonnet-4-6' },
 }
 
-const DEFAULT_OPTION_ID = 'sonnet-4-6-api'
+const DEFAULT_OPTION_ID = 'gemini-3.5-flash'
 
 // Resolve a settings value (option id OR legacy raw model id) to an option object.
 // Unknown / legacy values fall back to the API default.

@@ -16,7 +16,8 @@ import { setVisible } from '../components/visible.js'
 
 export function createSettingsView() {
   let settingsView, btnSettingsClose,
-      chkAutoRecord, chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
+      chkAutoRecord, chkRealtimeTranscription,
+      chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
       chkEnableEmScore, chkEnablePatientSummary,
       deviceSelect, soapModelSelect, templateModelSelect,
       btnAdvancedToggle, advancedSettingsContent,
@@ -57,6 +58,7 @@ export function createSettingsView() {
   async function loadSettings() {
     const s = await ipc.getSettings()
     chkAutoRecord.checked = s.autoRecord || false
+    if (chkRealtimeTranscription) chkRealtimeTranscription.checked = !!s.realtimeTranscription
     // ICD toggle — locked on while CDI is enabled (CDI requires ICD).
     if (chkEnableIcd) chkEnableIcd.checked = !!s.enableIcd
     // CDI toggle + mode — mode row is only visible when CDI is on.
@@ -115,8 +117,9 @@ export function createSettingsView() {
 
       settingsView          = root.querySelector('#settings-view')
       btnSettingsClose      = root.querySelector('#btn-settings-close')
-      chkAutoRecord         = root.querySelector('#chk-auto-record')
-      chkEnableIcd          = root.querySelector('#chk-enable-icd')
+      chkAutoRecord              = root.querySelector('#chk-auto-record')
+      chkRealtimeTranscription   = root.querySelector('#chk-realtime-transcription')
+      chkEnableIcd               = root.querySelector('#chk-enable-icd')
       chkEnableCdi          = root.querySelector('#chk-enable-cdi')
       cdiModeRow            = root.querySelector('#cdi-mode-row')
       cdiModeSelect         = root.querySelector('#cdi-mode-select')
@@ -147,6 +150,12 @@ export function createSettingsView() {
       on(chkAutoRecord, 'change', () => {
         ipc.saveSettings({ autoRecord: chkAutoRecord.checked })
       })
+
+      if (chkRealtimeTranscription) {
+        on(chkRealtimeTranscription, 'change', () => {
+          ipc.saveSettings({ realtimeTranscription: chkRealtimeTranscription.checked })
+        })
+      }
 
       if (chkEnableIcd) {
         on(chkEnableIcd, 'change', () => {
@@ -192,7 +201,7 @@ export function createSettingsView() {
           btnAdvancedToggle.classList.add('open')
           const s = await ipc.getSettings()
           await loadDeviceList(s.selectedDeviceIndex)
-          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'sonnet-4-6-api'
+          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'gemini-3.5-flash'
           if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
         }
       })
