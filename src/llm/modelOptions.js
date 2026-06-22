@@ -9,7 +9,7 @@ const NOTE_GEN_OPTIONS = {
   'sonnet-4-6-agentic': { label: 'Sonnet 4.6 (Agentic)', provider: 'cli',    model: 'claude-sonnet-4-6' },
 }
 
-const DEFAULT_OPTION_ID = 'gemini-3.5-flash'
+const DEFAULT_OPTION_ID = 'sonnet-4-6-api'
 
 // Resolve a settings value (option id OR legacy raw model id) to an option object.
 // Unknown / legacy values fall back to the API default.

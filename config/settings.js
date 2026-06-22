@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   autoRecord: false,
   manualDeviceSelection: true,
   selectedDeviceIndex: null,
-  soapModel:      'gemini-3.5-flash',
+  soapModel:      'sonnet-4-6-api',
   templateModel:  'claude-opus-4-8',
   templateEffort: 'max',
   enableIcd: false,
