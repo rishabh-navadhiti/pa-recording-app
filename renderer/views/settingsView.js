@@ -201,7 +201,7 @@ export function createSettingsView() {
           btnAdvancedToggle.classList.add('open')
           const s = await ipc.getSettings()
           await loadDeviceList(s.selectedDeviceIndex)
-          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'sonnet-4-6-api'
+          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'gemini-3.5-flash'
           if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
         }
       })

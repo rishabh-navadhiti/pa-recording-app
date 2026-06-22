@@ -1,15 +1,18 @@
 'use strict'
 
 /**
- * Google Gemini API provider — single-call, no streaming, no tools.
- * Implements the same runSingleCall interface as anthropicApiProvider.js.
- * Uses Node's built-in fetch (Node 18+, available in Electron 28+).
- * Always resolves (never rejects).
+ * Gemini API provider via the OpenAI-compatible endpoint on generativelanguage.googleapis.com.
+ * Endpoint: POST https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+ * Auth:     Authorization: Bearer <GEMINI_API_KEY>
+ * Body:     OpenAI messages format (system + user roles)
+ * Always resolves (never rejects) — mirrors the Anthropic provider contract.
  *
  * @param {{ getKey(): string|null, log: Function }} opts
  * @returns {{ runSingleCall(opts): Promise<SingleCallResult> }}
  */
 function createGeminiApiProvider({ getKey, log }) {
+  const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+
   async function runSingleCall({ system, user, model, maxTokens = 16000, tag = '', label = 'api' }) {
     const apiKey = getKey()
     if (!apiKey) {
@@ -18,20 +21,25 @@ function createGeminiApiProvider({ getKey, log }) {
     }
 
     const startedAt = Date.now()
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
 
     try {
+      const messages = []
+      if (system) messages.push({ role: 'system', content: system })
+      messages.push({ role: 'user', content: user })
+
       const body = {
-        generationConfig: { maxOutputTokens: maxTokens },
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-      }
-      if (system) {
-        body.system_instruction = { parts: [{ text: system }] }
+        model,
+        max_tokens: maxTokens,
+        messages,
+        reasoning_effort: 'none',
       }
 
-      const response = await fetch(url, {
+      const response = await fetch(ENDPOINT, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'content-type':  'application/json',
+        },
         body: JSON.stringify(body),
       })
 
@@ -44,27 +52,23 @@ function createGeminiApiProvider({ getKey, log }) {
       }
 
       const data = await response.json()
-      const candidate = (data.candidates || [])[0]
+      const choice = (data.choices || [])[0]
 
-      if (!candidate) {
-        const blockReason = data.promptFeedback?.blockReason
-        log(`${tag}[${label}] no candidates returned — blockReason=${blockReason || 'unknown'}`)
-        return { ok: false, errText: `No candidates: ${blockReason || 'unknown'}`, durationMs }
+      if (!choice) {
+        log(`${tag}[${label}] no choices returned`)
+        return { ok: false, errText: 'No choices in response', durationMs }
       }
 
-      const finishReason = candidate.finishReason
-      const text = (candidate.content?.parts || [])
-        .filter(p => typeof p.text === 'string')
-        .map(p => p.text)
-        .join('')
+      const finishReason = choice.finish_reason || 'stop'
+      const text = choice.message?.content || ''
 
-      const usage = data.usageMetadata || {}
+      const usage = data.usage || {}
       const rawUsage = {
-        input_tokens:  usage.promptTokenCount    || 0,
-        output_tokens: usage.candidatesTokenCount || 0,
+        input_tokens:  usage.prompt_tokens     || 0,
+        output_tokens: usage.completion_tokens || 0,
       }
 
-      log(`${tag}[${label}] finishReason=${finishReason} tokens=in:${rawUsage.input_tokens}/out:${rawUsage.output_tokens} durationMs=${durationMs}`)
+      log(`${tag}[${label}] model=${model} finish_reason=${finishReason} tokens=in:${rawUsage.input_tokens}/out:${rawUsage.output_tokens} durationMs=${durationMs}`)
 
       return { ok: true, text, rawUsage, stopReason: finishReason, durationMs }
     } catch (err) {

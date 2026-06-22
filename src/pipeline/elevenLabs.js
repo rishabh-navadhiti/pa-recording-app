@@ -16,7 +16,8 @@ const path = require('path')
 const ELEVENLABS_API_URL         = 'https://api.elevenlabs.io/v1/speech-to-text'
 const ELEVENLABS_MODEL            = 'scribe_v2'
 const DEFAULT_TIMEOUT_MS          = 300000  // matches transcribe.py's requests timeout=300
-const SCRIBE_V2_COST_PER_HOUR_USD = 0.22   // verify at elevenlabs.io/pricing
+const SCRIBE_V2_COST_PER_HOUR_USD          = 0.22   // batch  scribe_v2         — verify at elevenlabs.io/pricing
+const SCRIBE_V2_REALTIME_COST_PER_HOUR_USD = 0.39   // stream scribe_v2_realtime — verify at elevenlabs.io/pricing
 
 /**
  * Extract per-call metrics from a raw ElevenLabs scribe_v2 response.
@@ -188,4 +189,5 @@ module.exports = {
   ELEVENLABS_API_URL,
   ELEVENLABS_MODEL,
   SCRIBE_V2_COST_PER_HOUR_USD,
+  SCRIBE_V2_REALTIME_COST_PER_HOUR_USD,
 }

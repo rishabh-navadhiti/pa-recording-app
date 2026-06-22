@@ -109,7 +109,7 @@ function createAppContext(notesDir) {
   // is picked up without requiring an app restart.
   const api = createAnthropicApiProvider({ getKey: () => secrets.getAnthropicKey(), log })
 
-  // Gemini API provider — same runSingleCall interface, routes to Google's API.
+  // Gemini API provider — routes to generativelanguage.googleapis.com with AIzaSy... key.
   const gemini = createGeminiApiProvider({ getKey: () => secrets.getGeminiKey(), log })
 
   // ---- context object -------------------------------------------------------

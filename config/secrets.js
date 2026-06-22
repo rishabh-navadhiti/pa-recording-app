@@ -61,6 +61,9 @@ function createSecretStore(envPath) {
     setGeminiKey(key) {
       writeKey('GEMINI_API_KEY', key)
     },
+    getGeminiBaseUrl() {
+      return readEnv()['GOOGLE_AI_BASE_URL'] || null
+    },
   }
 }
 
