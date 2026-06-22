@@ -2,9 +2,28 @@
 
 const { CHANNELS } = require('../shared/ipc-channels')
 
-const path = require('path')
-const fs = require('fs')
+const path   = require('path')
+const fs     = require('fs')
+const os     = require('os')
+const { spawn }  = require('child_process')
 const { dialog } = require('electron')
+
+const APP_ROOT = path.join(__dirname, '..', '..')
+
+// Convert a .docx file to .md using python/docx_to_md.py. Returns the outMd path.
+function runDocxToMd(docxPath, outMd, python) {
+  return new Promise((resolve, reject) => {
+    const script = path.join(APP_ROOT, 'python', 'docx_to_md.py')
+    const proc = spawn(python, [script, docxPath, outMd], { stdio: 'pipe' })
+    let stderr = ''
+    proc.stderr.on('data', d => { stderr += d.toString() })
+    proc.on('close', code => {
+      if (code === 0) resolve(outMd)
+      else reject(new Error(`docx_to_md.py failed (${code}): ${stderr.trim()}`))
+    })
+    proc.on('error', reject)
+  })
+}
 
 // Template create/update job IPC handlers (Templates tab), moved verbatim from
 // main.js's registerIpcHandlers(). Handler bodies are byte-identical; helpers
@@ -60,8 +79,13 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
 
       for (const src of filePaths) {
         if (!fs.existsSync(src)) continue
-        const dest = path.join(stagingDir, path.basename(src))
-        fs.copyFileSync(src, dest)
+        if (src.toLowerCase().endsWith('.docx')) {
+          const stem = path.basename(src, '.docx')
+          const destMd = path.join(stagingDir, `${stem}.md`)
+          await runDocxToMd(src, destMd, appCtx.python)
+        } else {
+          fs.copyFileSync(src, path.join(stagingDir, path.basename(src)))
+        }
       }
       log(`[template] Staged ${filePaths.length} file(s) → ${stagingDir}`)
     } catch (e) {
@@ -117,7 +141,11 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
       try {
         fs.mkdirSync(samplesDir, { recursive: true })
         for (const src of sampleFiles) {
-          if (fs.existsSync(src)) {
+          if (!fs.existsSync(src)) continue
+          if (src.toLowerCase().endsWith('.docx')) {
+            const stem = path.basename(src, '.docx')
+            await runDocxToMd(src, path.join(samplesDir, `${stem}.md`), appCtx.python)
+          } else {
             fs.copyFileSync(src, path.join(samplesDir, path.basename(src)))
           }
         }
@@ -128,7 +156,22 @@ function registerTemplatesIpc(ipcMain, appCtx, deps) {
       }
     }
 
-    spawnTemplateUpdate(name, doctor.templatePath, (corrections || '').trim(), correctionsFile || null, samplesDir)
+    // Convert .docx corrections file to a temp .md so Claude can read it
+    let resolvedCorrectionsFile = correctionsFile || null
+    let tempCorrectionsFile = null
+    if (correctionsFile && correctionsFile.toLowerCase().endsWith('.docx')) {
+      try {
+        const outMd = path.join(os.tmpdir(), `corrections_${Date.now()}_${process.pid}.md`)
+        await runDocxToMd(correctionsFile, outMd, appCtx.python)
+        resolvedCorrectionsFile = outMd
+        tempCorrectionsFile = outMd
+      } catch (e) {
+        log(`[template-update ERR] corrections file conversion failed: ${e.message}`)
+        return `Failed to convert corrections file: ${e.message}`
+      }
+    }
+
+    spawnTemplateUpdate(name, doctor.templatePath, (corrections || '').trim(), resolvedCorrectionsFile, samplesDir, tempCorrectionsFile)
     return null  // null = no error
   })
 

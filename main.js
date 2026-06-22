@@ -710,7 +710,7 @@ function spawnTemplateCreation(doctorName, stagingDir) {
   runJob(templateCreateJob, { doctorName, lastname, stagingRel }, ctx, { stagingDir })
 }
 
-function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsFile, samplesDir) {
+function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsFile, samplesDir, tempCorrectionsFile) {
   const lastname = extractLastname(doctorName) || doctorName.toLowerCase()
   // Flatten corrections newlines to " | " (the skill's Step 0 line separator) and
   // forward-slash paths. The old "->' shell-escaping is dropped — arg-array spawn
@@ -722,9 +722,9 @@ function spawnTemplateUpdate(doctorName, templatePath, corrections, correctionsF
     correctionsFile: correctionsFile ? correctionsFile.replace(/\\/g, '/') : '',
     samplesDir:      samplesDir ? samplesDir.replace(/\\/g, '/') : '',
   }
-  // Forward the RAW samplesDir (not the forward-slashed prompt value) so the
-  // descriptor can delete the transient staging folder on every terminal path.
-  runJob(templateUpdateJob, input, ctx, { lastname, samplesDir })
+  // Forward raw paths (not forward-slashed prompt values) so the descriptor can
+  // delete transient staging files on every terminal path.
+  runJob(templateUpdateJob, input, ctx, { lastname, samplesDir, tempCorrectionsFile: tempCorrectionsFile || null })
 }
 
 // ---------------------------------------------------------------------------
@@ -827,7 +827,7 @@ function resolveTemplateFromSoapNote(caseDir) {
 // this runs in Node (src/pipeline/attachments.js — mammoth/.docx, pdf-parse/.pdf)
 // instead of spawning python/extract_attachments.py.
 function buildCombinedAttachment(filePaths) {
-  return combineAttachmentFiles(filePaths, { log })
+  return combineAttachmentFiles(filePaths, { log, python: ctx.python, appRoot: __dirname })
 }
 
 function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath) {

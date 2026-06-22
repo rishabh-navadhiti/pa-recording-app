@@ -1,8 +1,9 @@
 'use strict'
 
-const fs   = require('fs')
-const os   = require('os')
-const path = require('path')
+const fs     = require('fs')
+const os     = require('os')
+const path   = require('path')
+const { spawn } = require('child_process')
 
 // Ported from python/extract_attachments.py (decision A7).
 //
@@ -10,10 +11,7 @@ const path = require('path')
 // scribe pick several files — so the app pre-combines them into a single .md
 // here before invoking the skill. Per-file extraction mirrors the skill's Step 5.
 // The combined-file STRUCTURE (separators below) is preserved from the Python
-// version; the per-file text is not byte-identical — .docx now comes from
-// mammoth (one blank line between paragraphs, blank paragraphs kept) vs the old
-// python-docx single-newline join. That whitespace difference is immaterial to
-// the only consumer (the edit-note skill, an LLM). Output structure:
+// version. Output structure:
 //
 //   <file 1 contents, verbatim>
 //
@@ -23,8 +21,8 @@ const path = require('path')
 //   ...
 //
 // The first file gets no header (a single-file run looks identical to passing
-// that file directly). mammoth (.docx) and pdf-parse (.pdf) are lazy-required so
-// they don't load at startup and the .md/.txt path stays dependency-free.
+// that file directly). .docx uses python/docx_to_md.py (preserves headings,
+// tables, bold). pdf-parse (.pdf) is lazy-required so it doesn't load at startup.
 
 async function extractMdOrTxt(filePath) {
   // utf8 decode replaces invalid byte sequences with U+FFFD — matches the
@@ -32,10 +30,22 @@ async function extractMdOrTxt(filePath) {
   return fs.promises.readFile(filePath, 'utf8')
 }
 
-async function extractDocx(filePath) {
-  const mammoth = require('mammoth')
-  const { value } = await mammoth.extractRawText({ path: filePath })
-  return value
+async function extractDocx(filePath, python, appRoot) {
+  const outMd = path.join(os.tmpdir(), `docx2md_${Date.now()}_${process.pid}.md`)
+  await new Promise((resolve, reject) => {
+    const script = path.join(appRoot, 'python', 'docx_to_md.py')
+    const proc = spawn(python, [script, filePath, outMd], { stdio: 'pipe' })
+    let stderr = ''
+    proc.stderr.on('data', d => { stderr += d.toString() })
+    proc.on('close', code => {
+      if (code === 0) resolve()
+      else reject(new Error(`docx_to_md.py exited ${code}: ${stderr.trim()}`))
+    })
+    proc.on('error', reject)
+  })
+  const text = await fs.promises.readFile(outMd, 'utf8')
+  await fs.promises.unlink(outMd).catch(() => {})
+  return text
 }
 
 async function extractPdf(filePath) {
@@ -60,10 +70,10 @@ async function extractPdf(filePath) {
  * Extract one file's text. Unsupported extensions return the skip marker rather
  * than throwing (matches the Python contract). Caller wraps with separators.
  */
-async function extractOne(filePath) {
+async function extractOne(filePath, python, appRoot) {
   const ext = path.extname(filePath).toLowerCase()
   if (ext === '.md' || ext === '.txt') return extractMdOrTxt(filePath)
-  if (ext === '.docx') return extractDocx(filePath)
+  if (ext === '.docx') return extractDocx(filePath, python, appRoot)
   if (ext === '.pdf')  return extractPdf(filePath)
   return `> Skipped ${path.basename(filePath)} — unsupported format (${ext || 'no extension'})`
 }
@@ -75,10 +85,10 @@ async function extractOne(filePath) {
  * buildCombinedAttachment).
  *
  * @param {string[]} filePaths
- * @param {{ log?: Function }} [opts]
+ * @param {{ log?: Function, python?: string, appRoot?: string }} [opts]
  * @returns {Promise<string>}
  */
-async function combineAttachments(filePaths, { log } = {}) {
+async function combineAttachments(filePaths, { log, python, appRoot } = {}) {
   const pieces = []
   for (let idx = 0; idx < filePaths.length; idx++) {
     const filePath = filePaths[idx]
@@ -90,7 +100,7 @@ async function combineAttachments(filePaths, { log } = {}) {
       text = `> Failed to read ${name}: file not found`
     } else {
       try {
-        text = await extractOne(filePath)
+        text = await extractOne(filePath, python, appRoot)
       } catch (e) {
         if (log) log(`[prechart][extract] WARNING: extraction failed for ${filePath}: ${e.message}`)
         text = `> Failed to read ${name}: ${e.message}`
@@ -109,14 +119,14 @@ async function combineAttachments(filePaths, { log } = {}) {
  * buildCombinedAttachment in main.js.
  *
  * @param {string[]} filePaths
- * @param {{ log?: Function, tmpDir?: string }} [opts]
+ * @param {{ log?: Function, tmpDir?: string, python?: string, appRoot?: string }} [opts]
  * @returns {Promise<string>} temp .md path, or '' when filePaths is empty.
  */
-async function buildCombinedAttachment(filePaths, { log, tmpDir } = {}) {
+async function buildCombinedAttachment(filePaths, { log, tmpDir, python, appRoot } = {}) {
   if (!filePaths || filePaths.length === 0) return ''
   const dir = tmpDir || os.tmpdir()
   const tmp = path.join(dir, `prechart_${Date.now()}_${process.pid}.md`)
-  const combined = await combineAttachments(filePaths, { log })
+  const combined = await combineAttachments(filePaths, { log, python, appRoot })
   await fs.promises.mkdir(path.dirname(tmp), { recursive: true })
   await fs.promises.writeFile(tmp, combined, 'utf8')
   if (log) log(`[prechart][extract] combined ${filePaths.length} file(s) → ${tmp}`)

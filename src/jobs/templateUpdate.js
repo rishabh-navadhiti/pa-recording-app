@@ -21,6 +21,7 @@ const templateUpdate = {
 
   onRateLimit(input, ctx, extra, durationMs) {
     _cleanupSamples(extra.samplesDir, ctx.log)
+    _cleanupTempCorrections(extra.tempCorrectionsFile, ctx.log)
     const job = { type: 'update', status: 'failed', doctorName: input.doctorName, lastname: extra.lastname, error: 'Claude usage limit reached. Try again once the limit resets.', finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
     ctx.renderer.send('service-warning', { title: 'Claude usage limit reached', message: 'Template update could not complete — try again once the limit resets.' })
@@ -29,6 +30,7 @@ const templateUpdate = {
   // Returns nothing → dispatcher treats as success and writes one finishEvent.
   onSuccess(runResult, input, ctx, extra, { durationMs }) {
     _cleanupSamples(extra.samplesDir, ctx.log)
+    _cleanupTempCorrections(extra.tempCorrectionsFile, ctx.log)
 
     // Extract changes report from JSON manifest (B6) or fall back to "Updated:" text marker.
     const updateManifest = parseSkillManifest(runResult.text)
@@ -48,6 +50,7 @@ const templateUpdate = {
 
   onFailure(runResult, input, ctx, extra, durationMs) {
     _cleanupSamples(extra.samplesDir, ctx.log)
+    _cleanupTempCorrections(extra.tempCorrectionsFile, ctx.log)
     const job = { type: 'update', status: 'failed', doctorName: input.doctorName, lastname: extra.lastname, error: `Exit ${runResult.code}`, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
     ctx.platform.notify('Template update failed', `${input.doctorName} — check app.log for details`)
@@ -55,6 +58,7 @@ const templateUpdate = {
 
   onError(err, input, ctx, extra) {
     _cleanupSamples(extra.samplesDir, ctx.log)
+    _cleanupTempCorrections(extra.tempCorrectionsFile, ctx.log)
     const job = { type: 'update', status: 'failed', doctorName: input.doctorName, lastname: extra.lastname, error: err.message, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
   },
@@ -68,6 +72,13 @@ function _cleanupSamples(samplesDir, log) {
   try {
     if (fs.existsSync(samplesDir)) { fs.rmSync(samplesDir, { recursive: true, force: true }); log?.(`[template-update] Samples staging deleted: ${samplesDir}`) }
   } catch (e) { log?.(`[template-update] WARNING: samples staging delete failed: ${e.message}`) }
+}
+
+// Delete the temp .md file produced by converting a .docx corrections file.
+function _cleanupTempCorrections(tempFile, log) {
+  if (!tempFile) return
+  try { fs.unlinkSync(tempFile); log?.(`[template-update] Temp corrections .md deleted: ${tempFile}`) }
+  catch (e) { log?.(`[template-update] WARNING: temp corrections cleanup failed: ${e.message}`) }
 }
 
 module.exports = templateUpdate
