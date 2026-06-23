@@ -61,10 +61,21 @@ OK "Repository ready"
 # ---- 2 (step 8). Python packages --------------------------------------------
 Step 2 "Installing Python packages..."
 Refresh-Path
-$pythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $pythonExe -or $pythonExe -like "*WindowsApps*") {
-    $pythonExe = "C:\Program Files\Python312\python.exe"
+# Prefer the `py` launcher (matches what the app uses at runtime). Fall back to
+# `python` if `py` is unavailable, then the versioned path as a last resort.
+$pyLauncher = (Get-Command py -ErrorAction SilentlyContinue).Source
+if ($pyLauncher) {
+    $pythonExe = "py"
+} else {
+    $pythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (-not $pythonExe -or $pythonExe -like "*WindowsApps*") {
+        # Last resort: try common versioned install paths
+        foreach ($p in @("C:\Program Files\Python313\python.exe", "C:\Program Files\Python312\python.exe")) {
+            if (Test-Path $p) { $pythonExe = $p; break }
+        }
+    }
 }
+Write-Host "  Using Python: $pythonExe" -ForegroundColor Gray
 Push-Location $installDir
 & $pythonExe -m pip install --upgrade pip --quiet
 & $pythonExe -m pip install -r requirements.txt --quiet
@@ -93,7 +104,18 @@ OK "Config file ready - add your ElevenLabs key in the app after launch"
 
 # ---- 5 (step 11). Autostart via Task Scheduler ------------------------------
 Step 5 "Registering autostart (Task Scheduler)..."
-$electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+# Resolve electron binary via path.txt (the npm package's canonical pointer).
+$electronPathTxt = Join-Path $installDir "node_modules\electron\path.txt"
+if (Test-Path $electronPathTxt) {
+    $electronRelative = (Get-Content $electronPathTxt -Raw).Trim()
+    $electronExe = Join-Path $installDir "node_modules\electron\$electronRelative"
+} else {
+    $electronExe = Join-Path $installDir "node_modules\electron\dist\electron.exe"
+}
+if (-not (Test-Path $electronExe)) {
+    Write-Host "  ERROR: Electron binary not found at: $electronExe" -ForegroundColor Red
+    exit 1
+}
 
 $action = New-ScheduledTaskAction `
     -Execute  $electronExe `
