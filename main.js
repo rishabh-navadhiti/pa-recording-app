@@ -47,6 +47,7 @@ const { runJob }             = require('./src/jobs/jobDispatcher')
 const templateCreateJob      = require('./src/jobs/templateCreate')
 const templateUpdateJob      = require('./src/jobs/templateUpdate')
 const prechartJob            = require('./src/jobs/prechart')
+const prechartApiJob         = require('./src/jobs/prechartApi')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
@@ -842,7 +843,11 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     attachmentPath: (combinedAttachmentPath || '').replace(/\\/g, '/'),
     instructions:   (instructions || '').replace(/\r?\n/g, ' '),
   }
-  runJob(prechartJob, input, ctx, {
+
+  const opt        = resolveOption(readSettings().soapModel)
+  const descriptor = (opt?.provider === 'cli') ? prechartJob : prechartApiJob
+
+  runJob(descriptor, input, ctx, {
     patientLabel,
     caseId: prechartCaseId,
     combinedAttachmentPath,   // raw temp path, for cleanup
