@@ -16,7 +16,9 @@ import { setVisible } from '../components/visible.js'
 
 export function createSettingsView() {
   let settingsView, btnSettingsClose,
-      chkAutoRecord, chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
+      chkAutoRecord, chkRealtimeTranscription,
+      chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
+      chkEnableEmScore, chkEnablePatientSummary,
       deviceSelect, soapModelSelect, templateModelSelect,
       btnAdvancedToggle, advancedSettingsContent,
       notesDirPath, btnChangeNotesDir,
@@ -56,6 +58,7 @@ export function createSettingsView() {
   async function loadSettings() {
     const s = await ipc.getSettings()
     chkAutoRecord.checked = s.autoRecord || false
+    if (chkRealtimeTranscription) chkRealtimeTranscription.checked = !!s.realtimeTranscription
     // ICD toggle — locked on while CDI is enabled (CDI requires ICD).
     if (chkEnableIcd) chkEnableIcd.checked = !!s.enableIcd
     // CDI toggle + mode — mode row is only visible when CDI is on.
@@ -63,6 +66,9 @@ export function createSettingsView() {
     if (cdiModeSelect) cdiModeSelect.value = s.cdiMode || 'balanced'
     if (cdiModeRow) setVisible(cdiModeRow, !!s.enableCdi)
     syncIcdLock(!!s.enableCdi)
+    // E/M scoring + patient summary — independent toggles, no coupling.
+    if (chkEnableEmScore) chkEnableEmScore.checked = !!s.enableEmScore
+    if (chkEnablePatientSummary) chkEnablePatientSummary.checked = !!s.enablePatientSummary
     const dir = await ipc.getNotesDir()
     notesDirPath.textContent = dir
     notesDirPath.title = dir
@@ -111,11 +117,14 @@ export function createSettingsView() {
 
       settingsView          = root.querySelector('#settings-view')
       btnSettingsClose      = root.querySelector('#btn-settings-close')
-      chkAutoRecord         = root.querySelector('#chk-auto-record')
-      chkEnableIcd          = root.querySelector('#chk-enable-icd')
+      chkAutoRecord              = root.querySelector('#chk-auto-record')
+      chkRealtimeTranscription   = root.querySelector('#chk-realtime-transcription')
+      chkEnableIcd               = root.querySelector('#chk-enable-icd')
       chkEnableCdi          = root.querySelector('#chk-enable-cdi')
       cdiModeRow            = root.querySelector('#cdi-mode-row')
       cdiModeSelect         = root.querySelector('#cdi-mode-select')
+      chkEnableEmScore      = root.querySelector('#chk-enable-em-score')
+      chkEnablePatientSummary = root.querySelector('#chk-enable-patient-summary')
       deviceSelect          = root.querySelector('#device-select')
       soapModelSelect       = root.querySelector('#soap-model-select')
       templateModelSelect   = root.querySelector('#template-model-select')
@@ -142,6 +151,12 @@ export function createSettingsView() {
         ipc.saveSettings({ autoRecord: chkAutoRecord.checked })
       })
 
+      if (chkRealtimeTranscription) {
+        on(chkRealtimeTranscription, 'change', () => {
+          ipc.saveSettings({ realtimeTranscription: chkRealtimeTranscription.checked })
+        })
+      }
+
       if (chkEnableIcd) {
         on(chkEnableIcd, 'change', () => {
           ipc.saveSettings({ enableIcd: chkEnableIcd.checked })
@@ -164,6 +179,18 @@ export function createSettingsView() {
         })
       }
 
+      if (chkEnableEmScore) {
+        on(chkEnableEmScore, 'change', () => {
+          ipc.saveSettings({ enableEmScore: chkEnableEmScore.checked })
+        })
+      }
+
+      if (chkEnablePatientSummary) {
+        on(chkEnablePatientSummary, 'change', () => {
+          ipc.saveSettings({ enablePatientSummary: chkEnablePatientSummary.checked })
+        })
+      }
+
       on(btnAdvancedToggle, 'click', async () => {
         const isOpen = !advancedSettingsContent.classList.contains('hidden')
         if (isOpen) {
@@ -174,7 +201,7 @@ export function createSettingsView() {
           btnAdvancedToggle.classList.add('open')
           const s = await ipc.getSettings()
           await loadDeviceList(s.selectedDeviceIndex)
-          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'sonnet-4-6-api'
+          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'gemini-3.5-flash'
           if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
         }
       })

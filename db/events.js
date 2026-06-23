@@ -23,37 +23,42 @@ function finishEvent(eventId, {
   status,
   inputTokens, outputTokens, cacheReadTokens, cacheCreatedTokens,
   costUsd, numTurns, durationMs,
-  errorMessage, backupPath, finishedAt
+  errorMessage, backupPath, finishedAt,
+  transcriptLanguage, transcriptSpeakerCount
 }) {
   const db = getDb()
   if (!db || eventId == null) return
   try {
     const info = db.prepare(`
       UPDATE processing_events SET
-        status               = ?,
-        input_tokens         = ?,
-        output_tokens        = ?,
-        cache_read_tokens    = ?,
-        cache_created_tokens = ?,
-        cost_usd             = ?,
-        num_turns            = ?,
-        duration_ms          = ?,
-        error_message        = ?,
-        backup_path          = ?,
-        finished_at          = ?
+        status                   = ?,
+        input_tokens             = ?,
+        output_tokens            = ?,
+        cache_read_tokens        = ?,
+        cache_created_tokens     = ?,
+        cost_usd                 = ?,
+        num_turns                = ?,
+        duration_ms              = ?,
+        error_message            = ?,
+        backup_path              = ?,
+        finished_at              = ?,
+        transcript_language      = ?,
+        transcript_speaker_count = ?
       WHERE id = ?
     `).run(
       status,
-      inputTokens         ?? null,
-      outputTokens        ?? null,
-      cacheReadTokens     ?? null,
-      cacheCreatedTokens  ?? null,
-      costUsd             ?? null,
-      numTurns            ?? null,
-      durationMs          ?? null,
-      errorMessage        ? errorMessage.slice(0, 1024) : null,
-      backupPath          ?? null,
-      finishedAt          || new Date().toISOString(),
+      inputTokens              ?? null,
+      outputTokens             ?? null,
+      cacheReadTokens          ?? null,
+      cacheCreatedTokens       ?? null,
+      costUsd                  ?? null,
+      numTurns                 ?? null,
+      durationMs               ?? null,
+      errorMessage             ? errorMessage.slice(0, 1024) : null,
+      backupPath               ?? null,
+      finishedAt               || new Date().toISOString(),
+      transcriptLanguage       ?? null,
+      transcriptSpeakerCount   ?? null,
       eventId
     )
     if (info.changes === 0) {

@@ -22,6 +22,27 @@ For engines not yet under active development, only the description is filled in.
 
 ---
 
+## Active deliverables — next batch (decided 2026-06-11)
+
+After CDI v1 (`cdi-review`) + the Costigan procedure-checklist variant (`cdi-costigan`) shipped to `develop`, the next batch of engines was scoped:
+
+| Engine / sub-feature | Decision |
+|---|---|
+| **E/M MDM Scorer** (Engine 3b) | 🟢 **Next** — new `em-score` skill; full JSON output (level + Problems/Data/Risk + downcode risk + upgrade path). |
+| **Provider Query Generator** (1.43–1.47) | 🟢 **Next** — extend `cdi-review` to emit AHIMA-compliant, non-leading queries derived from the flags. |
+| **Per-flag E/M reimbursement signal** (1.36b) | 🟢 **Next** — populate the existing `reimbursement_impact` with concrete E/M signals (depends on the E/M MDM grid pack). |
+| **Patient Summary Generator** (Engine 7) | 🟢 **Next** — new `patient-summary` skill; plain-language 6th-grade visit recap. |
+| **Clinical Order Generation** (Engine 6) | ❌ **On hold** — useful but low-yield for the current ortho/pain focus; revisit later. |
+| SOAP structural validator · rules pre-filter · offline ICD backstop · re-run-on-edit · more specialties · full HCC | ⏸ **Not now** — explicitly deferred this cycle. |
+
+**Cross-cutting decisions for this batch (finalized 2026-06-11):**
+- **Pipeline-integrated + toggle-gated.** `em-score` and `patient-summary` ARE registered in the chain's `src/engines/registry.js` (`soap → icd → cdi → em-score → patient-summary`) and run on every case, sequentially after CDI. Each gates itself off when its toggle (`enableEmScore` / `enablePatientSummary`) is off. Toggle ON ⇒ runs + persists; OFF ⇒ skipped. (An on-demand/manual-tab surface, the `feature/cdi-manual-tab` pattern, is a *separate later* step.) Provider-query (#2) + reimbursement (#3) extend `cdi-review` and ride with `enableCdi` — no own toggles.
+- **DB:** no new per-engine columns on `cases`. The two new engines write their canonical JSON to the case folder + **one row each to a generic `engine_outputs` table** (`db/migrations/005`, `db/engine_outputs.js`) — keyed by `(case_id, engine)`. CDI/ICD keep their existing storage (`cdi_*` columns + `cdi_flags`). #3's `reimbursement_impact` was already wired end-to-end (column + `insertFlags` + `cdi.persist`).
+- **MD/presentation:** the two new engines are **JSON-only** (no MD, no docx). CDI/ICD/SOAP MD+docx stay unchanged for now. Moving *review-output* presentation to **JSON → HTML → PDF** is the explicit next step; that's when review MD gets reworked. (The SOAP note's md→docx always stays — it's the clinical document.)
+- **Base branch:** `feature/pa-engines-v0.2` off `develop` (= full Phase 0–5 refactor + all CDI work).
+
+---
+
 ## Engine 1 — CDI Co-Pilot 🔍
 
 **Status:** Active — v1 in scoping
@@ -152,7 +173,7 @@ Our implementation extends Fahd's "one sentence appended" pattern — modes affe
 
 | # | Sub-feature | Status | Notes |
 |---|---|---|---|
-| 1.43 | Generate AHIMA-compliant queries from CDI flags | 🟡 v1.1 | Non-leading, multi-choice, "clinically undetermined" always included |
+| 1.43 | Generate AHIMA-compliant queries from CDI flags | 🟢 Next (2026-06-11) | Non-leading, multi-choice, "clinically undetermined" always included. Extends `cdi-review`. |
 | 1.44 | Query type selection: Concurrent / Retrospective / Verbal | 🟡 v1.1 | |
 | 1.45 | Indicator warning if fewer than 2 clinical indicators support the query | 🟡 v1.1 | AHIMA 2026 requirement |
 | 1.46 | Per-patient repeat-query blocking log (AHIMA 2026 compliance) | 🟡 v1.1 | Needs persistent storage → uses SQLite schema |
@@ -264,6 +285,8 @@ Two sub-engines bundled by Fahd. They share inputs but produce different outputs
 
 ### Engine 3b — E/M MDM Scorer
 
+**Status:** 🟢 Active — next batch (2026-06-11). New standalone `em-score` skill; emits full JSON (level + Problems/Data/Risk + downcode risk + upgrade path). On-demand, toggle-gated (not in the per-case chain).
+
 **One-liner:** Scores the note against AMA 2023 MDM framework and predicts what E/M level (99202-99215) the note actually supports.
 
 **Reads:** SOAP note + optional expected_level
@@ -325,7 +348,7 @@ Two sub-engines bundled by Fahd. They share inputs but produce different outputs
 
 ## Engine 6 — Clinical Order Generation 📝
 
-**Status:** Not active
+**Status:** ❌ On hold (2026-06-11) — useful but low-yield for the current ortho/pain focus; revisit later.
 
 **One-liner:** Reads the Plan section and generates the actual clinical orders that need to be placed — labs, imaging, referrals, medications, PT/OT, DME, follow-up. Surfaces "implied orders" — clinically indicated items missing from the plan.
 
@@ -351,7 +374,7 @@ Two sub-engines bundled by Fahd. They share inputs but produce different outputs
 
 ## Engine 7 — Patient Summary Generator 👤
 
-**Status:** Not active
+**Status:** 🟢 Active — next batch (2026-06-11). New `patient-summary` skill; JSON output, presentation TBD. On-demand, toggle-gated.
 
 **One-liner:** Writes a patient-facing after-visit summary in plain language at 6th-grade reading level. Plus a 150-word pocket card the patient takes home.
 

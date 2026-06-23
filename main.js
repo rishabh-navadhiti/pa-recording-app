@@ -47,6 +47,7 @@ const { runJob }             = require('./src/jobs/jobDispatcher')
 const templateCreateJob      = require('./src/jobs/templateCreate')
 const templateUpdateJob      = require('./src/jobs/templateUpdate')
 const prechartJob            = require('./src/jobs/prechart')
+const prechartApiJob         = require('./src/jobs/prechartApi')
 const { DEFAULT_SETTINGS }   = require('./config/settings')
 const { writeMcpConfig }     = require('./config/mcp')
 const { bootstrap }          = require('./startup/bootstrap')
@@ -294,7 +295,12 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
   const opt = resolveOption(cfg.soapModel)
 
   if (opt.provider === 'api') {
-    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model)
+    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model, ctx.api, 'Anthropic')
+    return
+  }
+
+  if (opt.provider === 'gemini') {
+    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model, ctx.gemini, 'Gemini')
     return
   }
 
@@ -425,7 +431,8 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
 // Sibling of the CLI path inside spawnSoapGeneration; the CLI path is
 // byte-for-byte untouched. Called when opt.provider === 'api'.
 // ---------------------------------------------------------------------------
-async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, model) {
+async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, model, provider = null, providerName = 'API') {
+  if (!provider) provider = ctx.api
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   if (isRetry) log(`${tag}[soap:api] retry attempt`)
@@ -480,22 +487,23 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
     doctorLastname, patientName, dateOfService,
   })
 
-  const runResult = await ctx.api.runSingleCall({ system, user, model, tag, label: 'soap:api' })
+  const runResult = await provider.runSingleCall({ system, user, model, tag, label: 'soap:api' })
   const { ok, text: resultText, rawUsage, durationMs, errText, statusCode } = runResult
   const usageFields = normalizeApiUsage({ model, rawUsage, durationMs })
 
   if (!ok) {
-    const isAuthError = !!(errText?.includes('ANTHROPIC_API_KEY not set') || statusCode === 401)
+    const keyEnvName = providerName === 'Gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY'
+    const isAuthError = !!(errText?.includes(`${keyEnvName} not set`) || statusCode === 401)
     const isRateLimit = statusCode === 429 || statusCode === 529
-    const title   = isAuthError ? 'Anthropic API key missing or invalid'
-                  : isRateLimit ? 'Anthropic API rate limit reached'
+    const title   = isAuthError ? `${providerName} API key missing or invalid`
+                  : isRateLimit ? `${providerName} API rate limit reached`
                   : 'Note generation failed'
     const message = isAuthError
-      ? 'Set your Anthropic API key in Settings → Advanced → Anthropic API Key.'
+      ? `Set your ${providerName} API key in Settings → Advanced.`
       : isRateLimit
       ? 'Your recording has been saved. Notes could not be generated — try again in a moment.'
       : `Your recording has been saved. Error: ${(errText || 'unknown').slice(0, 200)}`
-    log(`${tag}[soap:api] [DEV-ALERT] API call failed: ${errText}`)
+    log(`${tag}[soap:api] [DEV-ALERT] ${providerName} API call failed: ${errText}`)
     ctx.renderer.send('service-warning', { title, message })
     await fail('failed', errText)
     return
@@ -543,12 +551,15 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
 
         log(`${tag}[soap:api] fan-out ${i + 1}/${detectedCases.length}: "${c.patient_name}" → ${path.basename(targetNotePath)}`)
 
+        // Use positional fallback for unnamed patients so the "Target patient" line
+        // is always present — without it the model re-enters detection mode and bails.
+        const targetPatientLabel = c.patient_name || `(patient ${i + 1} in transcript, unnamed)`
         const { system: tSys, user: tUser } = buildSingleCallNoteGen({
           skillText, templateText, transcriptText,
           caseDir, soapNoteMdPath: targetNotePath,
           doctorLastname, dateOfService,
           patientName: c.patient_name,
-          targetPatient: c.patient_name,
+          targetPatient: targetPatientLabel,
         })
 
         let tEventId = null
@@ -832,7 +843,11 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     attachmentPath: (combinedAttachmentPath || '').replace(/\\/g, '/'),
     instructions:   (instructions || '').replace(/\r?\n/g, ' '),
   }
-  runJob(prechartJob, input, ctx, {
+
+  const opt        = resolveOption(readSettings().soapModel)
+  const descriptor = (opt?.provider === 'cli') ? prechartJob : prechartApiJob
+
+  runJob(descriptor, input, ctx, {
     patientLabel,
     caseId: prechartCaseId,
     combinedAttachmentPath,   // raw temp path, for cleanup

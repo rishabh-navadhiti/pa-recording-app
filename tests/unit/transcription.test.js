@@ -13,8 +13,10 @@ const path = require('path')
 
 const {
   formatTranscript,
+  extractTranscriptMetrics,
   requestTranscription,
   transcribeToFile,
+  SCRIBE_V2_COST_PER_HOUR_USD,
 } = require('../../src/pipeline/elevenLabs')
 const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../../src/llm/skill-io/markers')
 
@@ -23,6 +25,7 @@ const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../../src/ll
 // Speaker-N label must be reused, not re-numbered).
 const SAMPLE = {
   language_code: 'en',
+  audio_duration: 120.5,
   text: 'Hello doctor Hi there Back',
   words: [
     { text: 'Hello',  type: 'word',    speaker_id: 'speaker_0', start: 0.1, end: 0.5 },
@@ -82,10 +85,43 @@ test('transcribeToFile writes the formatted markdown to disk', async () => {
     return { ok: true, status: 200, json: async () => SAMPLE }
   }
 
-  const { markdown } = await transcribeToFile({ mp3Path: mp3, transcriptDest: dest, apiKey: 'k-123', fetchImpl })
+  const { markdown, languageCode, speakerCount, audioDurationSeconds } = await transcribeToFile({ mp3Path: mp3, transcriptDest: dest, apiKey: 'k-123', fetchImpl })
   assert.strictEqual(markdown, GOLDEN)
   assert.strictEqual(fs.readFileSync(dest, 'utf8'), GOLDEN)
+  assert.strictEqual(languageCode, 'en')
+  assert.strictEqual(speakerCount, 2)
+  assert.strictEqual(audioDurationSeconds, 120.5)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('extractTranscriptMetrics returns language, speaker count, and audio duration', () => {
+  const m = extractTranscriptMetrics(SAMPLE)
+  assert.strictEqual(m.languageCode, 'en')
+  assert.strictEqual(m.speakerCount, 2)
+  assert.strictEqual(m.audioDurationSeconds, 120.5)
+})
+
+test('extractTranscriptMetrics returns nulls when fields are absent', () => {
+  const m = extractTranscriptMetrics({ words: [] })
+  assert.strictEqual(m.languageCode, null)
+  assert.strictEqual(m.speakerCount, null)
+  assert.strictEqual(m.audioDurationSeconds, null)
+})
+
+test('extractTranscriptMetrics ignores spacing tokens when counting speakers', () => {
+  const m = extractTranscriptMetrics({
+    language_code: 'en',
+    audio_duration: 10,
+    words: [
+      { type: 'spacing', speaker_id: 'speaker_0', text: ' ' },
+      { type: 'word',    speaker_id: 'speaker_0', text: 'Hi' },
+    ],
+  })
+  assert.strictEqual(m.speakerCount, 1)
+})
+
+test('SCRIBE_V2_COST_PER_HOUR_USD is a positive number', () => {
+  assert.ok(typeof SCRIBE_V2_COST_PER_HOUR_USD === 'number' && SCRIBE_V2_COST_PER_HOUR_USD > 0)
 })
 
 test('requestTranscription throws an auth-classifiable error on 401', async () => {

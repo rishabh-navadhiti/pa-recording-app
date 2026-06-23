@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PA Engine Output — Presentation Prototypes</title>
+<style>
+  :root{
+    --bg:#0f1722; --panel:#16212f; --panel2:#1c2937; --line:#27384a;
+    --ink:#e8eef5; --muted:#94a6b8; --faint:#637789;
+    --teal:#2dd4bf; --teal-dk:#0f766e;
+    --crit:#f87171; --warn:#fbbf24; --ok:#34d399; --info:#60a5fa;
+    --r:12px; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;
+    padding:32px 20px 64px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto}
+  header{margin-bottom:8px}
+  .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--teal);font-weight:700}
+  h1{font-size:26px;font-weight:700;letter-spacing:-.02em;margin:6px 0 4px}
+  .sub{color:var(--muted);font-size:14px;max-width:70ch}
+  .case{margin-top:14px;display:inline-flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--faint);
+    background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:7px 16px}
+  .case b{color:var(--ink);font-weight:600}
+  .grid{margin-top:26px;display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:20px;
+    display:flex;flex-direction:column;transition:border-color .15s,transform .15s}
+  .card:hover{border-color:var(--teal-dk);transform:translateY(-2px)}
+  .card h2{font-size:18px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+  .rank{font-size:11px;font-weight:700;color:var(--bg);background:var(--teal);border-radius:6px;padding:2px 7px}
+  .tag{color:var(--muted);font-size:12.5px;margin-top:3px;font-weight:500}
+  .scores{display:flex;gap:7px;flex-wrap:wrap;margin:15px 0 12px}
+  .s{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;padding:4px 8px}
+  .s b{color:var(--ink)}
+  .s.big{color:var(--bg);background:var(--teal);border-color:var(--teal);font-weight:700}
+  .s.big b{color:var(--bg)}
+  .verdict{font-size:13px;color:var(--muted);flex:1}
+  .open{margin-top:16px;display:inline-flex;align-items:center;gap:7px;align-self:flex-start;
+    background:var(--teal);color:#06231f;font-weight:700;font-size:13.5px;text-decoration:none;
+    border-radius:9px;padding:10px 18px;transition:background .15s}
+  .open:hover{background:#5eead4}
+  .note{margin-top:30px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:22px}
+  .note h3{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--teal);margin-bottom:14px}
+  .note ul{list-style:none;display:flex;flex-direction:column;gap:13px}
+  .note li{padding-left:18px;position:relative;font-size:13.5px;color:var(--muted)}
+  .note li::before{content:"";position:absolute;left:0;top:8px;width:7px;height:7px;border-radius:50%;background:var(--warn)}
+  .note li b{color:var(--ink);font-weight:600}
+  .note code{font-family:var(--mono);font-size:12px;background:var(--panel2);padding:1px 6px;border-radius:5px;color:var(--teal)}
+  .rec{margin-top:18px;background:linear-gradient(180deg,#13242a,#16212f);border:1px solid var(--teal-dk);
+    border-radius:var(--r);padding:22px}
+  .rec h3{color:var(--teal)}
+  .rec p{font-size:14px;color:var(--ink);margin-top:6px}
+  .rec p+p{margin-top:10px;color:var(--muted);font-size:13.5px}
+  footer{margin-top:30px;color:var(--faint);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Physician Assist · Presentation Prototypes</div>
+    <h1>One CDI/E·M/Patient run — four ways to present it</h1>
+    <p class="sub">Each is a single self-contained HTML file rendering the <i>same</i> engine JSON behind one
+      <code style="font-family:var(--mono);font-size:12px;background:var(--panel2);padding:1px 6px;border-radius:5px;color:var(--teal)">PA_DATA</code>
+      seam — so the winning template later gets fed data by the app's renderer (the custom case-file path), not rebuilt. Open each; we tweak from there.</p>
+    <div class="case"><span><b>Amy Berger</b> · Dr. Sabbag</span><span>Orthopedics · Workers' Comp</span><span>Left distal radius fracture, s/p ORIF</span><span>06/12/2026</span></div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2><span class="rank">#1 · 9.0</span> Clinical Cockpit</h2>
+      <div class="tag">Tabbed working surface — Overview · CDI · E·M · Patient</div>
+      <div class="scores">
+        <span class="s big">overall <b>9</b></span>
+        <span class="s">data <b>9</b></span><span class="s">glance <b>9</b></span><span class="s">design <b>9</b></span><span class="s">electron <b>10</b></span>
+      </div>
+      <div class="verdict">Best fit for the in-app renderer / unified-dashboard direction. Flawless self-containment, near-perfect fidelity, verdict visible above the fold. Clickable flag-count → CDI tab, code→flag jumps.</div>
+      <a class="open" href="presentation_cockpit.html">Open Cockpit →</a>
+    </div>
+
+    <div class="card">
+      <h2><span class="rank">#1 · 9.0</span> Action Triage</h2>
+      <div class="tag">Single scroll, action-first — scan top-down &amp; act</div>
+      <div class="scores">
+        <span class="s big">overall <b>9</b></span>
+        <span class="s">data <b>9</b></span><span class="s">glance <b>9</b></span><span class="s">design <b>8</b></span><span class="s">electron <b>10</b></span>
+      </div>
+      <div class="verdict">Fastest "do these in order" view: hero verdict, then severity-sorted cards led by the imperative action (top critical auto-open). The fast review mode.</div>
+      <a class="open" href="presentation_triage.html">Open Triage →</a>
+    </div>
+
+    <div class="card">
+      <h2><span class="rank">#3 · 8.5</span> Editorial Report</h2>
+      <div class="tag">Print / PDF-export quality — the deliverable candidate</div>
+      <div class="scores">
+        <span class="s big">overall <b>8.5</b></span>
+        <span class="s">data <b>9</b></span><span class="s">glance <b>7</b></span><span class="s">design <b>9</b></span><span class="s">electron <b>10</b></span>
+      </div>
+      <div class="verdict">Typeset ink-on-paper document with a real print stylesheet — the right base for the PDF/Word-replacement export. Beautiful but long-scroll for fast triage.</div>
+      <a class="open" href="presentation_editorial.html">Open Editorial →</a>
+    </div>
+
+    <div class="card">
+      <h2><span class="rank">#4 · 8.0</span> Ops Dashboard</h2>
+      <div class="tag">Dense multi-panel grid — preview of the unified dashboard</div>
+      <div class="scores">
+        <span class="s big">overall <b>8</b></span>
+        <span class="s">data <b>8</b></span><span class="s">glance <b>8</b></span><span class="s">design <b>8</b></span><span class="s">electron <b>10</b></span>
+      </div>
+      <div class="verdict">Everything on one wide screen, data-forward. Closest to the future all-cases dashboard. Has a real timezone date bug + two hardcoded values to fix.</div>
+      <a class="open" href="presentation_dashboard.html">Open Dashboard →</a>
+    </div>
+  </div>
+
+  <div class="rec">
+    <h3>My read</h3>
+    <p><b>Cockpit + Editorial is the pair worth carrying forward.</b> Cockpit is the in-app working surface (tabbed, cleanest seam, best fit for the renderer → unified dashboard path); Editorial is the print/PDF deliverable. Triage's action-first ordering is a mode worth folding into Cockpit's CDI tab. Dashboard is the right north-star for the eventual all-cases view but isn't the per-case template.</p>
+    <p>All four are equally Electron-ready (10/10 self-containment). Pick on layout philosophy, not plumbing.</p>
+  </div>
+
+  <div class="note">
+    <h3>Cross-cutting — surfaced by building these (fix at the engine, not the HTML)</h3>
+    <ul>
+      <li><b>"Billed 99215" is not a structured field.</b> Every variant had to hardcode or regex-infer it from the note's <code>.KS15</code> placeholder / prose. <b>em-score should emit a structured <code>billed_em_code</code></b> (parsed from the note) so the downcode story is data-driven, not inferred — this is the single change that makes all four templates fully case-agnostic.</li>
+      <li><b>Cross-engine disagreement, unreconciled.</b> em-score scores Data = <i>Straightforward</i>; CDI flag-004 says Data = <i>Low</i>. Both render faithfully, so a reader sees two answers. The two E·M-touching engines need one source of truth (ties to the review's <code>reimbursement_impact</code> finding).</li>
+      <li><b>Date drift.</b> <code>generated_at</code> is model-stamped midnight-Z → the dashboard renders "Jun 11" in any US timezone. The app should stamp real local time post-run (and the renderer should format date-only, not via <code>toLocaleDateString</code> on a Z-instant).</li>
+    </ul>
+  </div>
+
+  <footer>Self-contained prototypes · render from a single PA_DATA object · no external dependencies</footer>
+</div>
+</body>
+</html>

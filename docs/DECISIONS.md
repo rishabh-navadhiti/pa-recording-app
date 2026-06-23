@@ -12,6 +12,36 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-11 (rs) — PA engines v0.2: E/M scorer + patient summary as pipeline engines; provider-query + E/M reimbursement on CDI; generic `engine_outputs` table
+
+**Context:** Next batch of PA capabilities after CDI v1 + the Costigan procedure-checklist. Four deliverables: an **E/M MDM scorer**, a **patient summary**, **provider-query generation**, and a **per-flag E/M reimbursement signal**. Branch `feature/pa-engines-v0.2` off develop. (An earlier draft of the plan scoped these as on-demand/ephemeral with no UI; rish reversed that mid-implementation — they now run in the pipeline, gated by toggles.)
+
+**Decision:**
+- **Two new pipeline engines, toggle-gated.** `em-score` and `patient-summary` are real engine descriptors (`src/engines/{emScore,patientSummary}.js`) **registered in `src/engines/registry.js`** → `[soap, icd, cdi, em-score, patient-summary]`, run sequentially in `runCaseChain` after CDI, before docx. Each `gates()` off when its setting (`enableEmScore` / `enablePatientSummary`, default `false`) is off — toggle ON ⇒ runs + persists on every case; OFF ⇒ skipped. Surfaced as two independent Settings checkboxes (no coupling, unlike `enableCdi ⟹ enableIcd`). Multi-patient inherits them automatically (the per-child loop calls `runCaseChain`).
+- **JSON-only for the two new engines.** They emit `<case>_em.json` / `<case>_patient_summary.json` and **no MD, no docx**. Presentation (rich cards) is a **separate next step** that renders JSON → HTML → PDF; that's when *review-output* MD gets reworked. CDI/ICD/SOAP MD+docx stay unchanged this batch (rish: "keep md for now"). The SOAP note's md→docx always stays — it's the clinical document.
+- **Generic `engine_outputs` table — NOT per-`cases` columns.** New migration `005_add_engine_outputs.sql` + `db/engine_outputs.js insertOutput({caseId, engine, status, jsonPath, summaryJson, eventId})`. One row per `(case_id, engine)` run; `summary_json` holds compact headline fields for list views, full data stays in the on-disk JSON. This is the **anti-splatter** structure — every future engine routes through this one table; we deliberately do **not** repeat the `cdi_*` column family (which stays as-is for CDI). CDI/ICD persistence untouched.
+- **Provider queries extend `cdi-review` (#2), ride with `enableCdi`.** Per-flag optional `provider_query{query_type, question, clinical_indicators[], options[]}` on flags warranting clarification + a top-level `queries[]` convenience array + `query_count` in the manifest. Enforces AHIMA §1–6 (already in `ahima_acdis_2026.md`): non-leading; ≥2 indicators for a new-Dx query (else omit); multiple-choice ≥3 mutually-exclusive options with **"Clinically undetermined"** last; no single-option; indicators verbatim from `evidence_found`; no unvalidated ICD code in a query. Queries follow the parent flag's mode filter. Live in the `_cdi.json` only — no DB column.
+- **Per-flag E/M reimbursement signal extends `cdi-review` (#3) — zero DB work.** `cdi-review` now loads `em_mdm_2021.md` and **populates the existing `reimbursement_impact` field** with a concrete E/M signal when a flag's fix would move an MDM element enough to change the 2-of-3 level (keeps default-`null`, never-fabricate). The column (`cdi_flags.reimbursement_impact`, migration 004) + `insertFlags` write + `cdi.persist()` call already exist end-to-end — verified — so #3 is a pure skill-content change. **This also confirms the 2026-06-09 CDI-persist regression is resolved** (commit `7c39e13`): `cdi.persist()` writes `cdi_*` + `cdi_flags` again.
+- **New `em_mdm_2021.md` standards pack** (AMA 2021 Office/Outpatient MDM grid: 3 elements, 2-of-3 rule, 99202–99205 new / 99212–99215 established, time alternative + thresholds, down-code drivers). **Connector-free** — the ICD-10 MCP connector is ICD-only and **cannot validate CPT**, so every CPT/time-threshold was source-checked against AMA CPT 2021 / CMS, not the connector; the pack is intentionally ICD-clean. (Any ICD code a skill emits is still connector-validated per the De Quervain rule; these two engines emit none.)
+- **Visit type parsed from the note** (`em-score`): no UI to supply it, so the skill reads "new patient" / "established" / "follow-up" / "post-op"; if absent it infers and sets `visit_type_assumed:true` + flags it in the headline (the new/established split shifts the whole CPT band, so the operator must know it was assumed).
+- **`python/docx_to_md.py` ported** from dev tooling (faithful inverse of `md_to_docx.py`, recurses into nested tables) — standalone converter, harmless on develop, unblocks a later `.docx`-upload path.
+
+**Rejected:**
+- *On-demand/ephemeral (the earlier draft).* Reversed by rish — he wants the engines running in the pipeline now so he can build the data-presentation layer against real persisted output. The on-demand/manual-tab surface is deferred.
+- *Per-engine `cases` columns (mirror `cdi_*`).* That's the splatter pattern the generic `engine_outputs` table exists to avoid; every new engine would otherwise add a column family.
+- *New `cdi_flags.reimbursement_impact` column for #3.* Unnecessary — it already exists (004) and is already written.
+- *Clinical Order Generation (Engine 6).* On hold this cycle — useful but low-yield for the current ortho/pain focus; same engine+JSON+`engine_outputs` pattern when picked up.
+- *Removing CDI's MD render.* Not now — "keep md for now"; review-output presentation is reworked in the next (JSON→HTML→PDF) step.
+
+**Implications:**
+- Adding a per-case engine that needs DB persistence now has two paths: the generic `engine_outputs` row (no schema change — what em-score/patient-summary use) or, only if the status UI needs denormalized summary columns, a migration. Prefer `engine_outputs`.
+- `engine.render()` is still **not** invoked by `runEngine` — reserved for a future status-UI hook; persistence does not depend on it (both CDI and the new engines write in `persist()`).
+- New skills: `notes-claude/skills/{em-score,patient-summary}/`; new pack `em_mdm_2021.md`; new builders in `src/llm/skill-io/prompts.js` (`score em. …` / `summarize for patient. …`). `tests/unit/engines.test.js` extended (registry length 5 + gate/interpret/disk-fallback coverage for both engines); full suite 273/273.
+- The `feature/cdi-manual-tab` branch (dev-only) is a read-only reference for the on-demand pattern; the eventual cherry-pick goes the other way (these engines → that branch).
+- Plan: `docs/plans/2026-06-11-rs-pa-engines-v0.2.md`. Engine tracker: `docs/pa-planning/05-engines.md`.
+
+---
+
 ## 2026-06-09 — KNOWN REGRESSION: CDI DB persistence dropped by the engine refactor (doc audit finding)
 
 **Context:** A post-refactor (Phases 0–5) documentation audit comparing the docs against the live `develop` code surfaced a behavior regression in the CDI engine, not a docs problem. Before the refactor, the CDI step (`spawnCdiReview` / `applyCdiSuccess`) populated the `cases.cdi_*` summary columns via `dbCases.updateCaseCdi`, bulk-inserted per-flag rows into `cdi_flags` via `dbCdiFlags.insertFlags` (reading the on-disk `<case>_cdi.json`), and surfaced the at-a-glance CDI badges (flag count / quality score / "⚠ Review") to the status popup.
