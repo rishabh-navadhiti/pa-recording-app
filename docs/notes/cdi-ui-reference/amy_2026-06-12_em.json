@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "case_dir": "C:\\Users\\Quickemu\\Documents\\cdi\\AI Medical Notes\\Cases\\2026-06-12(2)\\amy_2026-06-12",
+    "patient": "Amy Berger",
+    "doctor": "Dr. Kenneth R. Sabbag, M.D.",
+    "date_of_service": "06/12/2026",
+    "specialty": "orthopedics",
+    "generated_at": "2026-06-12T00:00:00Z",
+    "standards_version": "em_mdm 2021 v1"
+  },
+  "visit_type": "established",
+  "visit_type_assumed": false,
+  "predicted_em_level": "99214",
+  "predicted_complexity": "moderate",
+  "downcode_risk": "moderate",
+  "mdm_elements": {
+    "problems_addressed": {
+      "score": "moderate",
+      "drivers": [
+        "Left distal radius fracture s/p ORIF (11/18/2025) with subsequent hardware removal — complex posttraumatic course with residual left wrist pain (5–6/10) and limited ROM in flexion, extension, and lateral deviation = 1 acute complicated injury → Moderate",
+        "Active WC authorization dispute addressed and managed at this encounter via formal PR-2 letter, retroactive authorization argument, and care coordination guidance, adding management complexity beyond the physical condition alone"
+      ],
+      "documentation_gap": null
+    },
+    "data_reviewed": {
+      "score": "straightforward",
+      "drivers": [
+        "No tests ordered at this encounter",
+        "No test results documented as reviewed (JAMAR Dynamometer deferred; no imaging or labs referenced as reviewed at this visit)",
+        "No prior external notes from an outside source documented as reviewed",
+        "No independent interpretation of a study performed by another physician documented",
+        "No external physician/QHP discussion documented"
+      ],
+      "documentation_gap": "To reach Low Data: document review of at least 2 Category 1 items — e.g., 'reviewed prior post-op X-rays from [facility]' plus 'reviewed operative report.' To reach Moderate Data: document 3 Category 1 items, or independently interpret an imaging study performed by another physician not separately reported (Category 2), or document a discussion with an external physician/QHP (Category 3). To reach High Data: meet two of the three categories."
+    },
+    "risk": {
+      "score": "moderate",
+      "drivers": [
+        "Diagnosis/treatment significantly limited by social determinants of health: workers' compensation authorization dispute is actively preventing initiation of prescribed hand therapy; note explicitly documents 'The social and biopsychosocial issues affecting this industrially injured patient add to the complexity of establishing and executing a treatment plan' — this mirrors the AMA 2021 SDoH Moderate-risk language",
+        "Hand therapy prescription written (2×/week × 3 weeks) and formal retroactive authorization request submitted to carrier as part of management at this encounter"
+      ],
+      "documentation_gap": null
+    }
+  },
+  "final_level_basis": "Problems Moderate (acute complicated injury: left distal radius fracture s/p ORIF + hardware removal with residual deficits) and Risk Moderate (treatment access significantly limited by documented social/biopsychosocial determinants) meet 2-of-3 at Moderate; Data is Straightforward with no tests ordered or reviewed at this encounter. Established patient → 99214. No total practitioner time is documented, so the time-based alternative is unavailable.",
+  "upgrade_path": "To support 99215 (High MDM), two of three elements must reach High. Elevate Data to High by meeting two categories: e.g., document independent interpretation of a prior imaging study not separately reported (Category 2) plus review of at least one Category 1 item, or add a documented external physician discussion (Category 3). Elevate Risk to High by documenting a high-risk management decision — hospitalization, emergency surgery, or a drug requiring intensive monitoring for toxicity — none of which is present here. Problems would need a severe exacerbation or a documented threat to life/bodily function to reach High. Note: the note contains the billing placeholder '[.KS15 — 99215]', signaling the provider's intent to bill at 99215, but the documentation as written substantiates only 99214.",
+  "time_alternative": {
+    "documented_minutes": null,
+    "level_if_time": null
+  },
+  "headline": "Predicted 99214 (moderate MDM, established follow-up) — note's billing placeholder targets 99215 but documentation supports only Moderate MDM: Data is Straightforward with no tests ordered or reviewed, and Risk reaches Moderate solely via the documented SDoH/biopsychosocial language; ensure that language is audit-defensible if billing at this level."
+}

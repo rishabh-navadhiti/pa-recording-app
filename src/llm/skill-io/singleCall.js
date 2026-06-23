@@ -2,8 +2,10 @@
 
 const { parseSkillManifest } = require('./manifest')
 
-// Strip YAML frontmatter (---\n...\n---\n) from the start of a skill file
-// so the raw markdown body becomes the system prompt.
+/**
+ * Strip YAML frontmatter (---\n...\n---\n) from the start of a skill file
+ * so the raw markdown body becomes the system prompt.
+ */
 function stripFrontmatter(text) {
   const m = text.match(/^---\n[\s\S]*?\n---\n/)
   return m ? text.slice(m[0].length) : text
@@ -102,4 +104,67 @@ function splitNoteAndManifest(text) {
   return { noteBody: text.trim(), manifest }
 }
 
-module.exports = { buildSingleCallNoteGen, splitNoteAndManifest }
+/**
+ * Build the system + user messages for a single-call API note edit (pre-chart).
+ * Node.js has already read all source files and created the backup.
+ *
+ * @param {object} opts
+ * @param {string} opts.skillText          Raw contents of edit-note-api/SKILL.md
+ * @param {string} opts.templateText       Doctor template markdown (may be empty)
+ * @param {string} opts.existingNoteText   Current SOAP note content
+ * @param {string} [opts.transcriptText]   Transcript markdown (cross-reference only)
+ * @param {string} [opts.attachmentText]   Combined attachment text (may be empty)
+ * @param {string} [opts.instructions]     Free-text scribe instructions (may be empty)
+ * @param {string} opts.existingNotePath   Absolute path of the note to overwrite
+ * @param {string} opts.backupPath         Absolute path of the backup (already created)
+ * @returns {{ system: string, user: string }}
+ */
+function buildSingleCallNoteEdit({ skillText, templateText, existingNoteText, transcriptText,
+  attachmentText, instructions, existingNotePath, backupPath }) {
+  const system = stripFrontmatter(skillText)
+
+  const parts = [
+    'Edit the SOAP note for this case.',
+    '',
+    'INJECTED FACTS (authoritative — use exactly as given):',
+    `- existing_note_path: ${existingNotePath}`,
+    `- backup_path: ${backupPath}`,
+    '',
+    'DOCTOR TEMPLATE:',
+    '---',
+    templateText || '(no template provided)',
+    '---',
+    '',
+    'EXISTING SOAP NOTE (base — preserve all manual edits):',
+    '---',
+    existingNoteText,
+    '---',
+  ]
+
+  if (transcriptText && transcriptText.trim()) {
+    parts.push(
+      '', 'TRANSCRIPT (cross-reference only — do not re-extract content already in the note):',
+      '---', transcriptText, '---'
+    )
+  }
+
+  if (attachmentText && attachmentText.trim()) {
+    parts.push(
+      '', 'ATTACHMENT (new clinical content to integrate):',
+      '---', attachmentText, '---'
+    )
+  }
+
+  if (instructions && instructions.trim()) {
+    parts.push(
+      '', 'SCRIBE INSTRUCTIONS (highest authority — apply literally):',
+      instructions.trim()
+    )
+  }
+
+  parts.push('', 'Write the complete updated SOAP note now, then the manifest line.')
+
+  return { system, user: parts.join('\n') }
+}
+
+module.exports = { buildSingleCallNoteGen, buildSingleCallNoteEdit, splitNoteAndManifest, stripFrontmatter }

@@ -1,0 +1,1449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clinical Documentation Review — Amy Berger</title>
+<style>
+  /* =========================================================================
+     EDITORIAL REPORT — a typeset clinical document, print/PDF-export quality.
+     Restrained, authoritative, ink-on-paper. Serif display, generous margins.
+     All styling inline; no external requests; CSP-safe; system fonts only.
+     ========================================================================= */
+
+  :root{
+    --ink:        #1a1714;   /* near-black warm ink            */
+    --ink-soft:   #4a443d;   /* secondary body ink             */
+    --ink-faint:  #7a7167;   /* captions, metadata             */
+    --paper:      #f4f1ea;   /* warm paper for the desk        */
+    --sheet:      #fffdf8;   /* the sheet of paper             */
+    --rule:       #ddd5c7;   /* hairline rules                 */
+    --rule-dk:    #b8ad9a;   /* heavier rules                  */
+    --accent:     #6b4e2e;   /* sepia / editorial brown        */
+    --accent-ink: #4a3618;
+
+    /* severity ink-marks — restrained, but legible */
+    --sev-critical: #8f2c2c;
+    --sev-warning:  #9a6b1f;
+    --sev-suggestion:#3a6178;
+    --sev-opportunity:#4a6b4a;
+    --sev-critical-bg: #f6eae8;
+    --sev-warning-bg:  #f6f0e2;
+    --sev-suggestion-bg:#e9f0f4;
+    --sev-opportunity-bg:#e9f1e9;
+
+    --ok:   #3d6b46;
+    --weak: #8f2c2c;
+    --hold: #9a6b1f;
+
+    --serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+
+  *{ box-sizing:border-box; }
+
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--serif);
+    font-size:16px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+
+  /* ---- The sheet ---- */
+  .sheet{
+    max-width:48rem;
+    margin:2.4rem auto 4rem;
+    background:var(--sheet);
+    border:1px solid var(--rule);
+    box-shadow:0 1px 0 rgba(0,0,0,.04), 0 18px 48px -28px rgba(40,30,15,.45);
+    padding:3.4rem 3.6rem 3.2rem;
+    position:relative;
+  }
+
+  /* ---- Interactive chrome (toolbar) — hidden on print ---- */
+  .toolbar{
+    position:sticky; top:0; z-index:20;
+    display:flex; gap:.6rem; align-items:center; justify-content:flex-end;
+    flex-wrap:wrap;
+    padding:.6rem max(1rem, calc((100vw - 48rem)/2 - 0rem));
+    background:linear-gradient(to bottom, rgba(244,241,234,.97), rgba(244,241,234,.86));
+    border-bottom:1px solid var(--rule);
+    backdrop-filter:saturate(120%) blur(2px);
+    font-family:var(--sans);
+  }
+  .toolbar .tb-title{
+    margin-right:auto; font-family:var(--serif); font-style:italic;
+    color:var(--ink-faint); font-size:.92rem; letter-spacing:.01em;
+  }
+  .btn{
+    font-family:var(--sans); font-size:.8rem; font-weight:600;
+    color:var(--ink-soft); background:var(--sheet);
+    border:1px solid var(--rule-dk); border-radius:3px;
+    padding:.42rem .8rem; cursor:pointer; letter-spacing:.02em;
+    transition:background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .btn:hover{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  .btn[aria-pressed="true"]{ background:var(--accent-ink); color:#fff; border-color:var(--accent-ink); }
+
+  /* ============================ LETTERHEAD ============================ */
+  .letterhead{
+    text-align:center;
+    padding-bottom:1.4rem;
+    border-bottom:2px solid var(--ink);
+    margin-bottom:.2rem;
+    position:relative;
+  }
+  .letterhead .mark{
+    font-family:var(--sans);
+    font-size:.66rem; font-weight:700; letter-spacing:.34em;
+    text-transform:uppercase; color:var(--accent);
+    margin-bottom:.7rem;
+  }
+  .letterhead h1{
+    font-family:var(--serif);
+    font-weight:400; font-size:2.05rem; line-height:1.15;
+    margin:0 0 .35rem; letter-spacing:.005em;
+  }
+  .letterhead .subtitle{
+    font-style:italic; color:var(--ink-faint); font-size:1.02rem;
+    margin:0;
+  }
+  .letterhead .versionline{
+    font-family:var(--sans); font-size:.66rem; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-faint);
+    margin-top:1rem;
+  }
+
+  /* ---- Case header table (letterhead-style metadata) ---- */
+  .casehead{
+    margin:1.6rem 0 0;
+    border-top:1px solid var(--rule);
+    border-bottom:1px solid var(--rule);
+    padding:1.1rem 0;
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:.65rem 2.4rem;
+  }
+  .ch-item{ display:flex; flex-direction:column; gap:.1rem; }
+  .ch-label{
+    font-family:var(--sans); font-size:.62rem; font-weight:700;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint);
+  }
+  .ch-value{ font-size:1rem; color:var(--ink); }
+  .ch-value.mono{ font-family:var(--mono); font-size:.86rem; }
+  .ch-full{ grid-column:1 / -1; }
+  .ch-value .casedir{
+    font-family:var(--mono); font-size:.72rem; color:var(--ink-faint);
+    word-break:break-all; line-height:1.4;
+  }
+
+  /* ============================ SECTIONS ============================ */
+  .section{ margin-top:2.8rem; }
+  .section-head{
+    display:flex; align-items:baseline; gap:.8rem;
+    border-bottom:1px solid var(--rule-dk);
+    padding-bottom:.45rem; margin-bottom:1.3rem;
+  }
+  .section-no{
+    font-family:var(--serif); font-style:italic;
+    font-size:1.5rem; color:var(--accent); line-height:1;
+    flex:0 0 auto;
+  }
+  .section-title{
+    font-family:var(--serif); font-weight:400;
+    font-size:1.42rem; margin:0; letter-spacing:.01em;
+    flex:1 1 auto;
+  }
+  .section-kicker{
+    font-family:var(--sans); font-size:.62rem; font-weight:700;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint);
+    flex:0 0 auto; align-self:center;
+  }
+  .lede{
+    font-size:1.06rem; color:var(--ink-soft);
+    margin:0 0 1.4rem; font-style:italic;
+    border-left:3px solid var(--rule-dk); padding-left:1rem;
+  }
+
+  /* ============================ VERDICT / SCORES ============================ */
+  .verdict{
+    display:grid; grid-template-columns:1.1fr 1fr; gap:1.6rem;
+    align-items:start;
+  }
+  .scorebox{
+    border:1px solid var(--rule-dk);
+    padding:1.1rem 1.2rem;
+    background:linear-gradient(180deg, var(--sheet), #faf6ee);
+  }
+  .scorebox .qlabel{
+    font-family:var(--sans); font-size:.62rem; font-weight:700;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint);
+  }
+  .scorebox .qmain{
+    display:flex; align-items:baseline; gap:.5rem; margin:.2rem 0 .15rem;
+  }
+  .qnum{ font-family:var(--serif); font-size:3.1rem; line-height:1; font-weight:400; }
+  .qdenom{ font-family:var(--serif); font-size:1.1rem; color:var(--ink-faint); }
+  .qverd{
+    font-family:var(--sans); font-size:.74rem; font-weight:700;
+    letter-spacing:.06em; text-transform:uppercase;
+  }
+  .meter{ height:7px; background:#e7e0d2; border-radius:4px; overflow:hidden; margin-top:.7rem; }
+  .meter > span{ display:block; height:100%; border-radius:4px; }
+
+  .subscores{ display:flex; flex-direction:column; gap:.85rem; }
+  .subscore .ss-top{ display:flex; justify-content:space-between; align-items:baseline; }
+  .ss-name{ font-family:var(--sans); font-size:.78rem; font-weight:600; color:var(--ink-soft); }
+  .ss-val{ font-family:var(--serif); font-size:.95rem; }
+  .ss-meter{ height:5px; background:#e7e0d2; border-radius:3px; overflow:hidden; margin-top:.25rem; }
+  .ss-meter > span{ display:block; height:100%; background:var(--accent); border-radius:3px; }
+
+  /* status chips row */
+  .statusgrid{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));
+    gap:0; border:1px solid var(--rule); margin-top:1.6rem;
+  }
+  .statuscell{
+    padding:.85rem 1rem; border-right:1px solid var(--rule);
+    border-top:3px solid var(--rule-dk);
+  }
+  .statuscell:last-child{ border-right:none; }
+  .sc-label{
+    font-family:var(--sans); font-size:.58rem; font-weight:700;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint);
+    margin-bottom:.3rem;
+  }
+  .sc-value{ font-family:var(--sans); font-size:.92rem; font-weight:700; letter-spacing:.01em; }
+  .statuscell.tone-ok{ border-top-color:var(--ok); }
+  .statuscell.tone-ok .sc-value{ color:var(--ok); }
+  .statuscell.tone-weak{ border-top-color:var(--weak); }
+  .statuscell.tone-weak .sc-value{ color:var(--weak); }
+  .statuscell.tone-hold{ border-top-color:var(--hold); }
+  .statuscell.tone-hold .sc-value{ color:var(--hold); }
+  .statuscell.tone-neutral .sc-value{ color:var(--ink); }
+
+  /* flag tally */
+  .tally{
+    display:flex; gap:1.4rem; flex-wrap:wrap;
+    margin-top:1.5rem; padding-top:1.1rem; border-top:1px solid var(--rule);
+    align-items:flex-end;
+  }
+  .tally-head{
+    font-family:var(--sans); font-size:.62rem; font-weight:700;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint);
+    width:100%;
+  }
+  .tally-item{ display:flex; align-items:baseline; gap:.45rem; }
+  .tally-n{ font-family:var(--serif); font-size:1.7rem; line-height:1; }
+  .tally-l{ font-family:var(--sans); font-size:.72rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); }
+  .tally-item.t-critical .tally-n{ color:var(--sev-critical); }
+  .tally-item.t-warning .tally-n{ color:var(--sev-warning); }
+  .tally-item.t-suggestion .tally-n{ color:var(--sev-suggestion); }
+  .tally-item.t-opportunity .tally-n{ color:var(--sev-opportunity); }
+
+  /* ============================ FINDINGS ============================ */
+  .finding{
+    margin:0 0 1.7rem;
+    padding:1.25rem 1.4rem 1.35rem;
+    border:1px solid var(--rule);
+    border-left:4px solid var(--rule-dk);
+    background:var(--sheet);
+    page-break-inside:avoid;
+    break-inside:avoid;
+  }
+  .finding.sev-critical{ border-left-color:var(--sev-critical); }
+  .finding.sev-warning{ border-left-color:var(--sev-warning); }
+  .finding.sev-suggestion{ border-left-color:var(--sev-suggestion); }
+  .finding.sev-opportunity{ border-left-color:var(--sev-opportunity); }
+
+  .f-head{ display:flex; gap:.85rem; align-items:flex-start; }
+  .f-num{
+    font-family:var(--serif); font-style:italic; color:var(--accent);
+    font-size:1.25rem; line-height:1.2; flex:0 0 auto; min-width:1.4rem;
+  }
+  .f-headtext{ flex:1 1 auto; min-width:0; }
+  .f-tags{ display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:.35rem; }
+  .sev-pill{
+    font-family:var(--sans); font-size:.58rem; font-weight:800;
+    letter-spacing:.12em; text-transform:uppercase;
+    padding:.2rem .5rem; border-radius:2px; line-height:1;
+    border:1px solid currentColor;
+  }
+  .sev-pill.sev-critical{ color:var(--sev-critical); background:var(--sev-critical-bg); }
+  .sev-pill.sev-warning{ color:var(--sev-warning); background:var(--sev-warning-bg); }
+  .sev-pill.sev-suggestion{ color:var(--sev-suggestion); background:var(--sev-suggestion-bg); }
+  .sev-pill.sev-opportunity{ color:var(--sev-opportunity); background:var(--sev-opportunity-bg); }
+  .f-cat{
+    font-family:var(--sans); font-size:.64rem; font-weight:600;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint);
+  }
+  .f-id{
+    font-family:var(--mono); font-size:.66rem; color:var(--ink-faint);
+    margin-left:auto;
+  }
+  .f-title{
+    font-family:var(--serif); font-weight:600; font-size:1.18rem;
+    margin:.1rem 0 .5rem; line-height:1.25; letter-spacing:.005em;
+  }
+  .f-body{ font-size:.98rem; color:var(--ink-soft); margin:0 0 .9rem; }
+
+  .f-action{
+    background:#f3ede1; border:1px solid var(--rule);
+    padding:.7rem .9rem; margin:0 0 1rem;
+    font-size:.93rem;
+  }
+  .f-action .lbl{
+    font-family:var(--sans); font-size:.6rem; font-weight:700;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--accent);
+    display:block; margin-bottom:.2rem;
+  }
+
+  /* evidence as indented blockquotes / sidenotes */
+  .evid-group{ margin:.8rem 0; }
+  .evid-label{
+    font-family:var(--sans); font-size:.6rem; font-weight:700;
+    letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint);
+    margin-bottom:.35rem; display:flex; align-items:center; gap:.4rem;
+  }
+  .evid-label .dot{ width:.5rem; height:.5rem; border-radius:50%; flex:0 0 auto; }
+  .evid-found .dot{ background:var(--ok); }
+  .evid-missing .dot{ background:var(--sev-critical); }
+  blockquote.evid{
+    margin:0 0 .45rem; padding:.35rem 0 .35rem .95rem;
+    border-left:2px solid var(--rule-dk);
+    font-style:italic; font-size:.9rem; color:var(--ink-soft);
+    line-height:1.5;
+  }
+  blockquote.evid.missing{ border-left-color:var(--sev-critical); color:var(--ink-soft); font-style:normal; }
+  blockquote.evid.missing::before{ content:"needs: "; font-family:var(--sans); font-size:.62rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--sev-critical); font-style:normal; }
+
+  /* meta row inside a finding: guideline, confidence, codes, reimb */
+  .f-meta{
+    margin-top:1rem; padding-top:.85rem; border-top:1px dotted var(--rule-dk);
+    display:grid; grid-template-columns:1fr; gap:.7rem; font-size:.86rem;
+  }
+  .fm-row{ display:flex; gap:.6rem; align-items:baseline; }
+  .fm-key{
+    font-family:var(--sans); font-size:.6rem; font-weight:700;
+    letter-spacing:.12em; text-transform:uppercase; color:var(--ink-faint);
+    flex:0 0 8.5rem;
+  }
+  .fm-val{ color:var(--ink-soft); flex:1 1 auto; min-width:0; }
+  .fm-val.ref{ font-style:italic; }
+
+  .conf-wrap{ display:flex; align-items:center; gap:.6rem; flex:1 1 auto; }
+  .conf-bar{ flex:1 1 auto; max-width:11rem; height:6px; background:#e7e0d2; border-radius:3px; overflow:hidden; }
+  .conf-bar > span{ display:block; height:100%; background:var(--accent); border-radius:3px; }
+  .conf-num{ font-family:var(--mono); font-size:.82rem; color:var(--ink); }
+
+  .reimb{
+    background:var(--sev-warning-bg); border:1px solid #e6d6ad;
+    padding:.6rem .8rem; font-size:.88rem; color:var(--accent-ink);
+    border-radius:2px;
+  }
+  .reimb .lbl{
+    font-family:var(--sans); font-size:.58rem; font-weight:700;
+    letter-spacing:.13em; text-transform:uppercase; color:var(--sev-warning);
+    display:block; margin-bottom:.2rem;
+  }
+
+  /* code chips */
+  .codechips{ display:flex; flex-wrap:wrap; gap:.45rem; }
+  .codechip{
+    font-family:var(--mono); font-size:.78rem;
+    border:1px solid var(--rule-dk); border-radius:3px;
+    padding:.18rem .5rem; background:#faf6ee; color:var(--ink);
+    display:inline-flex; gap:.4rem; align-items:baseline;
+  }
+  .codechip .desc{ font-family:var(--serif); font-size:.78rem; color:var(--ink-faint); font-style:italic; }
+  .codechip.current{ background:var(--sev-critical-bg); border-color:#dab; }
+  .codechip.suggested{ background:var(--sev-suggestion-bg); border-color:#a9c2cf; }
+
+  /* provider query (sidenote style) */
+  .query{
+    margin-top:1rem; background:#eef3f6;
+    border:1px solid #c7d8e0; border-left:4px solid var(--sev-suggestion);
+    padding:.85rem 1rem; border-radius:2px;
+  }
+  .query .q-head{
+    font-family:var(--sans); font-size:.6rem; font-weight:700;
+    letter-spacing:.13em; text-transform:uppercase; color:var(--sev-suggestion);
+    margin-bottom:.4rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;
+  }
+  .query .q-type{
+    font-size:.55rem; background:var(--sev-suggestion); color:#fff;
+    padding:.1rem .4rem; border-radius:2px; letter-spacing:.08em;
+  }
+  .query .q-question{ font-size:.94rem; color:var(--ink); margin:0 0 .55rem; font-style:italic; }
+  .query .q-sub{
+    font-family:var(--sans); font-size:.58rem; font-weight:700; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--ink-faint); margin:.5rem 0 .25rem;
+  }
+  .query ul{ margin:.2rem 0 0; padding-left:1.15rem; font-size:.88rem; color:var(--ink-soft); }
+  .query ul li{ margin-bottom:.18rem; }
+  .query ol.opts{ margin:.2rem 0 0; padding-left:1.3rem; font-size:.9rem; }
+  .query ol.opts li{ margin-bottom:.22rem; }
+
+  /* ============================ E/M MDM SECTION ============================ */
+  .em-headline{
+    font-size:1.05rem; color:var(--ink); background:#f3ede1;
+    border:1px solid var(--rule-dk); padding:1rem 1.2rem; margin:0 0 1.5rem;
+    line-height:1.55;
+  }
+  .em-verdict{
+    display:flex; gap:1.4rem; flex-wrap:wrap; align-items:stretch;
+    margin-bottom:1.6rem;
+  }
+  .em-level{
+    border:1px solid var(--rule-dk); padding:1rem 1.3rem; text-align:center;
+    flex:1 1 9rem; background:linear-gradient(180deg,var(--sheet),#faf6ee);
+  }
+  .em-level .lbl{
+    font-family:var(--sans); font-size:.58rem; font-weight:700;
+    letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint);
+  }
+  .em-level .code{ font-family:var(--serif); font-size:2.5rem; line-height:1.1; }
+  .em-level .sub{ font-family:var(--sans); font-size:.72rem; color:var(--ink-soft); }
+  .em-level.supported .code{ color:var(--ok); }
+  .em-level.billed .code{ color:var(--sev-warning); text-decoration:line-through; text-decoration-color:#c9a04f; text-decoration-thickness:2px; }
+  .em-arrow{ align-self:center; font-family:var(--serif); font-size:1.6rem; color:var(--ink-faint); flex:0 0 auto; }
+
+  .downcode-note{
+    font-size:.95rem; color:var(--ink-soft); font-style:italic;
+    border-left:3px solid var(--sev-warning); padding-left:1rem; margin:0 0 1.6rem;
+  }
+
+  .mdm-eyebrow{
+    font-family:var(--sans); font-size:.62rem; font-weight:700; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--ink-faint); margin:0 0 .7rem;
+  }
+  .mdm-table{ border:1px solid var(--rule-dk); margin-bottom:1.5rem; }
+  .mdm-row{ border-bottom:1px solid var(--rule); padding:1rem 1.2rem; }
+  .mdm-row:last-child{ border-bottom:none; }
+  .mdm-row .mdm-top{ display:flex; justify-content:space-between; align-items:baseline; gap:1rem; margin-bottom:.5rem; }
+  .mdm-elname{ font-family:var(--serif); font-size:1.08rem; font-weight:600; }
+  .mdm-elscore{
+    font-family:var(--sans); font-size:.68rem; font-weight:800;
+    letter-spacing:.1em; text-transform:uppercase;
+    padding:.22rem .55rem; border-radius:2px; border:1px solid currentColor; white-space:nowrap;
+  }
+  .sc-straightforward{ color:var(--ok); background:var(--sev-opportunity-bg); }
+  .sc-low{ color:var(--sev-suggestion); background:var(--sev-suggestion-bg); }
+  .sc-moderate{ color:var(--sev-warning); background:var(--sev-warning-bg); }
+  .sc-high{ color:var(--sev-critical); background:var(--sev-critical-bg); }
+  .mdm-drivers{ margin:.3rem 0 0; padding-left:1.1rem; font-size:.92rem; color:var(--ink-soft); }
+  .mdm-drivers li{ margin-bottom:.4rem; }
+  .mdm-gap{
+    margin-top:.7rem; background:#f6f0e2; border:1px solid #e6d6ad;
+    padding:.6rem .8rem; font-size:.86rem; color:var(--accent-ink); border-radius:2px;
+  }
+  .mdm-gap .lbl{
+    font-family:var(--sans); font-size:.56rem; font-weight:700; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--sev-warning); display:block; margin-bottom:.2rem;
+  }
+
+  .em-narrative{ margin-bottom:1.3rem; }
+  .em-narrative h4{
+    font-family:var(--sans); font-size:.62rem; font-weight:700; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--ink-faint); margin:0 0 .35rem;
+  }
+  .em-narrative p{ margin:0 0 1rem; font-size:.96rem; color:var(--ink-soft); }
+  .upgrade-box{
+    border:1px dashed var(--rule-dk); padding:.9rem 1.1rem; background:#faf6ee;
+    font-size:.94rem; color:var(--ink-soft); line-height:1.6;
+  }
+  .em-time{
+    font-family:var(--sans); font-size:.85rem; color:var(--ink-faint);
+    margin-top:1rem; padding-top:.8rem; border-top:1px dotted var(--rule-dk);
+  }
+  .em-time strong{ color:var(--ink-soft); }
+
+  /* ============================ CODE VALIDATION ============================ */
+  .cv-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(11rem,1fr)); gap:1rem; }
+  .cv-card{ border:1px solid var(--rule); padding:.9rem 1rem; }
+  .cv-card h4{
+    font-family:var(--sans); font-size:.6rem; font-weight:700; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-faint); margin:0 0 .55rem;
+    display:flex; align-items:center; gap:.4rem;
+  }
+  .cv-card h4 .n{ font-family:var(--serif); font-size:1rem; color:var(--ink); font-style:italic; }
+  .cv-card.missing{ border-color:#dab; background:var(--sev-critical-bg); }
+  .cv-card.missing h4{ color:var(--sev-critical); }
+  .cv-missing-item{ font-size:.86rem; color:var(--ink-soft); margin-bottom:.5rem; }
+  .cv-missing-item .mc-code{ font-family:var(--mono); font-weight:700; color:var(--sev-critical); }
+  .cv-empty{ font-style:italic; color:var(--ink-faint); font-size:.86rem; }
+
+  /* ============================ PATIENT SUMMARY ============================ */
+  .ps-wrap{ background:#fbfaf5; border:1px solid var(--rule); padding:1.5rem 1.7rem; }
+  .ps-readlevel{
+    font-family:var(--sans); font-size:.6rem; font-weight:700; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--ink-faint); margin-bottom:.7rem;
+  }
+  .ps-headline{
+    font-family:var(--serif); font-size:1.22rem; font-weight:400; font-style:italic;
+    line-height:1.4; margin:0 0 1.4rem; color:var(--ink);
+    border-bottom:1px solid var(--rule); padding-bottom:1.1rem;
+  }
+  .ps-section{ margin-bottom:1.2rem; }
+  .ps-section:last-child{ margin-bottom:0; }
+  .ps-section h4{
+    font-family:var(--sans); font-size:.68rem; font-weight:700; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 .35rem;
+  }
+  .ps-section p{ margin:0; font-size:.99rem; color:var(--ink-soft); line-height:1.65; }
+  .ps-section.alert{ border-left:3px solid var(--sev-warning); padding-left:1rem; }
+  .ps-section.alert h4{ color:var(--sev-warning); }
+
+  /* ============================ COLOPHON / FOOTER ============================ */
+  .colophon{
+    margin-top:3rem; padding-top:1.2rem; border-top:2px solid var(--ink);
+    font-family:var(--sans); font-size:.7rem; color:var(--ink-faint);
+    line-height:1.6;
+  }
+  .colophon .row{ display:flex; flex-wrap:wrap; gap:.4rem 1.2rem; margin-bottom:.5rem; }
+  .colophon strong{ color:var(--ink-soft); font-weight:700; }
+  .approval{
+    margin-top:1rem; padding:.8rem 1rem; background:var(--sev-critical-bg);
+    border:1px solid #dab; border-radius:2px; color:var(--sev-critical);
+    font-family:var(--sans); font-size:.82rem; font-weight:600;
+  }
+  .approval.cleared{ background:var(--sev-opportunity-bg); border-color:#a9c8a9; color:var(--ok); }
+
+  .empty-note{ font-style:italic; color:var(--ink-faint); font-size:.9rem; }
+
+  /* ============================ RESPONSIVE ============================ */
+  @media (max-width: 640px){
+    body{ font-size:15px; }
+    .sheet{ margin:1rem .6rem 2.5rem; padding:1.6rem 1.3rem 2rem; }
+    .toolbar{ padding:.5rem .7rem; }
+    .toolbar .tb-title{ display:none; }
+    .casehead{ grid-template-columns:1fr; gap:.55rem; }
+    .verdict{ grid-template-columns:1fr; gap:1.3rem; }
+    .letterhead h1{ font-size:1.6rem; }
+    .qnum{ font-size:2.5rem; }
+    .em-verdict{ flex-direction:column; }
+    .em-arrow{ transform:rotate(90deg); }
+    .fm-key{ flex-basis:6.5rem; }
+    .section-head{ flex-wrap:wrap; }
+  }
+
+  /* wide blocks scroll inside their own container, body never scrolls horizontally */
+  .scroll-x{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+
+  /* ============================ PRINT ============================ */
+  @media print{
+    @page{ size:Letter; margin:0.85in 0.8in; }
+    html,body{ background:#fff; }
+    body{ font-size:11.5pt; color:#000; }
+    .toolbar{ display:none !important; }
+    .sheet{
+      max-width:none; margin:0; border:none; box-shadow:none; padding:0;
+    }
+    .finding, .mdm-row, .query, .scorebox, .cv-card, .ps-section, .em-level{
+      page-break-inside:avoid; break-inside:avoid;
+    }
+    .section{ page-break-inside:auto; }
+    .section-head{ page-break-after:avoid; }
+    .letterhead{ page-break-after:avoid; }
+    a{ color:#000; text-decoration:none; }
+    /* keep severity ink-marks legible in print */
+    .meter > span, .ss-meter > span, .conf-bar > span,
+    .finding, .scorebox, .f-action, .reimb, .query, .mdm-gap, .cv-card.missing,
+    .sev-pill, .statuscell, .em-level, .ps-wrap, .approval, .mdm-elscore, .codechip{
+      -webkit-print-color-adjust:exact; print-color-adjust:exact;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== Interactive chrome — hidden when printing ===== -->
+<div class="toolbar" role="toolbar" aria-label="Document actions">
+  <span class="tb-title">Clinical Documentation Review</span>
+  <button class="btn" id="btn-evidence" aria-pressed="true" type="button">Evidence shown</button>
+  <button class="btn" id="btn-print" type="button">Print / Save PDF</button>
+</div>
+
+<main class="sheet" id="report">
+  <!-- Rendered from PA_DATA by render() below -->
+</main>
+
+<script>
+/* =============================================================================
+   DATA-INJECTION SEAM
+   -----------------------------------------------------------------------------
+   PA_DATA is the SINGLE source of truth for this document. It holds the FULL,
+   VERBATIM contents of the three engine outputs for this case:
+       { meta, cdi, em, patient_summary }
+   The application's renderer will later inject an identically-shaped object
+   here (a saved-case file rendered in our renderer). ALL rendering below reads
+   exclusively from PA_DATA — render logic is kept cleanly separable from data.
+   DO NOT summarize, truncate, paraphrase, or compute over these values; they
+   are reproduced exactly as emitted by the engines.
+   ========================================================================== */
+const PA_DATA = {
+  /* meta: shared case identity (sourced from the CDI engine's meta block) */
+  "meta": {
+    "case_dir": "C:\\Users\\Quickemu\\Documents\\cdi\\AI Medical Notes\\Cases\\2026-06-12(2)\\amy_2026-06-12",
+    "patient": "Amy Berger",
+    "doctor": "Dr. Kenneth R. Sabbag, M.D.",
+    "specialty": "orthopedics",
+    "mode": "balanced",
+    "generated_at": "2026-06-12T00:00:00Z",
+    "standards_versions": {
+      "icd10_cm": "FY2026 (CMS/NCHS, effective 2025-10-01)",
+      "ahima_acdis": "2026",
+      "specialty_pack": "orthopedics v1 (2026-05-19)"
+    }
+  },
+
+  /* cdi: amy_2026-06-12_cdi.json — full verbatim */
+  "cdi": {
+    "meta": {
+      "case_dir": "C:\\Users\\Quickemu\\Documents\\cdi\\AI Medical Notes\\Cases\\2026-06-12(2)\\amy_2026-06-12",
+      "patient": "Amy Berger",
+      "doctor": "Dr. Kenneth R. Sabbag, M.D.",
+      "specialty": "orthopedics",
+      "mode": "balanced",
+      "generated_at": "2026-06-12T00:00:00Z",
+      "standards_versions": {
+        "icd10_cm": "FY2026 (CMS/NCHS, effective 2025-10-01)",
+        "ahima_acdis": "2026",
+        "specialty_pack": "orthopedics v1 (2026-05-19)"
+      }
+    },
+    "summary": {
+      "overall_quality_score": 54,
+      "specificity_subscore": 88,
+      "evidence_subscore": 85,
+      "completeness_subscore": 64,
+      "flag_counts": {
+        "critical": 2,
+        "warning": 3,
+        "suggestion": 1,
+        "opportunity": 0
+      },
+      "medical_necessity_status": "weak",
+      "claim_defense_readiness": "hold_for_review",
+      "clinician_approval_required": true
+    },
+    "flags": [
+      {
+        "id": "flag-001",
+        "type": "critical",
+        "category": "Audit-defense",
+        "title": "Formal DIAGNOSES section is blank",
+        "action": "Populate the DIAGNOSES/Assessment section with a formal diagnosis list; do not leave it blank with diagnoses embedded only in the treatment plan narrative.",
+        "body": "The DIAGNOSES header is present but contains no entries — the note goes directly from 'DIAGNOSES:' to 'TREATMENT PLAN:'. All diagnostic information is embedded in the treatment plan paragraph, which is non-standard and creates audit exposure. Per ICD-10-CM Sec IV.A, the first-listed diagnosis must be identifiable from the medical record; having diagnoses only in prose within a plan section complicates coding attestation and payer review. For workers' compensation claims specifically, a blank Assessment is a documentation deficiency that can delay or deny claim processing.",
+        "guideline_reference": "ICD-10-CM Sec IV.A; Ortho pack §15 (Assessment checklist); AHIMA/ACDIS 2026 §1",
+        "reimbursement_impact": null,
+        "current_code": null,
+        "suggested_codes": [],
+        "confidence": 98,
+        "evidence_found": [
+          "DIAGNOSES: [blank — header present, no entries follow]",
+          "Treatment plan paragraph contains: 'Ms. Berger has clinical evidence of a left distal radius fracture sustained on November 13, 2025, status post open reduction and internal fixation on November 18, 2025, with subsequent hardware removal, with residual left wrist pain and limited range of motion'"
+        ],
+        "evidence_missing": [
+          "Formal numbered or bulleted diagnosis list in the Assessment/DIAGNOSES section",
+          "Each diagnosis explicitly enumerated and linked to clinical indicators within that section"
+        ]
+      },
+      {
+        "id": "flag-002",
+        "type": "critical",
+        "category": "Completeness",
+        "title": "Workers' comp external cause codes entirely absent",
+        "action": "Add Y99.0 (civilian work status) to the code table immediately; obtain and document mechanism, workplace location, and activity details to complete the W/X, Y92, and Y93 external-cause code set.",
+        "body": "This is a provider-confirmed workers' compensation injury (D/I: 11/13/2025; Dr. Sabbag explicitly documents work-relatedness and files for retroactive WC authorization). ICD-10-CM Sec I.C.20 and Ortho pack §9 require four external-cause elements for work injuries: mechanism (W00–X58), place of occurrence (Y92.x), activity (Y93.x), and work/employment status (Y99.0). None of the four appear in the code table. Y99.0 can be added immediately from existing documentation. The mechanism, place, and activity codes require additional note documentation (see flag-005).",
+        "guideline_reference": "ICD-10-CM Sec I.C.20; Ortho pack §9",
+        "reimbursement_impact": null,
+        "current_code": null,
+        "suggested_codes": [
+          { "code": "Y99.0", "description": "Civilian activity done for income or pay — work/employment status code" }
+        ],
+        "confidence": 95,
+        "evidence_found": [
+          "D/I: 11/13/2025",
+          "specific injury sustained in the course of her employment",
+          "workers' compensation claim has not been formally accepted",
+          "retroactive authorization for the open reduction and internal fixation surgery... for the left distal radius fracture sustained on November 13, 2025"
+        ],
+        "evidence_missing": [
+          "Mechanism of injury (how fracture occurred at work) — required for W/X code",
+          "Workplace location type — required for Y92.x code",
+          "Work activity being performed at time of injury — required for Y93.x code"
+        ]
+      },
+      {
+        "id": "flag-003",
+        "type": "warning",
+        "category": "Completeness",
+        "title": "ROM not in degrees; JAMAR deferred — OT defense incomplete",
+        "action": "Document left wrist ROM in degrees for flexion, extension, radial deviation, and ulnar deviation; record JAMAR grip strength or document a clinical rationale for bilateral deferral.",
+        "body": "The note documents 'limited active range of motion of the left wrist in flexion, extension, and lateral deviation' and notes motion is decreased from preinjury baseline, but provides no degree measurements. Ortho pack §11 requires ROM in specific degrees, not qualitative descriptors, when the chief complaint is mobility or pain. The JAMAR dynamometer was also deferred for both hands without a stated reason. Quantified ROM and grip strength are essential to defend the occupational therapy authorization request (2x/week for 3 weeks) and to satisfy workers' compensation functional-impairment documentation standards; qualitative terms alone are insufficient for medical necessity defense.",
+        "guideline_reference": "Ortho pack §11 (functional impairment quantification); Ortho pack §10 (authorization defense documentation)",
+        "reimbursement_impact": "Quantified ROM deficits and grip strength strengthen the medical-necessity narrative for the OT authorization; unquantified deficits increase risk of therapy authorization denial.",
+        "current_code": null,
+        "suggested_codes": [],
+        "confidence": 92,
+        "evidence_found": [
+          "limited active range of motion of the left wrist in flexion, extension, and lateral deviation; motion decreased compared to preinjury baseline of full range of motion",
+          "JAMAR Dynamometer III Measurements (kg): LEFT HAND: Defer",
+          "Hand therapy is indicated to address her range of motion, dexterity, and strength deficits"
+        ],
+        "evidence_missing": [
+          "Specific degree measurements for wrist flexion, extension, radial deviation, and ulnar deviation",
+          "JAMAR grip strength reading for left hand (and right for comparison baseline)",
+          "Clinical rationale for bilateral JAMAR deferral at this visit"
+        ],
+        "provider_query": {
+          "query_type": "open_ended",
+          "question": "Please document the specific range of motion in degrees for the left wrist (flexion, extension, radial deviation, and ulnar deviation) and the JAMAR grip strength recorded at this visit; if the JAMAR was deferred, please provide the clinical reason for deferral.",
+          "clinical_indicators": [
+            "limited active range of motion of the left wrist in flexion, extension, and lateral deviation; motion decreased compared to preinjury baseline of full range of motion",
+            "JAMAR Dynamometer III Measurements (kg): LEFT HAND: Defer"
+          ],
+          "options": []
+        }
+      },
+      {
+        "id": "flag-004",
+        "type": "warning",
+        "category": "Audit-defense",
+        "title": "99215 referenced; documented MDM supports 99214 at most",
+        "action": "Add documentation of a High-MDM driver (e.g., prescription drug management, independent imaging interpretation, or external physician discussion) to support 99215, or adjust the billed level to 99214.",
+        "body": "The note contains '[.KS15 — 99215 Level-of-Service billing paragraph]', indicating 99215 billing. Under AMA 2021 MDM rules, 99215 (established patient) requires ≥2 of 3 elements at High MDM. Scoring this encounter: (1) Problems = Moderate — one acute complicated post-surgical injury with WC authorization complications does not reach 'threat to life or bodily function'; (2) Data = Low — no documented independent interpretation of an outside test, no documented external physician consultation, minimal Category 1 items; (3) Risk = Moderate — the WC authorization dispute significantly limiting treatment initiation qualifies as social determinants of health restricting management (a 2021 Moderate-Risk driver). Two-of-3 at Moderate supports 99214. No element reaches High. Billing 99215 without High-MDM documentation creates recoupment exposure.",
+        "guideline_reference": "em_mdm_2021.md — AMA 2021 Office/Outpatient E/M MDM grid; CMS MLN E/M documentation guidance",
+        "reimbursement_impact": "Documented MDM (Moderate Problems + Low Data + Moderate Risk via SDOH) supports 99214, not 99215; billing 99215 creates audit and recoupment exposure for the underdocumented level differential.",
+        "current_code": null,
+        "suggested_codes": [],
+        "confidence": 82,
+        "evidence_found": [
+          "[.KS15 — 99215 Level-of-Service billing paragraph]",
+          "The social and biopsychosocial issues affecting this industrially injured patient add to the complexity of establishing and executing a treatment plan",
+          "she has been unable to begin occupational therapy, as her workers' compensation claim has not been formally accepted"
+        ],
+        "evidence_missing": [
+          "High-risk management decision: prescription drug management, emergency procedure/surgery decision, or hospitalization decision (needed to reach Risk = High)",
+          "Independent interpretation of an outside test (Category 2 data) or external physician discussion (Category 3 data) to reach Data = High",
+          "Clinical narrative establishing threat to life or bodily function (needed for Problems = High)"
+        ]
+      },
+      {
+        "id": "flag-005",
+        "type": "warning",
+        "category": "Completeness",
+        "title": "Work injury mechanism, location, and activity undocumented",
+        "action": "Add to the note the specific mechanism of injury, the workplace location type, and the activity being performed at the time of the 11/13/2025 fracture to enable complete workers' compensation external-cause coding.",
+        "body": "The note confirms work-relatedness of the 11/13/2025 left distal radius fracture but never states how the fracture occurred, where in the workplace it happened, or what the patient was doing at the time. Without this documentation, three of the four required WC external-cause code elements (mechanism W00–X58, place Y92.x, activity Y93.x) cannot be coded. Incomplete external-cause coding on a WC claim undermines the injury record and may trigger adjuster requests for clarification or claim reprocessing. Per ICD-10-CM Sec I.C.20, mechanism and work-relatedness must be provider-documented; patient report alone is insufficient.",
+        "guideline_reference": "ICD-10-CM Sec I.C.20; Ortho pack §9",
+        "reimbursement_impact": null,
+        "current_code": null,
+        "suggested_codes": [],
+        "confidence": 88,
+        "evidence_found": [
+          "D/I: 11/13/2025",
+          "specific injury sustained in the course of her employment",
+          "she clearly sustained a specific injury in the course of her employment"
+        ],
+        "evidence_missing": [
+          "Mechanism of injury (fall, struck by object, overexertion, etc.) for W/X code selection",
+          "Workplace location type (office, warehouse, construction site, etc.) for Y92.x",
+          "Work activity at time of injury for Y93.x"
+        ],
+        "provider_query": {
+          "query_type": "open_ended",
+          "question": "Please clarify the mechanism of the left distal radius fracture sustained on 11/13/2025 — specifically, how the injury occurred (e.g., fall, struck by object, overexertion), the type of workplace location where it happened, and the work activity being performed at the time, to support required workers' compensation external-cause code documentation.",
+          "clinical_indicators": [
+            "D/I: 11/13/2025",
+            "specific injury sustained in the course of her employment"
+          ],
+          "options": []
+        }
+      },
+      {
+        "id": "flag-006",
+        "type": "suggestion",
+        "category": "Specificity",
+        "title": "Fracture pattern unspecified — more specific sequela code possible",
+        "action": "Clarify the fracture pattern of the left distal radius fracture (Colles', Smith's, Barton's, or other) to enable a more specific sequela code in place of S52.502S.",
+        "body": "S52.502S (unspecified fracture of lower end of left radius, sequela) is valid as coded, but ICD-10-CM Sec I.B.2 requires coding to the highest specificity the documentation supports. ORIF is the standard treatment for displaced distal radius fractures; the fracture pattern (Colles', Smith's, Barton's, or other) determines the more specific code. The fracture pattern is likely documented in the original emergency or operative report from November 2025 but is not referenced in this note. Colles' fracture (dorsal displacement) is the most common distal radius fracture pattern requiring ORIF and would be coded S52.532S.",
+        "guideline_reference": "ICD-10-CM Sec I.B.2 (specificity mandate); Ortho pack §3 (fracture coding); Ortho pack §13",
+        "reimbursement_impact": null,
+        "current_code": "S52.502S",
+        "suggested_codes": [
+          { "code": "S52.532S", "description": "Colles' fracture of left radius, sequela" },
+          { "code": "S52.542S", "description": "Smith's fracture of left radius, sequela" },
+          { "code": "S52.562S", "description": "Barton's fracture of left radius, sequela" }
+        ],
+        "confidence": 55,
+        "evidence_found": [
+          "s/p ORIF of the left distal radius fracture on November 18, 2025, with subsequent hardware removal",
+          "left distal radius fracture sustained on November 13, 2025"
+        ],
+        "evidence_missing": [
+          "Named fracture pattern (Colles', Smith's, Barton's, etc.) in this note or referenced from the operative report",
+          "Displacement status (displaced vs. nondisplaced) documented in this note"
+        ],
+        "provider_query": {
+          "query_type": "multiple_choice",
+          "question": "Please clarify the fracture pattern of the left distal radius fracture for which ORIF was performed on 11/18/2025, to allow assignment of a more specific ICD-10-CM sequela code in place of the current unspecified code.",
+          "clinical_indicators": [
+            "s/p ORIF of the left distal radius fracture on November 18, 2025, with subsequent hardware removal",
+            "left distal radius fracture sustained on November 13, 2025"
+          ],
+          "options": [
+            "Barton's fracture (intraarticular, with subluxation)",
+            "Colles' fracture (extra-articular, dorsal displacement)",
+            "Other fracture of lower end of radius",
+            "Smith's fracture (extra-articular, volar displacement)",
+            "Clinically undetermined"
+          ]
+        }
+      }
+    ],
+    "queries": [
+      {
+        "linked_flag_id": "flag-003",
+        "query_type": "open_ended",
+        "question": "Please document the specific range of motion in degrees for the left wrist (flexion, extension, radial deviation, and ulnar deviation) and the JAMAR grip strength recorded at this visit; if the JAMAR was deferred, please provide the clinical reason for deferral.",
+        "clinical_indicators": [
+          "limited active range of motion of the left wrist in flexion, extension, and lateral deviation; motion decreased compared to preinjury baseline of full range of motion",
+          "JAMAR Dynamometer III Measurements (kg): LEFT HAND: Defer"
+        ],
+        "options": []
+      },
+      {
+        "linked_flag_id": "flag-005",
+        "query_type": "open_ended",
+        "question": "Please clarify the mechanism of the left distal radius fracture sustained on 11/13/2025 — specifically, how the injury occurred (e.g., fall, struck by object, overexertion), the type of workplace location where it happened, and the work activity being performed at the time, to support required workers' compensation external-cause code documentation.",
+        "clinical_indicators": [
+          "D/I: 11/13/2025",
+          "specific injury sustained in the course of her employment"
+        ],
+        "options": []
+      },
+      {
+        "linked_flag_id": "flag-006",
+        "query_type": "multiple_choice",
+        "question": "Please clarify the fracture pattern of the left distal radius fracture for which ORIF was performed on 11/18/2025, to allow assignment of a more specific ICD-10-CM sequela code in place of the current unspecified code.",
+        "clinical_indicators": [
+          "s/p ORIF of the left distal radius fracture on November 18, 2025, with subsequent hardware removal",
+          "left distal radius fracture sustained on November 13, 2025"
+        ],
+        "options": [
+          "Barton's fracture (intraarticular, with subluxation)",
+          "Colles' fracture (extra-articular, dorsal displacement)",
+          "Other fracture of lower end of radius",
+          "Smith's fracture (extra-articular, volar displacement)",
+          "Clinically undetermined"
+        ]
+      }
+    ],
+    "code_validation": {
+      "codes_in_note": ["S52.502S", "Z47.89", "M25.532", "M25.632"],
+      "supported": ["S52.502S", "Z47.89", "M25.532", "M25.632"],
+      "flagged": [],
+      "missing_codes": [
+        {
+          "documented_dx": "Work-related injury — civilian activity done for income or pay (provider-confirmed)",
+          "suggested_code": "Y99.0",
+          "linked_flag_id": "flag-002"
+        }
+      ]
+    }
+  },
+
+  /* em: amy_2026-06-12_em.json — full verbatim */
+  "em": {
+    "meta": {
+      "case_dir": "C:\\Users\\Quickemu\\Documents\\cdi\\AI Medical Notes\\Cases\\2026-06-12(2)\\amy_2026-06-12",
+      "patient": "Amy Berger",
+      "doctor": "Dr. Kenneth R. Sabbag, M.D.",
+      "date_of_service": "06/12/2026",
+      "specialty": "orthopedics",
+      "generated_at": "2026-06-12T00:00:00Z",
+      "standards_version": "em_mdm 2021 v1"
+    },
+    "visit_type": "established",
+    "visit_type_assumed": false,
+    "predicted_em_level": "99214",
+    "predicted_complexity": "moderate",
+    "downcode_risk": "moderate",
+    "mdm_elements": {
+      "problems_addressed": {
+        "score": "moderate",
+        "drivers": [
+          "Left distal radius fracture s/p ORIF (11/18/2025) with subsequent hardware removal — complex posttraumatic course with residual left wrist pain (5–6/10) and limited ROM in flexion, extension, and lateral deviation = 1 acute complicated injury → Moderate",
+          "Active WC authorization dispute addressed and managed at this encounter via formal PR-2 letter, retroactive authorization argument, and care coordination guidance, adding management complexity beyond the physical condition alone"
+        ],
+        "documentation_gap": null
+      },
+      "data_reviewed": {
+        "score": "straightforward",
+        "drivers": [
+          "No tests ordered at this encounter",
+          "No test results documented as reviewed (JAMAR Dynamometer deferred; no imaging or labs referenced as reviewed at this visit)",
+          "No prior external notes from an outside source documented as reviewed",
+          "No independent interpretation of a study performed by another physician documented",
+          "No external physician/QHP discussion documented"
+        ],
+        "documentation_gap": "To reach Low Data: document review of at least 2 Category 1 items — e.g., 'reviewed prior post-op X-rays from [facility]' plus 'reviewed operative report.' To reach Moderate Data: document 3 Category 1 items, or independently interpret an imaging study performed by another physician not separately reported (Category 2), or document a discussion with an external physician/QHP (Category 3). To reach High Data: meet two of the three categories."
+      },
+      "risk": {
+        "score": "moderate",
+        "drivers": [
+          "Diagnosis/treatment significantly limited by social determinants of health: workers' compensation authorization dispute is actively preventing initiation of prescribed hand therapy; note explicitly documents 'The social and biopsychosocial issues affecting this industrially injured patient add to the complexity of establishing and executing a treatment plan' — this mirrors the AMA 2021 SDoH Moderate-risk language",
+          "Hand therapy prescription written (2×/week × 3 weeks) and formal retroactive authorization request submitted to carrier as part of management at this encounter"
+        ],
+        "documentation_gap": null
+      }
+    },
+    "final_level_basis": "Problems Moderate (acute complicated injury: left distal radius fracture s/p ORIF + hardware removal with residual deficits) and Risk Moderate (treatment access significantly limited by documented social/biopsychosocial determinants) meet 2-of-3 at Moderate; Data is Straightforward with no tests ordered or reviewed at this encounter. Established patient → 99214. No total practitioner time is documented, so the time-based alternative is unavailable.",
+    "upgrade_path": "To support 99215 (High MDM), two of three elements must reach High. Elevate Data to High by meeting two categories: e.g., document independent interpretation of a prior imaging study not separately reported (Category 2) plus review of at least one Category 1 item, or add a documented external physician discussion (Category 3). Elevate Risk to High by documenting a high-risk management decision — hospitalization, emergency surgery, or a drug requiring intensive monitoring for toxicity — none of which is present here. Problems would need a severe exacerbation or a documented threat to life/bodily function to reach High. Note: the note contains the billing placeholder '[.KS15 — 99215]', signaling the provider's intent to bill at 99215, but the documentation as written substantiates only 99214.",
+    "time_alternative": {
+      "documented_minutes": null,
+      "level_if_time": null
+    },
+    "headline": "Predicted 99214 (moderate MDM, established follow-up) — note's billing placeholder targets 99215 but documentation supports only Moderate MDM: Data is Straightforward with no tests ordered or reviewed, and Risk reaches Moderate solely via the documented SDoH/biopsychosocial language; ensure that language is audit-defensible if billing at this level."
+  },
+
+  /* patient_summary: amy_2026-06-12_patient_summary.json — full verbatim */
+  "patient_summary": {
+    "meta": {
+      "case_dir": "C:\\Users\\Quickemu\\Documents\\cdi\\AI Medical Notes\\Cases\\2026-06-12(2)\\amy_2026-06-12",
+      "patient": "Amy Berger",
+      "doctor": "Dr. Kenneth R. Sabbag, M.D.",
+      "generated_at": "2026-06-12T00:00:00Z"
+    },
+    "reading_level": "grade 6",
+    "headline": "Your left wrist is still healing after your broken bone and surgery, and your doctor is working to get you approved for hand therapy so you can regain your strength and movement.",
+    "sections": {
+      "whats_going_on": "Back in November 2025, you broke a bone near your left wrist (the distal radius). You had surgery shortly after to fix the break with hardware (metal plates or screws), and that hardware was later removed. At today's visit, your doctor found that your left wrist still has limited movement — you cannot fully bend, straighten, or move it side to side — and you are still feeling pain that you rated as 5 to 6 out of 10. This is expected given your injury and surgery. The rest of your arm, shoulder, neck, and right hand all checked out fine.",
+      "your_plan": "Your doctor is requesting approval from your workers' compensation insurance for occupational (hand) therapy — 2 sessions per week for 3 weeks — to help you regain movement, grip strength, and dexterity in your left wrist and hand. A hand therapy prescription was given to you today. Your left wrist brace is now optional; you can wear it or not, depending on what feels best for you. You may also wrap your left wrist with an elastic bandage for light support and comfort if you choose. At work, you are still on modified duty and are limited to one hour of work. Your doctor also sent a formal letter to your workers' compensation insurance carrier addressing the delay in your care and requesting they move forward with authorization.",
+      "medications": "No new medicines were prescribed at today's visit. Keep taking any medicines you are already using, the same way as before.",
+      "follow_up": "You will see Dr. Sabbag again in six weeks for a repeat evaluation of your left wrist.",
+      "when_to_seek_help": "The note did not list specific warning signs to watch for. If your pain gets worse, you notice new symptoms, or you have any concerns before your next appointment, call the clinic."
+    }
+  }
+};
+
+/* =============================================================================
+   RENDERER — reads ONLY from PA_DATA. Kept fully separable from the data above.
+   ========================================================================== */
+(function(){
+  "use strict";
+
+  /* ---- small helpers ---- */
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  const has = (v) => v !== null && v !== undefined && !(typeof v === "string" && v.trim() === "");
+  const arr = (v) => Array.isArray(v) ? v : [];
+  const titleCase = (s) => has(s) ? String(s).replace(/[_-]+/g," ").replace(/\b\w/g, c => c.toUpperCase()) : "";
+
+  function fmtDateTime(iso){
+    if(!has(iso)) return "—";
+    const d = new Date(iso);
+    if(isNaN(d.getTime())) return esc(iso);
+    try{
+      return d.toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric",timeZone:"UTC"});
+    }catch(e){ return esc(iso); }
+  }
+
+  const SEV_LABEL = { critical:"Critical", warning:"Warning", suggestion:"Suggestion", opportunity:"Opportunity" };
+  const STATUS_LABEL = {
+    weak:"Weak", strong:"Strong", moderate:"Moderate", adequate:"Adequate",
+    hold_for_review:"Hold for Review", ready:"Ready", not_ready:"Not Ready"
+  };
+  function statusTone(v){
+    const s = String(v||"").toLowerCase();
+    if(["strong","ready","adequate","cleared","supported"].includes(s)) return "tone-ok";
+    if(["weak","not_ready","denied"].includes(s)) return "tone-weak";
+    if(["hold_for_review","moderate","review"].includes(s)) return "tone-hold";
+    return "tone-neutral";
+  }
+  function scoreColor(n){
+    if(n >= 80) return "var(--ok)";
+    if(n >= 60) return "var(--sev-warning)";
+    return "var(--sev-critical)";
+  }
+  function scoreVerdict(n){
+    if(n >= 80) return "Strong";
+    if(n >= 60) return "Needs Work";
+    return "Deficient";
+  }
+
+  /* ====================== LETTERHEAD + CASE HEADER ====================== */
+  function renderHead(){
+    const m = PA_DATA.meta || {};
+    const em = (PA_DATA.em && PA_DATA.em.meta) || {};
+    const sv = m.standards_versions || {};
+    const dos = em.date_of_service;
+
+    const items = [];
+    items.push(chItem("Patient", esc(m.patient || "—")));
+    items.push(chItem("Attending Physician", esc(m.doctor || "—")));
+    items.push(chItem("Specialty", esc(titleCase(m.specialty) || "—")));
+    items.push(chItem("Date of Service", esc(dos || "—")));
+    items.push(chItem("Review Generated", fmtDateTime(m.generated_at)));
+    items.push(chItem("Review Mode", esc(titleCase(m.mode) || "—")));
+
+    const stdParts = [];
+    if(has(sv.icd10_cm)) stdParts.push("ICD-10-CM: " + esc(sv.icd10_cm));
+    if(has(sv.ahima_acdis)) stdParts.push("AHIMA/ACDIS: " + esc(sv.ahima_acdis));
+    if(has(sv.specialty_pack)) stdParts.push("Specialty pack: " + esc(sv.specialty_pack));
+    if(has(em.standards_version)) stdParts.push("E/M: " + esc(em.standards_version));
+
+    return `
+      <header class="letterhead">
+        <div class="mark">Clinical Documentation Integrity &middot; Confidential Review</div>
+        <h1>Clinical Documentation Review</h1>
+        <p class="subtitle">Workers&rsquo; Compensation &mdash; Orthopedic Encounter, Left Distal Radius Fracture</p>
+        <div class="versionline">Standards: ${stdParts.length ? stdParts.join(" &nbsp;&bull;&nbsp; ") : "—"}</div>
+      </header>
+      <section class="casehead" aria-label="Case header">
+        ${items.join("")}
+        <div class="ch-item ch-full">
+          <span class="ch-label">Case Directory</span>
+          <span class="ch-value"><span class="casedir">${esc(m.case_dir || "—")}</span></span>
+        </div>
+      </section>`;
+  }
+  function chItem(label, value){
+    return `<div class="ch-item"><span class="ch-label">${esc(label)}</span><span class="ch-value">${value}</span></div>`;
+  }
+
+  function sectionHead(no, title, kicker){
+    return `<div class="section-head">
+      <span class="section-no">${no}</span>
+      <h2 class="section-title">${title}</h2>
+      ${kicker ? `<span class="section-kicker">${esc(kicker)}</span>` : ""}
+    </div>`;
+  }
+
+  /* ====================== SECTION I — CDI VERDICT ====================== */
+  function renderVerdict(){
+    const cdi = PA_DATA.cdi || {};
+    const s = cdi.summary || {};
+    const fc = s.flag_counts || {};
+    const q = has(s.overall_quality_score) ? s.overall_quality_score : null;
+
+    const subs = [
+      ["Specificity", s.specificity_subscore],
+      ["Evidence", s.evidence_subscore],
+      ["Completeness", s.completeness_subscore]
+    ].filter(p => has(p[1]));
+
+    const subHtml = subs.map(([name,val]) => `
+      <div class="subscore">
+        <div class="ss-top"><span class="ss-name">${esc(name)}</span><span class="ss-val">${esc(val)}<span style="color:var(--ink-faint);font-size:.8em">/100</span></span></div>
+        <div class="ss-meter"><span style="width:${Math.max(0,Math.min(100,Number(val)))}%"></span></div>
+      </div>`).join("");
+
+    const qColor = q!=null ? scoreColor(q) : "var(--ink-faint)";
+
+    const statusCells = [];
+    if(has(s.medical_necessity_status))
+      statusCells.push(statusCell("Medical Necessity", STATUS_LABEL[s.medical_necessity_status] || titleCase(s.medical_necessity_status), statusTone(s.medical_necessity_status)));
+    if(has(s.claim_defense_readiness))
+      statusCells.push(statusCell("Claim-Defense Readiness", STATUS_LABEL[s.claim_defense_readiness] || titleCase(s.claim_defense_readiness), statusTone(s.claim_defense_readiness)));
+    if(s.clinician_approval_required === true || s.clinician_approval_required === false)
+      statusCells.push(statusCell("Clinician Approval", s.clinician_approval_required ? "Required" : "Not Required", s.clinician_approval_required ? "tone-hold" : "tone-ok"));
+
+    const tallyOrder = ["critical","warning","suggestion","opportunity"];
+    const tallyHtml = tallyOrder.map(k => `
+      <div class="tally-item t-${k}">
+        <span class="tally-n">${has(fc[k]) ? esc(fc[k]) : 0}</span>
+        <span class="tally-l">${esc(SEV_LABEL[k])}</span>
+      </div>`).join("");
+
+    return `
+      <section class="section" id="sec-verdict">
+        ${sectionHead("I.", "Documentation Verdict", "CDI Summary")}
+        <p class="lede">An overall integrity score with subscores, payer-facing status determinations, and a tally of findings raised in this review.</p>
+        <div class="verdict">
+          <div class="scorebox">
+            <div class="qlabel">Overall Quality Score</div>
+            <div class="qmain">
+              <span class="qnum" style="color:${qColor}">${q!=null ? esc(q) : "—"}</span>
+              <span class="qdenom">/ 100</span>
+            </div>
+            <div class="qverd" style="color:${qColor}">${q!=null ? esc(scoreVerdict(q)) : "Not scored"}</div>
+            <div class="meter"><span style="width:${q!=null?Math.max(0,Math.min(100,q)):0}%;background:${qColor}"></span></div>
+          </div>
+          <div class="subscores">${subHtml || '<p class="empty-note">No subscores reported.</p>'}</div>
+        </div>
+        ${statusCells.length ? `<div class="statusgrid">${statusCells.join("")}</div>` : ""}
+        <div class="tally">
+          <span class="tally-head">Findings raised in this review</span>
+          ${tallyHtml}
+        </div>
+      </section>`;
+  }
+  function statusCell(label, value, tone){
+    return `<div class="statuscell ${tone}"><div class="sc-label">${esc(label)}</div><div class="sc-value">${esc(value)}</div></div>`;
+  }
+
+  /* ====================== SECTION II — FINDINGS ====================== */
+  function renderFindings(){
+    const cdi = PA_DATA.cdi || {};
+    const flags = arr(cdi.flags);
+    if(!flags.length){
+      return `<section class="section">${sectionHead("II.","Findings","CDI Flags")}<p class="empty-note">No findings were raised.</p></section>`;
+    }
+    const body = flags.map((f, i) => renderFinding(f, i+1)).join("");
+    return `<section class="section" id="sec-findings">
+      ${sectionHead("II.","Findings &amp; Required Actions","CDI Flags")}
+      <p class="lede">Each finding is numbered with its severity and category, the documentation deficiency, the corrective action, and supporting evidence &mdash; quoted from the note (italic) or noted as missing.</p>
+      ${body}
+    </section>`;
+  }
+
+  function renderFinding(f, n){
+    const sev = String(f.type||"").toLowerCase();
+    const found = arr(f.evidence_found);
+    const missing = arr(f.evidence_missing);
+
+    let evidHtml = "";
+    if(found.length){
+      evidHtml += `<div class="evid-group evid-found">
+        <div class="evid-label"><span class="dot"></span>Evidence found in note</div>
+        ${found.map(e => `<blockquote class="evid">${esc(e)}</blockquote>`).join("")}
+      </div>`;
+    }
+    if(missing.length){
+      evidHtml += `<div class="evid-group evid-missing">
+        <div class="evid-label"><span class="dot"></span>Documentation missing</div>
+        ${missing.map(e => `<blockquote class="evid missing">${esc(e)}</blockquote>`).join("")}
+      </div>`;
+    }
+
+    /* codes */
+    let codeHtml = "";
+    const curr = f.current_code;
+    const sug = arr(f.suggested_codes);
+    if(has(curr) || sug.length){
+      const chips = [];
+      if(has(curr)) chips.push(`<span class="codechip current" title="Current code">${esc(curr)}</span>`);
+      sug.forEach(sc => {
+        const code = (sc && has(sc.code)) ? esc(sc.code) : "";
+        const desc = (sc && has(sc.description)) ? `<span class="desc">${esc(sc.description)}</span>` : "";
+        if(code) chips.push(`<span class="codechip suggested">${code}${desc}</span>`);
+      });
+      if(chips.length){
+        codeHtml = `<div class="fm-row"><span class="fm-key">${has(curr)?"Codes":"Suggested codes"}</span><span class="fm-val"><span class="codechips">${chips.join("")}</span></span></div>`;
+      }
+    }
+
+    /* meta rows */
+    const metaRows = [];
+    if(has(f.guideline_reference))
+      metaRows.push(`<div class="fm-row"><span class="fm-key">Guideline</span><span class="fm-val ref">${esc(f.guideline_reference)}</span></div>`);
+    if(codeHtml) metaRows.push(codeHtml);
+    if(has(f.confidence)){
+      const c = Math.max(0,Math.min(100,Number(f.confidence)));
+      metaRows.push(`<div class="fm-row"><span class="fm-key">Confidence</span><span class="fm-val"><span class="conf-wrap"><span class="conf-bar"><span style="width:${c}%"></span></span><span class="conf-num">${esc(f.confidence)}%</span></span></span></div>`);
+    }
+
+    const reimbHtml = has(f.reimbursement_impact)
+      ? `<div class="reimb"><span class="lbl">Reimbursement impact</span>${esc(f.reimbursement_impact)}</div>`
+      : "";
+
+    /* provider query embedded in flag */
+    const queryHtml = f.provider_query ? renderQuery(f.provider_query, null) : "";
+
+    return `
+      <article class="finding sev-${esc(sev)}">
+        <div class="f-head">
+          <span class="f-num">${n}.</span>
+          <div class="f-headtext">
+            <div class="f-tags">
+              <span class="sev-pill sev-${esc(sev)}">${esc(SEV_LABEL[sev] || sev)}</span>
+              ${has(f.category)?`<span class="f-cat">${esc(f.category)}</span>`:""}
+              ${has(f.id)?`<span class="f-id">${esc(f.id)}</span>`:""}
+            </div>
+            <h3 class="f-title">${esc(f.title || "Untitled finding")}</h3>
+          </div>
+        </div>
+        ${has(f.body)?`<p class="f-body">${esc(f.body)}</p>`:""}
+        ${has(f.action)?`<div class="f-action"><span class="lbl">Action required</span>${esc(f.action)}</div>`:""}
+        ${reimbHtml}
+        <div class="evidence-zone">${evidHtml}</div>
+        ${metaRows.length?`<div class="f-meta">${metaRows.join("")}</div>`:""}
+        ${queryHtml}
+      </article>`;
+  }
+
+  function renderQuery(q, linkedLabel){
+    if(!q) return "";
+    const ind = arr(q.clinical_indicators);
+    const opts = arr(q.options);
+    const qt = has(q.query_type) ? titleCase(q.query_type) : "Query";
+    return `
+      <div class="query">
+        <div class="q-head">Provider Query<span class="q-type">${esc(qt)}</span>${linkedLabel?`<span class="q-type" style="background:var(--ink-faint)">${esc(linkedLabel)}</span>`:""}</div>
+        ${has(q.question)?`<p class="q-question">${esc(q.question)}</p>`:""}
+        ${ind.length?`<div class="q-sub">Clinical indicators</div><ul>${ind.map(i=>`<li>${esc(i)}</li>`).join("")}</ul>`:""}
+        ${opts.length?`<div class="q-sub">Response options</div><ol class="opts">${opts.map(o=>`<li>${esc(o)}</li>`).join("")}</ol>`:""}
+      </div>`;
+  }
+
+  /* ====================== SECTION III — PROVIDER QUERIES ====================== */
+  function renderQueries(){
+    const cdi = PA_DATA.cdi || {};
+    const queries = arr(cdi.queries);
+    if(!queries.length) return "";
+    const body = queries.map(q => renderQuery(q, q.linked_flag_id ? "Linked: "+q.linked_flag_id : null)).join("");
+    return `<section class="section" id="sec-queries">
+      ${sectionHead("III.","Provider Queries","Outstanding")}
+      <p class="lede">Compliant, non-leading clarification requests directed to the attending physician. Each is linked to the finding that generated it.</p>
+      ${body}
+    </section>`;
+  }
+
+  /* ====================== SECTION IV — E/M MDM ====================== */
+  function renderEM(){
+    const em = PA_DATA.em;
+    if(!em) return "";
+    const supported = has(em.predicted_em_level) ? em.predicted_em_level : null;
+
+    /* derive billed-target level from the placeholder narrative (display only) */
+    let billedTarget = null;
+    const haystack = [em.upgrade_path, em.headline].filter(has).join(" ");
+    const mt = haystack.match(/\b9921[0-9]\b/);
+    if(mt && mt[0] !== supported) billedTarget = mt[0];
+
+    const elems = em.mdm_elements || {};
+    const elemDefs = [
+      ["problems_addressed","Problems Addressed"],
+      ["data_reviewed","Data Reviewed &amp; Analyzed"],
+      ["risk","Risk of Complications"]
+    ];
+    const mdmRows = elemDefs.filter(([k]) => elems[k]).map(([k,label]) => {
+      const e = elems[k];
+      const sc = String(e.score||"").toLowerCase();
+      const drivers = arr(e.drivers);
+      return `<div class="mdm-row">
+        <div class="mdm-top">
+          <span class="mdm-elname">${label}</span>
+          <span class="mdm-elscore sc-${esc(sc)}">${esc(titleCase(e.score)||"—")}</span>
+        </div>
+        ${drivers.length?`<ul class="mdm-drivers">${drivers.map(d=>`<li>${esc(d)}</li>`).join("")}</ul>`:""}
+        ${has(e.documentation_gap)?`<div class="mdm-gap"><span class="lbl">Documentation gap to elevate</span>${esc(e.documentation_gap)}</div>`:""}
+      </div>`;
+    }).join("");
+
+    const ta = em.time_alternative || {};
+    const timeAvail = has(ta.documented_minutes) || has(ta.level_if_time);
+    const timeHtml = `<div class="em-time">
+      <strong>Time-based alternative:</strong> ${timeAvail
+        ? `${has(ta.documented_minutes)?esc(ta.documented_minutes)+" minutes documented":"minutes not documented"}${has(ta.level_if_time)?" &rarr; "+esc(ta.level_if_time)+" by time":""}.`
+        : "No total practitioner time documented &mdash; time-based level selection is unavailable for this encounter."}
+    </div>`;
+
+    /* verdict block: billed (struck) -> supported */
+    const verdictBlock = `
+      <div class="em-verdict">
+        ${billedTarget ? `
+          <div class="em-level billed">
+            <div class="lbl">Billing placeholder targets</div>
+            <div class="code">${esc(billedTarget)}</div>
+            <div class="sub">High MDM &mdash; not substantiated</div>
+          </div>
+          <div class="em-arrow" aria-hidden="true">&rarr;</div>` : ""}
+        <div class="em-level supported">
+          <div class="lbl">Documentation supports</div>
+          <div class="code">${esc(supported || "—")}</div>
+          <div class="sub">${esc(titleCase(em.predicted_complexity)||"")} MDM${has(em.visit_type)?` &middot; ${esc(titleCase(em.visit_type))}${em.visit_type_assumed?" (assumed)":""}`:""}</div>
+        </div>
+        <div class="em-level">
+          <div class="lbl">Downcode risk</div>
+          <div class="code" style="font-size:1.5rem;color:${riskColor(em.downcode_risk)};line-height:2.1">${esc(titleCase(em.downcode_risk)||"—")}</div>
+          <div class="sub">on the billed differential</div>
+        </div>
+      </div>`;
+
+    return `<section class="section" id="sec-em">
+      ${sectionHead("IV.","Evaluation &amp; Management Analysis","E/M MDM 2021")}
+      <p class="lede">A 2021 AMA Medical Decision-Making analysis of the encounter. The note&rsquo;s billing placeholder targets a higher level than the documentation substantiates.</p>
+      ${has(em.headline)?`<p class="em-headline">${esc(em.headline)}</p>`:""}
+      ${verdictBlock}
+      ${billedTarget?`<p class="downcode-note">The note carries the billing placeholder &ldquo;[.KS15 &mdash; ${esc(billedTarget)}]&rdquo;, but the documented MDM reaches only Moderate. Billing ${esc(billedTarget)} without a High-MDM driver creates audit and recoupment exposure for the level differential &mdash; the supportable level is ${esc(supported)}.</p>`:""}
+      <p class="mdm-eyebrow">MDM elements &mdash; 2 of 3 determine the level</p>
+      <div class="mdm-table">${mdmRows || '<div class="mdm-row"><span class="empty-note">No MDM elements reported.</span></div>'}</div>
+      <div class="em-narrative">
+        ${has(em.final_level_basis)?`<h4>Basis for final level</h4><p>${esc(em.final_level_basis)}</p>`:""}
+        ${has(em.upgrade_path)?`<h4>Path to the next level</h4><div class="upgrade-box">${esc(em.upgrade_path)}</div>`:""}
+      </div>
+      ${timeHtml}
+    </section>`;
+  }
+  function riskColor(v){
+    const s = String(v||"").toLowerCase();
+    if(s==="high") return "var(--sev-critical)";
+    if(s==="moderate") return "var(--sev-warning)";
+    if(s==="low"||s==="minimal") return "var(--ok)";
+    return "var(--ink)";
+  }
+
+  /* ====================== SECTION V — CODE VALIDATION ====================== */
+  function renderCodeValidation(){
+    const cdi = PA_DATA.cdi || {};
+    const cv = cdi.code_validation;
+    if(!cv) return "";
+    const inNote = arr(cv.codes_in_note);
+    const supported = arr(cv.supported);
+    const flagged = arr(cv.flagged);
+    const missing = arr(cv.missing_codes);
+
+    const chipList = (codes, cls) => codes.length
+      ? `<div class="codechips">${codes.map(c=>`<span class="codechip ${cls}">${esc(c)}</span>`).join("")}</div>`
+      : `<span class="cv-empty">None</span>`;
+
+    const missingHtml = missing.length
+      ? missing.map(mc => `<div class="cv-missing-item"><span class="mc-code">${esc(mc.suggested_code||"—")}</span> &mdash; ${esc(mc.documented_dx||"")}${has(mc.linked_flag_id)?` <span style="font-family:var(--mono);font-size:.72rem;color:var(--ink-faint)">(${esc(mc.linked_flag_id)})</span>`:""}</div>`).join("")
+      : `<span class="cv-empty">None &mdash; no required codes missing.</span>`;
+
+    return `<section class="section" id="sec-codes">
+      ${sectionHead("V.","Code Validation","ICD-10-CM")}
+      <p class="lede">Reconciliation of codes present in the note against codes the documentation supports, flagged codes, and codes that should be added.</p>
+      <div class="cv-grid">
+        <div class="cv-card">
+          <h4>Codes in Note <span class="n">${inNote.length}</span></h4>
+          ${chipList(inNote, "")}
+        </div>
+        <div class="cv-card">
+          <h4>Supported <span class="n">${supported.length}</span></h4>
+          ${chipList(supported, "suggested")}
+        </div>
+        <div class="cv-card">
+          <h4>Flagged <span class="n">${flagged.length}</span></h4>
+          ${chipList(flagged, "current")}
+        </div>
+        <div class="cv-card missing">
+          <h4>Missing &mdash; Add <span class="n">${missing.length}</span></h4>
+          ${missingHtml}
+        </div>
+      </div>
+    </section>`;
+  }
+
+  /* ====================== SECTION VI — PATIENT SUMMARY ====================== */
+  function renderPatientSummary(){
+    const ps = PA_DATA.patient_summary;
+    if(!ps) return "";
+    const sec = ps.sections || {};
+    const order = [
+      ["whats_going_on","What&rsquo;s Going On", false],
+      ["your_plan","Your Plan", false],
+      ["medications","Medications", false],
+      ["follow_up","Follow-Up", false],
+      ["when_to_seek_help","When to Seek Help", true]
+    ];
+    const blocks = order.filter(([k]) => has(sec[k])).map(([k,label,alert]) => `
+      <div class="ps-section ${alert?"alert":""}">
+        <h4>${label}</h4>
+        <p>${esc(sec[k])}</p>
+      </div>`).join("");
+
+    return `<section class="section" id="sec-patient">
+      ${sectionHead("VI.","Patient Summary","Plain-Language")}
+      <p class="lede">A plain-language summary written for the patient${has(ps.reading_level)?`, at a ${esc(ps.reading_level)} reading level`:""}. This closing section is for the patient&rsquo;s own copy of the visit.</p>
+      <div class="ps-wrap">
+        ${has(ps.reading_level)?`<div class="ps-readlevel">Reading level &middot; ${esc(titleCase(ps.reading_level))}</div>`:""}
+        ${has(ps.headline)?`<p class="ps-headline">&ldquo;${esc(ps.headline)}&rdquo;</p>`:""}
+        ${blocks || '<p class="empty-note">No patient summary sections available.</p>'}
+      </div>
+    </section>`;
+  }
+
+  /* ====================== COLOPHON ====================== */
+  function renderColophon(){
+    const cdi = PA_DATA.cdi || {};
+    const s = cdi.summary || {};
+    const m = PA_DATA.meta || {};
+    const approval = s.clinician_approval_required === true;
+    const approvalHtml = (s.clinician_approval_required === true || s.clinician_approval_required === false)
+      ? `<div class="approval ${approval?"":"cleared"}">${approval
+          ? "Clinician approval required &mdash; this review is on hold pending attending physician sign-off before claim submission."
+          : "No clinician approval flagged for this review."}</div>`
+      : "";
+    return `
+      <footer class="colophon">
+        <div class="row">
+          <span><strong>Report generated:</strong> ${fmtDateTime(m.generated_at)}</span>
+          <span><strong>Patient:</strong> ${esc(m.patient||"—")}</span>
+          <span><strong>Physician:</strong> ${esc(m.doctor||"—")}</span>
+        </div>
+        <div class="row">
+          <span><strong>Engines:</strong> CDI Review &middot; E/M MDM Scorer &middot; Patient Summary</span>
+          <span><strong>Mode:</strong> ${esc(titleCase(m.mode)||"—")}</span>
+        </div>
+        ${approvalHtml}
+        <div class="row" style="margin-top:.8rem;font-style:italic;">
+          Confidential &mdash; generated for clinical documentation integrity review. Not a substitute for independent clinician judgment.
+        </div>
+      </footer>`;
+  }
+
+  /* ====================== ASSEMBLE ====================== */
+  function render(){
+    const root = document.getElementById("report");
+    if(!root) return;
+    const parts = [
+      renderHead(),
+      renderVerdict(),
+      renderFindings(),
+      renderQueries(),
+      renderEM(),
+      renderCodeValidation(),
+      renderPatientSummary(),
+      renderColophon()
+    ];
+    root.innerHTML = parts.join("");
+  }
+
+  /* ====================== INTERACTIVE CHROME ====================== */
+  function wireToolbar(){
+    const printBtn = document.getElementById("btn-print");
+    if(printBtn) printBtn.addEventListener("click", () => window.print());
+
+    const evBtn = document.getElementById("btn-evidence");
+    if(evBtn){
+      let shown = true;
+      const apply = () => {
+        document.querySelectorAll(".evidence-zone").forEach(z => {
+          z.style.display = shown ? "" : "none";
+        });
+        evBtn.setAttribute("aria-pressed", String(shown));
+        evBtn.textContent = shown ? "Evidence shown" : "Evidence hidden";
+      };
+      evBtn.addEventListener("click", () => { shown = !shown; apply(); });
+    }
+  }
+
+  /* boot — guard so a single bad value can't blank the page */
+  try{
+    render();
+    wireToolbar();
+  }catch(err){
+    const root = document.getElementById("report");
+    if(root && !root.innerHTML.trim()){
+      root.innerHTML = '<p class="empty-note" style="padding:2rem">This report could not be rendered from the supplied data.</p>';
+    }
+    /* surface to console for the renderer integration, but never throw to the user */
+    if(window && window.console) console.warn("Render warning:", err);
+  }
+})();
+</script>
+</body>
+</html>

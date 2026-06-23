@@ -34,6 +34,12 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       recordArgs.push('--device', String(settings.selectedDeviceIndex))
       log(`Using manual device index: ${settings.selectedDeviceIndex}`)
     }
+    if (settings.realtimeTranscription) {
+      const apiKey = appCtx.secrets.getElevenLabsKey() || ''
+      const realtimeJsonPath = tmpMp3.replace('.mp3', '_realtime.json')
+      recordArgs.push('--realtime', '--api-key', apiKey, '--realtime-output', realtimeJsonPath)
+      log(`Realtime transcription enabled → ${realtimeJsonPath}`)
+    }
 
     const recProc = spawn(appCtx.python, recordArgs, { cwd: appRoot })
     appCtx.stores.recorder.setProcess(recProc, tmpMp3)
@@ -108,6 +114,11 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
     }
 
     const mp3Filename = name ? `${name}.mp3` : 'recording.mp3'
+    // If realtime transcription was enabled, Python wrote a JSON file alongside
+    // the temp MP3.  Pass it to ingestAudio so it's moved into the case folder.
+    const realtimeTranscriptSrc = readSettings().realtimeTranscription && tempMp3Path
+      ? tempMp3Path.replace('.mp3', '_realtime.json')
+      : null
     const { ok: ingestOk } = ingestAudio({
       audioSrc:          tempMp3Path,
       audioDestName:     mp3Filename,
@@ -120,6 +131,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       probeDuration:     false,
       ctx:               appCtx,
       spawnTranscription: _callSpawnTranscription,
+      realtimeTranscriptSrc,
     })
     if (!ingestOk) {
       setState(STATE.SESSION_ACTIVE)
@@ -169,7 +181,8 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       if (procToStop) {
         waitForExit(procToStop).then(() => {
           const wavPath = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_tmp.wav') : null
-          for (const p of [mp3ToDelete, wavPath]) {
+          const realtimeJson = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_realtime.json') : null
+          for (const p of [mp3ToDelete, wavPath, realtimeJson]) {
             if (p && fs.existsSync(p)) {
               try { fs.unlinkSync(p) } catch (e) { log(`Failed to delete temp file: ${e.message}`) }
             }

@@ -62,8 +62,12 @@ async function runJob(descriptor, input, ctx, extra = {}) {
 
   let runResult
   try {
-    const prompt = buildPrompt(descriptor.skillId, input)
-    runResult = await ctx.llm.runSkill({ prompt, model, effort, label, signal: ac.signal })
+    if (typeof descriptor.runLlm === 'function') {
+      runResult = await descriptor.runLlm(input, ctx, { model, effort, signal: ac.signal })
+    } else {
+      const prompt = buildPrompt(descriptor.skillId, input)
+      runResult = await ctx.llm.runSkill({ prompt, model, effort, label, signal: ac.signal })
+    }
   } catch (err) {
     _finishEventSafe(eventId, 'failed', Date.now() - startMs, err.message, ctx)
     descriptor.onError?.(err, input, ctx, extra, eventId)
@@ -76,7 +80,7 @@ async function runJob(descriptor, input, ctx, extra = {}) {
     const durationMs = Date.now() - startMs
     logSkillStream(log, '', label, resultEvent)
 
-    if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
+    if (CLAUDE_RATE_LIMITED.test(resultText + errText) || runResult.isRateLimit) {
       _finishEventSafe(eventId, 'rate_limited', durationMs, 'Claude usage limit reached', ctx, { resultEvent })
       descriptor.onRateLimit?.(input, ctx, extra, durationMs)
     } else if (code === 0) {

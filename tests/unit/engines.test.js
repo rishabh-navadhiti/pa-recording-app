@@ -10,6 +10,10 @@ const soap = require('../../src/engines/soap')
 const icd  = require('../../src/engines/icd')
 const cdi  = require('../../src/engines/cdi')
 const { synthesizeManifestFromDisk } = require('../../src/engines/cdi')
+const emScore = require('../../src/engines/emScore')
+const { synthesizeEmFromDisk } = require('../../src/engines/emScore')
+const patientSummary = require('../../src/engines/patientSummary')
+const { synthesizePatientSummaryFromDisk } = require('../../src/engines/patientSummary')
 const registry = require('../../src/engines/registry')
 
 // ---- soap descriptor -------------------------------------------------------
@@ -188,11 +192,120 @@ test('cdi.interpret falls back to disk when manifest line missing (rate-limit sc
   }
 })
 
+// ---- em-score descriptor ---------------------------------------------------
+
+test('emScore.gates returns skip when enableEmScore is false', () => {
+  const ctx = { config: { get: () => ({ enableEmScore: false }) } }
+  const skips = emScore.gates(ctx, {})
+  assert.strictEqual(skips.length, 1)
+  assert.match(skips[0].reason, /disabled/)
+})
+
+test('emScore.gates returns [] when enableEmScore is true (no specialty gate)', () => {
+  const ctx = { config: { get: () => ({ enableEmScore: true }) } }
+  assert.deepStrictEqual(emScore.gates(ctx, { doctor: { specialty: '' } }), [])
+})
+
+test('emScore.interpret parses a valid em-score manifest', () => {
+  const manifest = JSON.stringify({
+    schema_version: 1, skill: 'em-score', status: 'ok',
+    json_path: '/x/y_em.json', predicted_em_level: '99214',
+    predicted_complexity: 'moderate', downcode_risk: 'low',
+  })
+  const ctx = { log: () => {} }
+  const result = emScore.interpret({ text: manifest, code: 0, errText: '' }, ctx, {})
+  assert.ok(result.manifest, 'should have manifest')
+  assert.strictEqual(result.manifest.predicted_em_level, '99214')
+  assert.strictEqual(result.recovered, false)
+})
+
+test('emScore.interpret returns skippedReason on status=skipped manifest', () => {
+  const manifest = JSON.stringify({
+    schema_version: 1, skill: 'em-score', status: 'skipped',
+    skipped_reason: 'not an office E/M encounter',
+  })
+  const ctx = { log: () => {} }
+  const result = emScore.interpret({ text: manifest, code: 0, errText: '' }, ctx, {})
+  assert.strictEqual(result.manifest, null)
+  assert.strictEqual(result.skippedReason, 'not an office E/M encounter')
+})
+
+test('synthesizeEmFromDisk returns null when json file absent', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'em-test-'))
+  try {
+    assert.strictEqual(synthesizeEmFromDisk(tmpDir, () => {}), null)
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+})
+
+test('synthesizeEmFromDisk recovers from a valid _em.json (rate-limit scenario)', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'em-test-'))
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'patient_2026-06-11_soap_note.md'), '# note')
+    fs.writeFileSync(path.join(tmpDir, 'patient_2026-06-11_em.json'), JSON.stringify({
+      predicted_em_level: '99213', predicted_complexity: 'low', downcode_risk: 'none',
+    }))
+    const m = synthesizeEmFromDisk(tmpDir, () => {})
+    assert.ok(m, 'should recover a manifest')
+    assert.strictEqual(m.skill, 'em-score')
+    assert.strictEqual(m.status, 'ok')
+    assert.strictEqual(m.predicted_em_level, '99213')
+    assert.ok(m.json_path.endsWith('_em.json'))
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+})
+
+// ---- patient-summary descriptor --------------------------------------------
+
+test('patientSummary.gates returns skip when enablePatientSummary is false', () => {
+  const ctx = { config: { get: () => ({ enablePatientSummary: false }) } }
+  const skips = patientSummary.gates(ctx, {})
+  assert.strictEqual(skips.length, 1)
+  assert.match(skips[0].reason, /disabled/)
+})
+
+test('patientSummary.gates returns [] when enablePatientSummary is true', () => {
+  const ctx = { config: { get: () => ({ enablePatientSummary: true }) } }
+  assert.deepStrictEqual(patientSummary.gates(ctx, {}), [])
+})
+
+test('patientSummary.interpret parses a valid manifest', () => {
+  const manifest = JSON.stringify({
+    schema_version: 1, skill: 'patient-summary', status: 'ok',
+    json_path: '/x/y_patient_summary.json', reading_level: 'grade 6',
+  })
+  const ctx = { log: () => {} }
+  const result = patientSummary.interpret({ text: manifest, code: 0, errText: '' }, ctx, {})
+  assert.ok(result.manifest, 'should have manifest')
+  assert.strictEqual(result.manifest.reading_level, 'grade 6')
+})
+
+test('synthesizePatientSummaryFromDisk recovers from a valid _patient_summary.json', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-test-'))
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'patient_2026-06-11_soap_note.md'), '# note')
+    fs.writeFileSync(path.join(tmpDir, 'patient_2026-06-11_patient_summary.json'), JSON.stringify({
+      reading_level: 'grade 6', sections: { whats_going_on: 'x' },
+    }))
+    const m = synthesizePatientSummaryFromDisk(tmpDir, () => {})
+    assert.ok(m, 'should recover a manifest')
+    assert.strictEqual(m.skill, 'patient-summary')
+    assert.strictEqual(m.status, 'ok')
+    assert.strictEqual(m.reading_level, 'grade 6')
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+})
+
 // ---- registry --------------------------------------------------------------
 
-test('registry exports [soap, icd, cdi] in order', () => {
-  assert.strictEqual(registry.length, 3)
+test('registry exports [soap, icd, cdi, em-score, patient-summary] in order', () => {
+  assert.strictEqual(registry.length, 5)
   assert.strictEqual(registry[0].id, 'soap')
   assert.strictEqual(registry[1].id, 'icd')
   assert.strictEqual(registry[2].id, 'cdi')
+  assert.strictEqual(registry[3].id, 'em-score')
+  assert.strictEqual(registry[4].id, 'patient-summary')
 })

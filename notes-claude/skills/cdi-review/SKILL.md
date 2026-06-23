@@ -84,7 +84,7 @@ DOCTOR_NAME=<value>
 STANDARDS_DIR=<value>
 ```
 
-If `CASE_DIR` is empty or doesn't exist on disk, emit a `status: "failed"` manifest (per Step 9) describing the missing input and stop. Example: `{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"case_dir missing","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"case_dir not found: <value>"}`.
+If `CASE_DIR` is empty or doesn't exist on disk, emit a `status: "failed"` manifest (per Step 9) describing the missing input and stop. Example: `{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"case_dir missing","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"query_count":null,"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"case_dir not found: <value>"}`.
 
 ### 0b. Specialty gate
 
@@ -197,13 +197,14 @@ Extract from the SOAP note's header block:
 
 ## Step 2: Load Standards
 
-Read all three standards files, in full:
+Read all four standards files, in full:
 
 1. **`${STANDARDS_DIR}/icd10_fy2026.md`** — universal ICD-10 rules. Required.
 2. **`${STANDARDS_DIR}/ahima_acdis_2026.md`** — query compliance rules. Required.
 3. **`${SPECIALTY_FILE}`** — specialty pack (e.g. `orthopedics.md`). Required (already verified in Step 0b).
+4. **`${STANDARDS_DIR}/em_mdm_2021.md`** — AMA 2021 Office/Outpatient E/M MDM grid (the 3 MDM elements, the 2-of-3 rule, level↔CPT mapping, down-code drivers). Used to attach E/M reimbursement signals to flags (see *Reimbursement-impact population* in Step 3 and the `reimbursement_impact` field rules). Read it if present; if absent, skip it and leave `reimbursement_impact` at its default `null` everywhere — the rest of the review is unaffected.
 
-If any of the universal files is missing, write a stub JSON with the error so downstream code has something, then emit a `status: "failed"` manifest (per Step 9) with `error: "standards_missing: <which-file>"` and stop.
+If any of the universal files (1–3) is missing, write a stub JSON with the error so downstream code has something, then emit a `status: "failed"` manifest (per Step 9) with `error: "standards_missing: <which-file>"` and stop. `em_mdm_2021.md` is **not** required — its absence only disables the E/M reimbursement signal, never the review.
 
 Extract the `**Standards version:**` line from each file for the `meta.standards_versions` block of the output JSON.
 
@@ -308,6 +309,34 @@ In production, the SOAP note often already contains ICD-10 codes appended by an 
 
 The presence vs. absence of the `code_validation` field is the signal to downstream code (rendering, app integration) that validation happened.
 
+### Provider-query rules (AHIMA / ACDIS compliant)
+
+When a flag identifies a gap a provider must resolve — a **missing or ambiguous diagnosis**, a **clinical-validation gap** (a Dx asserted without sufficient indicators), or a **specificity gap a query would close** — attach a `provider_query` object to that flag. This is the structured, non-leading question the downstream provider-query feature will phrase to the clinician. Pure formatting / quality / scoring flags (and any gap that is already unambiguous in the note) get **no** query — omit the field.
+
+Bake in the AHIMA / ACDIS *Guidelines for Achieving a Compliant Query Practice* rules (cite the section when relevant in the flag's `guideline_reference`):
+
+- **Non-leading (AHIMA §2).** The `question` states the clinical facts and asks the provider to clarify — it must **never** suggest the answer. Write "Please clarify the type/acuity/laterality of X, if any" — **not** "Please document X." No imperative "Document X" phrasing.
+- **Two-indicator threshold (AHIMA §1).** A query that proposes a **new** diagnosis (rather than clarifying an existing one) requires **≥ 2** `clinical_indicators`. If you cannot list two genuine indicators from the note, **emit no query** for that flag (and reconsider whether the flag itself should be downgraded per AHIMA §1's flag-side implication).
+- **Indicators verbatim (AHIMA §2/§6).** `clinical_indicators` are quoted verbatim (or as close as possible) from the note — **reuse the flag's `evidence_found` entries**. Do not paraphrase and do not introduce indicators the note doesn't contain.
+- **Multiple-choice shape (AHIMA §3).** For `query_type: "multiple_choice"`, provide **≥ 3 mutually-exclusive options**, ordered with no clinical preference (e.g., by code/alphabetical), and the **last** option MUST be exactly `"Clinically undetermined"` so the provider can decline without explanation. A single option is **forbidden** — one option is leading by construction (AHIMA §3).
+- **Open-ended shape.** For `query_type: "open_ended"`, omit `options` (or set it to `[]`). Use open-ended when the gap is a free-text clarification (e.g., medical-necessity narrative) with no enumerable answer set.
+- **No unvalidated codes in a query (Connector-validation rule).** Never introduce an ICD code into a query that you have not already connector-validated. If a query's options correspond to codes, reuse only codes already validated for this flag's `suggested_codes`. The query phrases the *clinical* question; it does not smuggle in an unconfirmed code.
+
+**Mode interaction.** A `provider_query` rides with its parent flag through the mode filter. If a flag is suppressed by the mode (e.g., a `suggestion` flag in `compliance` mode, or any `opportunity` flag outside `aggressive`), its query is suppressed too — a suppressed flag emits no query. There are **no** queries on `opportunity` flags except in `aggressive` mode (because `opportunity` flags themselves only exist there).
+
+**Keep `queries[]` in sync.** Every `provider_query` you attach to a flag must also appear as one entry in the top-level `queries[]` array (with `linked_flag_id` set to that flag's `id`); flags without a query contribute nothing. If no query is warranted anywhere, emit `"queries": []`.
+
+### Reimbursement-impact population (E/M signal — uses `em_mdm_2021.md`)
+
+The `reimbursement_impact` field already exists (see its field rule above) and is **`null` by default**. When the `em_mdm_2021.md` pack was loaded in Step 2, use the AMA 2021 Office/Outpatient MDM grid to **populate** `reimbursement_impact` on a flag **only when** that flag's fix would raise one of the three MDM elements (Problems / Data / Risk) enough to change the **2-of-3** outcome — i.e., move the supported E/M level.
+
+- State it as a concrete E/M signal naming the element moved and the level it supports, e.g.:
+  - `"Documenting independent test interpretation moves Data to Moderate → supports 99214 over 99213."`
+  - `"Adding the prescription decision raises Risk to Moderate → supports 99214 (the 2-of-3 hinge)."`
+  - `"Capturing the second addressed chronic illness raises Problems to Moderate → supports a Moderate-MDM level."`
+- Apply the grid honestly: the lift must genuinely move the 2-of-3 result per `em_mdm_2021.md` (e.g., prescription drug management → Risk Moderate; independent interpretation → Data category; an addressed chronic illness with exacerbation → Problems Moderate). A documentation fix that *doesn't* change which level 2-of-3 reaches gets **no** E/M signal.
+- **Keep the default-`null`, never-fabricate rule.** Most flags — quality, audit-defense, formatting — carry no E/M lift; leave `reimbursement_impact` `null` for those. Do not invent a level change the grid doesn't support, and do not populate it when `em_mdm_2021.md` was absent. CPT codes named here come from the pack (AMA rules) — the ICD-10 connector cannot validate CPT, so don't call it for these.
+
 ### Summary-field determination rules
 
 `summary.medical_necessity_status`:
@@ -367,7 +396,22 @@ The presence vs. absence of the `code_validation` field is the signal to downstr
       ],
       "confidence": <0-100 integer>,
       "evidence_found": ["<verbatim or near-verbatim from the note>", "..."],
-      "evidence_missing": ["<what would be needed to upgrade or defend>", "..."]
+      "evidence_missing": ["<what would be needed to upgrade or defend>", "..."],
+      "provider_query": {
+        "query_type": "<multiple_choice|open_ended>",
+        "question": "<one non-leading clinical question — states facts, never suggests the answer>",
+        "clinical_indicators": ["<≥2 verbatim indicators from the note — reuse this flag's evidence_found>", "..."],
+        "options": ["<mutually-exclusive choice>", "...", "Clinically undetermined"]
+      }
+    }
+  ],
+  "queries": [
+    {
+      "linked_flag_id": "<flag-XXX — the flag this query came from>",
+      "query_type": "<multiple_choice|open_ended>",
+      "question": "<same non-leading question as the flag's provider_query.question>",
+      "clinical_indicators": ["<verbatim indicators, mirrored from the flag>", "..."],
+      "options": ["<mutually-exclusive choice>", "...", "Clinically undetermined"]
     }
   ],
   "code_validation": {
@@ -404,7 +448,10 @@ The presence vs. absence of the `code_validation` field is the signal to downstr
 - `reimbursement_impact` is **mostly `null`** — most CDI flags are quality / audit-defense and carry no direct revenue signal. Populate it **only** when a flag has a real reimbursement consequence, expressed in the units of the care setting:
   - **Outpatient (the primary use case):** an E/M-level, HCC-capture, or modifier signal — e.g., `"Supports 99214 over 99213 if data-reviewed is documented"`, `"Additional billable Dx — captures HCC if validated"`, `"Supports modifier-25 add-on for the procedure billing"`.
   - **Inpatient (if ever):** a DRG shift — e.g., `"Moves to a higher-paying DRG with MCC"`. The field is generic across settings; only the unit varies. Do **not** fabricate a signal to fill it — `null` is the correct value most of the time.
+  - When the `em_mdm_2021.md` pack is loaded, prefer a **concrete 2021 E/M signal** for the outpatient case — name the MDM element the fix moves and the level it supports (see *Reimbursement-impact population* above for the grid mechanics and examples).
 - `current_code` is the code currently in the note that this flag would replace; `null` if none.
+- `provider_query` is **optional and per-flag** — include it ONLY on flags that warrant clarifying the chart with the provider: a missing or ambiguous Dx, a clinical-validation gap, or a specificity gap a query would resolve. **Omit it entirely** on pure formatting / quality / scoring flags and on any flag where the gap is already unambiguous in the note (nothing to ask). Its shape and the AHIMA compliance rules it must satisfy are in *Provider-query rules* below.
+- `queries` is a **top-level convenience array** — a flat sibling list of every `provider_query` you emitted, each carrying its parent flag's `id` in `linked_flag_id`. It is the mirror of the per-flag `provider_query` objects; it MUST be exactly consistent with them (one `queries[]` entry per flag that has a `provider_query`, and none for flags that don't). If no flag warrants a query, emit `"queries": []`.
 - `code_validation` is **optional** — include it ONLY when codes were found in the note. Omit the field entirely when the note contained no codes (downstream code uses presence/absence of the field as the validation signal).
 - Within `code_validation`: `linked_flag_id` should reference an `id` from the `flags[]` array when a code-validation entry has a corresponding flag, or `null` if standalone. Downstream code tolerates dangling references (UI shows the entry as standalone if the linked flag isn't found).
 
@@ -696,6 +743,48 @@ for key, emoji_char, label in SEVERITY:
     for f in bucket:
         lines.extend(render_flag(f))
 
+# Provider queries — rendered from the top-level queries[] array (falls back to
+# the per-flag provider_query objects if queries[] is absent). Each query is the
+# non-leading question the downstream provider-query feature will phrase.
+queries = data.get("queries")
+if not queries:
+    queries = []
+    for fl in flags:
+        pq = fl.get("provider_query")
+        if isinstance(pq, dict):
+            q = dict(pq)
+            q.setdefault("linked_flag_id", fl.get("id"))
+            queries.append(q)
+
+if queries:
+    lines.append("## Provider queries")
+    lines.append("")
+    for i, q in enumerate(queries, 1):
+        link = q.get("linked_flag_id")
+        tail = f" (see {link})" if link else ""
+        qtype = q.get("query_type", "")
+        lines.append(f"### Query {i}{tail}")
+        lines.append("")
+        lines.append(f"**Question:** {q.get('question', '')}")
+        lines.append("")
+        indicators = q.get("clinical_indicators") or []
+        if indicators:
+            lines.append("**Clinical indicators:**")
+            for ind in indicators:
+                lines.append(f"- {ind}")
+            lines.append("")
+        options = q.get("options") or []
+        if options:
+            lines.append("**Options:**")
+            for opt in options:
+                lines.append(f"- {opt}")
+            lines.append("")
+        elif qtype == "open_ended":
+            lines.append("*(Open-ended — no fixed options.)*")
+            lines.append("")
+    lines.append("---")
+    lines.append("")
+
 # Footer
 versions = meta.get("standards_versions", {})
 v_parts = []
@@ -751,6 +840,7 @@ After writing the `_cdi.json` and `_cdi.md` files in Step 8, your **final assist
   "md_path": "<absolute path to <case>_cdi.md, or null if not written>",
   "flag_count": <total flag count after mode filtering, or null on skipped/failed>,
   "flag_counts": { "critical": <n>, "warning": <n>, "suggestion": <n>, "opportunity": <n> },
+  "query_count": <number of provider queries emitted (length of queries[]), or null on skipped/failed>,
   "quality_score": <0-100 overall, or null on skipped/failed>,
   "medical_necessity_status": "supported|weak|missing|null",
   "claim_defense_readiness": "ready|needs_edits|hold_for_review|null",
@@ -771,6 +861,7 @@ Field semantics:
 - `md_path` — absolute path to `${MD_PATH}` from Step 1. Same rules as `json_path`.
 - `flag_count` — total flags emitted after Step 6 mode filtering. `null` on skipped/failed.
 - `flag_counts` — per-severity breakdown matching `summary.flag_counts` in the JSON. All zeros on skipped/failed.
+- `query_count` — number of provider queries emitted (the length of the top-level `queries[]` array in the JSON). `0` when no flag warranted a query; `null` on skipped/failed.
 - `quality_score` — `summary.overall_quality_score` from the JSON. `null` on skipped/failed.
 - `medical_necessity_status` — echo of the JSON's `summary.medical_necessity_status`. `null` on skipped/failed.
 - `claim_defense_readiness` — echo of the JSON's `summary.claim_defense_readiness`. `null` on skipped/failed.
@@ -786,19 +877,19 @@ The full per-flag detail lives in `_cdi.json` — the manifest just carries the 
 **Example 1 — status `ok`, ICD codes were in the note and you validated them:**
 
 ```json
-{"schema_version":1,"skill":"cdi-review","status":"ok","summary":"5 flags surfaced; quality 73/100; ICD codes validated.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.md","flag_count":5,"flag_counts":{"critical":1,"warning":2,"suggestion":2,"opportunity":0},"quality_score":73,"medical_necessity_status":"weak","claim_defense_readiness":"hold_for_review","clinician_approval_required":true,"icd_validated":true,"skipped_reason":null,"error":null}
+{"schema_version":1,"skill":"cdi-review","status":"ok","summary":"5 flags surfaced; quality 73/100; ICD codes validated.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/stephanie_2026-05-26/stephanie_2026-05-26_cdi.md","flag_count":5,"flag_counts":{"critical":1,"warning":2,"suggestion":2,"opportunity":0},"query_count":2,"quality_score":73,"medical_necessity_status":"weak","claim_defense_readiness":"hold_for_review","clinician_approval_required":true,"icd_validated":true,"skipped_reason":null,"error":null}
 ```
 
 **Example 2 — status `skipped`, specialty unsupported (Step 0b fired):**
 
 ```json
-{"schema_version":1,"skill":"cdi-review","status":"skipped","summary":"Specialty 'cardiology' is not supported by CDI v1.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.md","flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":"specialty not yet supported for CDI v1: cardiology","error":null}
+{"schema_version":1,"skill":"cdi-review","status":"skipped","summary":"Specialty 'cardiology' is not supported by CDI v1.","json_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.json","md_path":"/Users/scribe/Documents/AI Medical Notes/Cases/2026-05-26/jane_doe_2026-05-26/jane_doe_2026-05-26_cdi.md","flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"query_count":null,"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":"specialty not yet supported for CDI v1: cardiology","error":null}
 ```
 
 **Example 3 — status `failed`, JSON validation failed after the one retry:**
 
 ```json
-{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"JSON validation failed after retry; raw output saved.","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"JSON validation failed after 1 retry"}
+{"schema_version":1,"skill":"cdi-review","status":"failed","summary":"JSON validation failed after retry; raw output saved.","json_path":null,"md_path":null,"flag_count":null,"flag_counts":{"critical":0,"warning":0,"suggestion":0,"opportunity":0},"query_count":null,"quality_score":null,"medical_necessity_status":null,"claim_defense_readiness":null,"clinician_approval_required":null,"icd_validated":null,"skipped_reason":null,"error":"JSON validation failed after 1 retry"}
 ```
 
 You may write a short human-readable comment **before** the manifest line in your final response if it helps your own reasoning — but it's strictly optional and the `_cdi.md` is the canonical human-readable artifact. The only thing the app reads structurally is the JSON line at the very end of your response.
