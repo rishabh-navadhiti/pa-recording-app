@@ -13,7 +13,7 @@ const patientSummary = {
   stage:        'patient_summary',
   completesCase: false,
 
-  model: (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  model: () =>  'claude-sonnet-4-6',
   effort: 'high',
 
   /**

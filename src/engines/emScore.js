@@ -13,7 +13,7 @@ const emScore = {
   stage:        'scoring_em',
   completesCase: false,
 
-  model: (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  model: () =>  'claude-sonnet-4-6',
   effort: 'high',
 
   /**

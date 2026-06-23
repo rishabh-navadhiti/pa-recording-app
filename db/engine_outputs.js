@@ -46,6 +46,20 @@ function insertOutput({ caseId, engine, status, jsonPath, summaryJson, eventId }
   }
 }
 
+// Set the pdf_path on an existing engine_outputs row after the PDF is rendered.
+// Keyed on (case_id, engine) — assumes at most one row per engine per case.
+function updateOutputPdf(caseId, engine, pdfPath) {
+  const db = getDb()
+  if (!db || !caseId || !engine || !pdfPath) return
+  try {
+    db.prepare(`
+      UPDATE engine_outputs SET pdf_path = ? WHERE case_id = ? AND engine = ?
+    `).run(pdfPath, caseId, String(engine))
+  } catch (e) {
+    console.error('[db] updateOutputPdf failed:', e.message)
+  }
+}
+
 // List the engine outputs attached to a case, newest first. Used by list/detail
 // views that render the v0.2 engine results from JSON. Returns [] on failure.
 function listOutputsForCase(caseId) {
@@ -64,4 +78,4 @@ function listOutputsForCase(caseId) {
   }
 }
 
-module.exports = { insertOutput, listOutputsForCase }
+module.exports = { insertOutput, updateOutputPdf, listOutputsForCase }

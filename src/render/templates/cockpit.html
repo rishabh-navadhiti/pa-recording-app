@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clinical Cockpit — Review</title>
+<style>
+/* ============================================================
+   CLINICAL COCKPIT — PRINT / PDF SCROLLER VARIANT
+   Single continuous scroll, fully expanded, print-optimized.
+   Self-contained, offline, CSP-safe. System fonts only.
+   No external requests of any kind.
+   ============================================================ */
+
+:root{
+  --bg:#0d1b2a;
+  --surface:#f4f6f8;
+  --panel:#ffffff;
+  --panel-2:#fbfcfd;
+  --ink:#15212e;
+  --ink-2:#42566a;
+  --ink-3:#73869a;
+  --line:#dde4ea;
+  --line-2:#e9eef2;
+  --accent:#0f6e8c;
+  --accent-deep:#0a4f64;
+  --accent-soft:#e3f0f4;
+
+  --crit:#c0392b;        --crit-bg:#fdecea;  --crit-line:#f3c0ba;
+  --warn:#b87208;        --warn-bg:#fdf3e2;  --warn-line:#f1d8a8;
+  --sugg:#1d6fb8;        --sugg-bg:#eaf2fb;  --sugg-line:#c4dcf2;
+  --opp:#2c8a5a;         --opp-bg:#e7f5ec;   --opp-line:#bfe2cc;
+
+  --good:#2c8a5a;
+  --mid:#b87208;
+  --bad:#c0392b;
+
+  --found:#2c8a5a;       --found-bg:#edf7f0; --found-line:#c9e6d3;
+  --missing:#c0392b;     --missing-bg:#fbeeec; --missing-line:#f0cfc9;
+
+  --shadow:0 1px 2px rgba(13,27,42,.06), 0 4px 14px rgba(13,27,42,.05);
+  --shadow-lg:0 6px 30px rgba(13,27,42,.12);
+  --radius:12px;
+  --radius-sm:8px;
+  --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+html{overflow-x:hidden}
+body{
+  font-family:var(--sans);
+  background:var(--surface);
+  color:var(--ink);
+  font-size:15px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+/* ---------- Header (non-sticky — prints once at top) ---------- */
+.cockpit-header{
+  background:linear-gradient(180deg,#10283c 0%, #0d1b2a 100%);
+  color:#eaf1f6;
+  box-shadow:0 2px 18px rgba(0,0,0,.25);
+}
+.hdr-inner{
+  max-width:1180px;margin:0 auto;padding:14px 20px 18px;
+}
+.hdr-top{
+  display:flex;flex-wrap:wrap;align-items:flex-start;
+  gap:14px 22px;justify-content:space-between;
+}
+.brand{display:flex;align-items:center;gap:11px;min-width:0}
+.brand-mark{
+  width:34px;height:34px;border-radius:9px;flex:0 0 auto;
+  background:linear-gradient(135deg,#2a9fbf,#0f6e8c);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);
+}
+.brand-mark svg{display:block}
+.brand-txt{min-width:0}
+.brand-name{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#cfe2ea}
+.brand-sub{font-size:11px;color:#7e9bac;letter-spacing:.04em;margin-top:1px}
+
+.patient-block{min-width:0;flex:1 1 280px}
+.patient-name{font-size:22px;font-weight:700;line-height:1.15;letter-spacing:-.01em;color:#fff}
+.patient-meta{
+  display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:6px;
+  font-size:12.5px;color:#a9c0cd;
+}
+.patient-meta .pm{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.patient-meta .pm b{color:#dce8ef;font-weight:600}
+.patient-meta .dot{color:#46627a}
+
+.verdict-cluster{display:flex;align-items:center;gap:12px;flex:0 0 auto}
+.verdict-pill{
+  display:flex;flex-direction:column;gap:2px;
+  padding:9px 15px;border-radius:11px;
+  background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.13);
+  min-width:150px;
+}
+.verdict-pill .vp-label{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#8aa6b6}
+.verdict-pill .vp-value{font-size:14.5px;font-weight:700;display:flex;align-items:center;gap:7px}
+.verdict-pill .vp-value .led{width:9px;height:9px;border-radius:50%;flex:0 0 auto;box-shadow:0 0 0 3px rgba(255,255,255,.07)}
+.led.crit{background:var(--crit)}.led.warn{background:#e8a33d}.led.good{background:#3fc07e}
+
+.score-chip{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  width:62px;height:62px;border-radius:50%;flex:0 0 auto;
+  background:conic-gradient(var(--ring-col) calc(var(--ring) * 1%), rgba(255,255,255,.12) 0);
+  position:relative;
+}
+.score-chip::before{
+  content:"";position:absolute;inset:5px;border-radius:50%;
+  background:#0d1b2a;
+}
+.score-chip .sc-num{position:relative;font-size:21px;font-weight:800;line-height:1;color:#fff}
+.score-chip .sc-lbl{position:relative;font-size:8.5px;letter-spacing:.08em;color:#8aa6b6;text-transform:uppercase;margin-top:2px}
+
+/* ---------- Layout — single continuous scroll ---------- */
+.stage{max-width:1180px;margin:0 auto;padding:24px 20px 60px}
+
+.scroll-section{margin:0 0 38px}
+.scroll-section:last-of-type{margin-bottom:0}
+
+.section-head{
+  display:flex;align-items:baseline;gap:11px;margin:4px 0 16px;
+}
+.section-head h2{font-size:16px;font-weight:700;letter-spacing:-.01em;margin:0}
+.section-head .sh-sub{font-size:12.5px;color:var(--ink-3)}
+.eyebrow{
+  font-size:11px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 3px;
+}
+
+.section-rule{
+  border:0;border-top:1px solid var(--line);
+  margin:0 0 30px;
+}
+
+/* ---------- Cards ---------- */
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);
+}
+
+/* ---------- OVERVIEW ---------- */
+.ov-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:18px;align-items:start}
+.ov-score-card{padding:22px 24px;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+.ring-wrap{flex:0 0 auto;position:relative;width:138px;height:138px}
+.ring-center{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center;
+}
+.ring-center .rc-num{font-size:42px;font-weight:800;line-height:1;letter-spacing:-.02em}
+.ring-center .rc-of{font-size:13px;color:var(--ink-3);font-weight:600;margin-top:1px}
+.ring-center .rc-lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-top:5px}
+.ov-score-meta{flex:1 1 200px;min-width:180px}
+.ov-score-meta h3{margin:0 0 3px;font-size:15px;font-weight:700}
+.ov-score-meta p{margin:0;font-size:13px;color:var(--ink-2);line-height:1.5}
+
+.subscores{display:flex;flex-direction:column;gap:13px;margin-top:18px}
+.subscore .ss-top{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;margin-bottom:5px}
+.subscore .ss-name{font-weight:600;color:var(--ink)}
+.subscore .ss-val{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink-2)}
+.bar{height:8px;border-radius:6px;background:var(--line-2);overflow:hidden}
+.bar > span{display:block;height:100%;border-radius:6px}
+
+.ov-status-stack{display:flex;flex-direction:column;gap:14px}
+.status-row{
+  display:flex;align-items:center;gap:13px;padding:14px 16px;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);
+}
+.status-row .sr-ic{
+  width:38px;height:38px;border-radius:10px;flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;
+}
+.status-row .sr-body{flex:1 1 auto;min-width:0}
+.status-row .sr-label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.status-row .sr-value{font-size:15.5px;font-weight:700;margin-top:1px;display:flex;align-items:center;gap:8px}
+.status-row .sr-note{font-size:12px;color:var(--ink-3);margin-top:2px}
+
+.flag-badges{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:0}
+.flag-badge{
+  border-radius:var(--radius-sm);padding:13px 10px;text-align:center;
+  border:1px solid;background:var(--panel);
+}
+.flag-badge .fb-num{font-size:28px;font-weight:800;line-height:1}
+.flag-badge .fb-lbl{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;margin-top:4px}
+.fb-crit{border-color:var(--crit-line);background:var(--crit-bg)}.fb-crit .fb-num,.fb-crit .fb-lbl{color:var(--crit)}
+.fb-warn{border-color:var(--warn-line);background:var(--warn-bg)}.fb-warn .fb-num,.fb-warn .fb-lbl{color:var(--warn)}
+.fb-sugg{border-color:var(--sugg-line);background:var(--sugg-bg)}.fb-sugg .fb-num,.fb-sugg .fb-lbl{color:var(--sugg)}
+.fb-opp{border-color:var(--opp-line);background:var(--opp-bg)}.fb-opp .fb-num,.fb-opp .fb-lbl{color:var(--opp)}
+.fb-opp.muted{opacity:.5}
+
+.em-snapshot{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:0;
+  margin-top:0;overflow:hidden;
+}
+.em-snapshot .ems{padding:18px 18px;border-right:1px solid var(--line-2)}
+.em-snapshot .ems:last-child{border-right:0}
+.ems .ems-lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.ems .ems-big{font-size:24px;font-weight:800;letter-spacing:-.01em;margin-top:5px;line-height:1.1}
+.ems .ems-sub{font-size:12px;color:var(--ink-2);margin-top:3px}
+.code-strike{color:var(--ink-3);text-decoration:line-through;font-weight:600;font-size:18px}
+
+.callout{
+  display:flex;gap:13px;padding:15px 17px;border-radius:var(--radius);
+  border:1px solid;margin-top:0;align-items:flex-start;
+}
+.callout .co-ic{flex:0 0 auto;margin-top:1px}
+.callout .co-body{font-size:13.5px;line-height:1.55}
+.callout .co-body b{font-weight:700}
+.callout.alert{background:var(--warn-bg);border-color:var(--warn-line);color:#6b4503}
+.callout.alert b{color:var(--warn)}
+
+/* ---------- CDI ---------- */
+.flag-list{display:flex;flex-direction:column;gap:16px}
+.flag-card{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);overflow:hidden;border-left:5px solid var(--fc-col,#999);
+}
+.fc-head{display:flex;gap:14px;padding:16px 18px 14px;align-items:flex-start}
+.fc-sev{
+  flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding-top:2px;width:64px;
+}
+.sev-tag{
+  font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;
+  padding:4px 0;width:100%;text-align:center;border-radius:6px;color:#fff;
+}
+.sev-crit{background:var(--crit)} .sev-warn{background:var(--warn)}
+.sev-sugg{background:var(--sugg)} .sev-opp{background:var(--opp)}
+.fc-conf{font-size:10px;color:var(--ink-3);font-weight:600;text-align:center;line-height:1.3}
+.fc-conf b{font-size:13px;color:var(--ink);display:block;font-weight:800}
+.fc-headmain{flex:1 1 auto;min-width:0}
+.fc-cat{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+.fc-title{font-size:16.5px;font-weight:700;margin:2px 0 0;letter-spacing:-.01em;line-height:1.25}
+.fc-id{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-top:4px}
+
+.fc-action{
+  margin:0 18px 14px;padding:13px 15px;border-radius:var(--radius-sm);
+  background:var(--accent-soft);border:1px solid #cce4ec;
+  display:flex;gap:11px;align-items:flex-start;
+}
+.fc-action .fa-ic{flex:0 0 auto;color:var(--accent-deep);margin-top:1px}
+.fc-action .fa-txt{font-size:13.5px;line-height:1.5;color:#0a3d4d}
+.fc-action .fa-txt .fa-kicker{font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--accent);display:block;margin-bottom:3px}
+
+.fc-body{padding:0 18px;font-size:13.5px;line-height:1.62;color:var(--ink-2)}
+.fc-meta{
+  display:flex;flex-wrap:wrap;gap:8px 22px;padding:12px 18px 0;font-size:12px;color:var(--ink-3);
+}
+.fc-meta .meta-item{display:flex;gap:6px;align-items:baseline}
+.fc-meta .meta-item .mi-lbl{font-weight:700;color:var(--ink-2)}
+.fc-meta .meta-item code{font-family:var(--mono);font-size:11.5px;background:var(--line-2);padding:1px 5px;border-radius:4px;color:var(--ink)}
+
+.reimb{
+  margin:12px 18px 0;padding:11px 14px;border-radius:var(--radius-sm);
+  background:#fff7ed;border:1px dashed #e8c98c;font-size:12.5px;line-height:1.5;color:#7a4e0a;
+}
+.reimb b{font-weight:700;color:#92580a}
+
+.evidence-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 18px 0}
+.evbox{border-radius:var(--radius-sm);border:1px solid;padding:11px 13px}
+.evbox.found{background:var(--found-bg);border-color:var(--found-line)}
+.evbox.missing{background:var(--missing-bg);border-color:var(--missing-line)}
+.evbox .ev-head{font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.evbox.found .ev-head{color:var(--found)}
+.evbox.missing .ev-head{color:var(--missing)}
+.evbox ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+.evbox li{font-size:12.5px;line-height:1.45;padding-left:18px;position:relative;color:var(--ink-2)}
+.evbox.found li::before{content:"✓";position:absolute;left:0;top:0;color:var(--found);font-weight:800}
+.evbox.missing li::before{content:"–";position:absolute;left:1px;top:-1px;color:var(--missing);font-weight:800;font-size:15px}
+
+.codechips{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px 0}
+.codechip{
+  display:inline-flex;flex-direction:column;gap:1px;
+  border:1px solid var(--accent-soft);background:var(--panel-2);
+  border-radius:8px;padding:7px 11px;max-width:100%;
+}
+.codechip .cc-code{font-family:var(--mono);font-weight:800;font-size:13px;color:var(--accent-deep)}
+.codechip .cc-desc{font-size:11.5px;color:var(--ink-3);line-height:1.35}
+.codechip.add{border-color:var(--opp-line);background:var(--opp-bg)}
+.codechip.add .cc-code{color:var(--opp)}
+
+.pquery{
+  margin:14px 18px 0;border:1px solid #d6c7e8;background:#f7f2fc;border-radius:var(--radius-sm);
+  padding:13px 15px;
+}
+.pquery .pq-head{
+  font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#7341a8;
+  display:flex;align-items:center;gap:7px;margin-bottom:7px;
+}
+.pquery .pq-type{font-size:10px;background:#e7dbf5;color:#5e3494;padding:2px 8px;border-radius:20px;letter-spacing:.04em}
+.pquery .pq-q{font-size:13px;line-height:1.5;color:#3d2659;font-weight:600;margin-bottom:9px}
+.pquery .pq-sub{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#8a6cb0;margin:8px 0 5px}
+.pquery .pq-list{margin:0;padding-left:18px;font-size:12.5px;line-height:1.5;color:#4a3463}
+.pquery .pq-opts{display:flex;flex-direction:column;gap:5px;margin-top:3px}
+.pquery .pq-opt{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:#3d2659;background:#fff;border:1px solid #e2d4f0;border-radius:6px;padding:6px 10px}
+.pquery .pq-opt .pq-bullet{width:13px;height:13px;border-radius:50%;border:2px solid #b196d6;flex:0 0 auto;margin-top:2px}
+
+.fc-foot{padding:0 18px 18px;margin-top:4px}
+
+.gref{
+  margin:12px 18px 0;font-size:11.5px;color:var(--ink-3);line-height:1.45;
+  display:flex;gap:7px;align-items:flex-start;
+}
+.gref .gr-ic{flex:0 0 auto;margin-top:2px;opacity:.6}
+
+/* code_validation table */
+.codeval-card{padding:0;overflow:hidden;margin-top:18px}
+.codeval-head{padding:16px 18px 4px}
+.codeval-head h3{margin:0;font-size:15px;font-weight:700}
+.codeval-head p{margin:3px 0 0;font-size:12.5px;color:var(--ink-3)}
+.tablescroll{overflow-x:auto;-webkit-overflow-scrolling:touch;padding:14px 18px 18px}
+table.codeval{width:100%;border-collapse:collapse;font-size:12.5px;min-width:520px}
+table.codeval th{
+  text-align:left;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700;padding:8px 12px;border-bottom:2px solid var(--line);
+}
+table.codeval td{padding:9px 12px;border-bottom:1px solid var(--line-2);vertical-align:top;color:var(--ink-2)}
+table.codeval tr:last-child td{border-bottom:0}
+table.codeval code{font-family:var(--mono);font-weight:700;color:var(--ink);background:var(--line-2);padding:2px 6px;border-radius:4px}
+.cv-status{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:11.5px;white-space:nowrap}
+.cv-status.ok{color:var(--good)}
+.cv-status.miss{color:var(--missing)}
+.cv-status .pip{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.cv-status.ok .pip{background:var(--good)}
+.cv-status.miss .pip{background:var(--missing)}
+.cv-ref{font-family:var(--mono);font-size:11px;color:var(--accent)}
+
+/* ---------- E/M ---------- */
+.em-headline{
+  display:flex;gap:13px;padding:18px 20px;align-items:flex-start;margin-bottom:18px;
+  background:linear-gradient(180deg,#fff,var(--panel-2));
+}
+.em-headline .eh-ic{flex:0 0 auto;margin-top:2px}
+.em-headline .eh-txt{font-size:14px;line-height:1.6;color:var(--ink-2)}
+.em-headline .eh-txt b{color:var(--ink);font-weight:700}
+
+.em-verdict-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px}
+.em-vcard{padding:16px 18px;text-align:left}
+.em-vcard .evc-lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+.em-vcard .evc-val{font-size:26px;font-weight:800;letter-spacing:-.01em;margin-top:6px;line-height:1.05}
+.em-vcard .evc-note{font-size:12px;color:var(--ink-2);margin-top:5px;line-height:1.4}
+.cap-pill{display:inline-block;font-size:15px;font-weight:800;padding:3px 12px;border-radius:20px;text-transform:capitalize}
+.cap-pill.moderate{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line)}
+.cap-pill.high{background:var(--crit-bg);color:var(--crit);border:1px solid var(--crit-line)}
+.cap-pill.low{background:var(--sugg-bg);color:var(--sugg);border:1px solid var(--sugg-line)}
+.cap-pill.straightforward{background:var(--opp-bg);color:var(--opp);border:1px solid var(--opp-line)}
+
+.downcode-banner{
+  display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+  padding:16px 20px;border-radius:var(--radius);margin-bottom:18px;
+  background:var(--warn-bg);border:1px solid var(--warn-line);
+}
+.dc-codes{display:flex;align-items:center;gap:12px;flex:0 0 auto}
+.dc-code{display:flex;flex-direction:column;align-items:center;line-height:1.1}
+.dc-code .dcc-num{font-size:24px;font-weight:800;font-family:var(--mono)}
+.dc-code .dcc-lbl{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;margin-top:3px}
+.dc-code.billed .dcc-num{color:var(--ink-3);text-decoration:line-through}
+.dc-code.billed .dcc-lbl{color:var(--ink-3)}
+.dc-code.supported .dcc-num{color:var(--warn)}
+.dc-code.supported .dcc-lbl{color:var(--warn)}
+.dc-arrow{color:var(--warn);flex:0 0 auto}
+.dc-text{flex:1 1 220px;font-size:13px;line-height:1.55;color:#6b4503}
+.dc-text b{color:var(--warn);font-weight:700}
+
+.mdm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}
+.mdm-el{padding:0;overflow:hidden;display:flex;flex-direction:column}
+.mdm-el .me-top{padding:15px 16px 12px;border-bottom:1px solid var(--line-2)}
+.mdm-el .me-name{font-size:13px;font-weight:700;letter-spacing:-.01em}
+.mdm-el .me-score{
+  display:inline-flex;align-items:center;gap:6px;margin-top:8px;
+  font-size:12px;font-weight:800;text-transform:capitalize;padding:4px 11px;border-radius:20px;
+}
+.score-straightforward{background:var(--opp-bg);color:var(--opp);border:1px solid var(--opp-line)}
+.score-low{background:var(--sugg-bg);color:var(--sugg);border:1px solid var(--sugg-line)}
+.score-moderate{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line)}
+.score-high{background:var(--crit-bg);color:var(--crit);border:1px solid var(--crit-line)}
+.mdm-el .me-drivers{padding:13px 16px;flex:1 1 auto}
+.mdm-el .me-drivers-lbl{font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
+.mdm-el .me-drivers ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:9px}
+.mdm-el .me-drivers li{font-size:12.5px;line-height:1.5;color:var(--ink-2);padding-left:16px;position:relative}
+.mdm-el .me-drivers li::before{content:"";position:absolute;left:0;top:7px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.mdm-el .me-gap{
+  margin:0 16px 14px;padding:11px 13px;border-radius:8px;
+  background:var(--missing-bg);border:1px solid var(--missing-line);font-size:12px;line-height:1.5;color:#7a2018;
+}
+.mdm-el .me-gap .meg-lbl{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--missing);display:flex;align-items:center;gap:6px;margin-bottom:5px}
+.mdm-el .me-gap.none{background:var(--found-bg);border-color:var(--found-line);color:var(--found)}
+.mdm-el .me-gap.none .meg-lbl{color:var(--found)}
+
+.em-narrative-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}
+.narr-card{padding:17px 19px}
+.narr-card h3{font-size:13px;font-weight:700;margin:0 0 9px;display:flex;align-items:center;gap:8px;letter-spacing:.01em}
+.narr-card h3 .nc-ic{flex:0 0 auto}
+.narr-card p{font-size:13px;line-height:1.62;color:var(--ink-2);margin:0}
+.narr-card.upgrade{border-left:4px solid var(--accent)}
+.narr-card.basis{border-left:4px solid var(--good)}
+
+.time-alt{
+  display:flex;gap:14px;align-items:center;padding:15px 19px;
+}
+.time-alt .ta-ic{flex:0 0 auto;color:var(--ink-3)}
+.time-alt .ta-body{flex:1 1 auto}
+.time-alt .ta-lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+.time-alt .ta-val{font-size:14px;font-weight:600;color:var(--ink-2);margin-top:3px}
+.empty-inline{color:var(--ink-3);font-style:italic;font-weight:500}
+
+/* ---------- PATIENT ---------- */
+.pt-banner{
+  padding:22px 24px;border-radius:var(--radius);margin-bottom:20px;
+  background:linear-gradient(135deg,#0f6e8c,#0a4f64);color:#eaf6f9;
+  box-shadow:var(--shadow-lg);
+}
+.pt-banner .ptb-eyebrow{font-size:11px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:#a6dbe9;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+.pt-banner .ptb-headline{font-size:19px;line-height:1.45;font-weight:600;letter-spacing:-.005em}
+.pt-banner .ptb-reading{display:inline-flex;align-items:center;gap:6px;margin-top:14px;font-size:11.5px;background:rgba(255,255,255,.13);padding:4px 11px;border-radius:20px;color:#d3edf3;text-transform:capitalize}
+
+.pt-sections{display:flex;flex-direction:column;gap:14px}
+.pt-sec{display:flex;gap:16px;padding:18px 20px}
+.pt-sec .ps-ic{
+  flex:0 0 auto;width:42px;height:42px;border-radius:11px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--accent-soft);color:var(--accent-deep);
+}
+.pt-sec .ps-body{flex:1 1 auto;min-width:0}
+.pt-sec .ps-title{font-size:14px;font-weight:700;margin:2px 0 6px;color:var(--ink)}
+.pt-sec .ps-text{font-size:14px;line-height:1.68;color:var(--ink-2)}
+.pt-sec.help{border-left:4px solid var(--warn)}
+.pt-sec.help .ps-ic{background:var(--warn-bg);color:var(--warn)}
+
+/* ---------- footer ---------- */
+.cockpit-foot{
+  max-width:1180px;margin:0 auto;padding:24px 20px 0;
+  border-top:1px solid var(--line);margin-top:30px;
+  font-size:11.5px;color:var(--ink-3);line-height:1.6;
+}
+.cockpit-foot .cf-versions{display:flex;flex-wrap:wrap;gap:6px 20px;margin-top:8px}
+.cockpit-foot .cf-versions span b{color:var(--ink-2);font-weight:600}
+.cockpit-foot .cf-disclaim{margin-top:12px;font-style:italic}
+
+/* ---------- responsive (screen) ---------- */
+@media (max-width:880px){
+  .ov-grid{grid-template-columns:1fr}
+  .em-narrative-grid{grid-template-columns:1fr}
+  .mdm-grid{grid-template-columns:1fr}
+  .evidence-cols{grid-template-columns:1fr}
+  .em-snapshot{grid-template-columns:1fr}
+  .em-snapshot .ems{border-right:0;border-bottom:1px solid var(--line-2)}
+  .em-snapshot .ems:last-child{border-bottom:0}
+}
+@media (max-width:560px){
+  body{font-size:14.5px}
+  .patient-name{font-size:19px}
+  .verdict-cluster{width:100%;flex-wrap:wrap}
+  .verdict-pill{flex:1 1 130px}
+  .flag-badges{grid-template-columns:repeat(2,1fr)}
+  .fc-head{flex-direction:column;gap:10px}
+  .fc-sev{flex-direction:row;width:100%;justify-content:flex-start;gap:14px;align-items:center}
+  .sev-tag{width:auto;padding:4px 12px}
+  .ring-wrap{margin:0 auto}
+  .stage{padding:18px 14px 50px}
+  .hdr-inner{padding:12px 14px 14px}
+}
+
+/* ============================================================
+   PRINT / PDF  —  Electron printToPDF, Letter, color-exact.
+   ============================================================ */
+@media print{
+  @page{
+    size:Letter;
+    margin:14mm 12mm;
+  }
+
+  *{
+    -webkit-print-color-adjust:exact !important;
+    print-color-adjust:exact !important;
+    color-adjust:exact !important;
+  }
+
+  html,body{
+    background:#fff !important;
+    overflow:visible !important;
+  }
+  body{font-size:11pt}
+
+  .cockpit-header{box-shadow:none}
+  .hdr-inner,.stage,.cockpit-foot{max-width:none;margin:0;padding-left:0;padding-right:0}
+  .stage{padding-top:16px;padding-bottom:0}
+
+  .card,.status-row,.flag-card,.pt-banner{box-shadow:none !important}
+
+  .scroll-section{
+    page-break-inside:avoid;
+    break-inside:avoid;
+    margin-bottom:22px;
+  }
+  #section-cdi,#section-patient{
+    page-break-inside:auto;
+    break-inside:auto;
+  }
+  .flag-card,
+  .mdm-el,
+  .em-vcard,
+  .narr-card,
+  .status-row,
+  .pt-sec,
+  .codeval-card,
+  .em-headline,
+  .downcode-banner,
+  .ov-score-card,
+  .time-alt,
+  .em-snapshot,
+  .pt-banner,
+  .callout{
+    page-break-inside:avoid;
+    break-inside:avoid;
+  }
+  .section-head,h2,h3{page-break-after:avoid;break-after:avoid}
+
+  .tablescroll{overflow:visible !important;padding:10px 0 12px}
+  table.codeval{min-width:0 !important;width:100% !important;table-layout:fixed}
+  table.codeval td,table.codeval th{
+    white-space:normal !important;
+    word-break:break-word;
+    overflow-wrap:anywhere;
+  }
+
+  .flag-card,.mdm-el,.card,.em-snapshot,.codeval-card{overflow:visible !important}
+  .section-rule{margin-bottom:18px}
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     DATA-INJECTION SEAM
+     ------------------------------------------------------------
+     The app injects PA_DATA here as a JSON blob. The render layer
+     below reads ONLY from this element — it is completely
+     case-agnostic. Swap the JSON and the page re-renders for any
+     case.
+
+     Injection: pdf.js replaces the sentinel __PA_DATA__ with
+     JSON.stringify({ meta, cdi, em, patient_summary }).
+     ============================================================ -->
+<script type="application/json" id="pa-data">__PA_DATA__</script>
+
+<!-- ============================================================
+     RENDER LAYER — reads ONLY from PA_DATA via #pa-data.
+     Single continuous scroll: header → overview → CDI → E/M →
+     patient → code validation → footer. No tabs, fully expanded.
+     ============================================================ -->
+
+<header class="cockpit-header">
+  <div class="hdr-inner">
+    <div class="hdr-top">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M12 3v18M3 12h18" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="brand-txt">
+          <div class="brand-name">Clinical Cockpit</div>
+          <div class="brand-sub">CDI · E/M · Patient scribe surface</div>
+        </div>
+      </div>
+
+      <div class="patient-block">
+        <div class="patient-name" id="hdr-patient">—</div>
+        <div class="patient-meta" id="hdr-meta"></div>
+      </div>
+
+      <div class="verdict-cluster" id="hdr-verdict"></div>
+    </div>
+  </div>
+</header>
+
+<main class="stage">
+  <section class="scroll-section" id="section-overview"></section>
+  <hr class="section-rule">
+  <section class="scroll-section" id="section-cdi"></section>
+  <hr class="section-rule">
+  <section class="scroll-section" id="section-em"></section>
+  <hr class="section-rule">
+  <section class="scroll-section" id="section-patient"></section>
+  <hr class="section-rule">
+  <section class="scroll-section" id="section-codeval"></section>
+  <footer class="cockpit-foot" id="cockpit-foot"></footer>
+</main>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- read PA_DATA from the JSON script tag ----------
+  var _paEl = document.getElementById("pa-data");
+  var D = {};
+  if (_paEl) { try { D = JSON.parse(_paEl.textContent || "{}"); } catch(_) {} }
+
+  const meta = D.meta || {};
+  const cdi  = D.cdi  || {};
+  const em   = D.em   || {};
+  const ps   = D.patient_summary || {};
+
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  const has = (v) => v !== null && v !== undefined && v !== "";
+  const arr = (v) => Array.isArray(v) ? v : [];
+  const cap = (s) => has(s) ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : "";
+  const titleCase = (s) => has(s) ? String(s).replace(/_/g," ").replace(/\b\w/g, c=>c.toUpperCase()) : "";
+  const $ = (sel,root) => (root||document).querySelector(sel);
+
+  // ---------- color logic ----------
+  function scoreColor(n){
+    if(!has(n)) return "var(--ink-3)";
+    if(n >= 80) return "var(--good)";
+    if(n >= 60) return "var(--mid)";
+    return "var(--bad)";
+  }
+  const SEV = {
+    critical:{cls:"crit", tag:"sev-crit", col:"var(--crit)", label:"Critical"},
+    warning :{cls:"warn", tag:"sev-warn", col:"var(--warn)", label:"Warning"},
+    suggestion:{cls:"sugg", tag:"sev-sugg", col:"var(--sugg)", label:"Suggestion"},
+    opportunity:{cls:"opp", tag:"sev-opp", col:"var(--opp)", label:"Opportunity"}
+  };
+  const SEV_ORDER = {critical:0, warning:1, suggestion:2, opportunity:3};
+
+  const IC = {
+    necessity:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 21s-7-4.5-9.3-9C1 8.5 2.7 4 6.5 4 9 4 12 7 12 7s3-3 5.5-3C21.3 4 23 8.5 21.3 12 19 16.5 12 21 12 21z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+    claim:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 12l2 2 4-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    approval:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M5 12l4 4 10-10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    action:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M13 3L4 14h6l-1 7 9-11h-6l1-7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+    found:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    missing:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 12h8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+    query:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9.5 9a2.5 2.5 0 1 1 3.2 2.4c-.8.3-1.2.9-1.2 1.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="11.5" cy="17" r="1.1" fill="currentColor"/><rect x="3" y="3" width="18" height="18" rx="4" stroke="currentColor" stroke-width="1.6"/></svg>',
+    book:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2V5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    warn:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3l9.5 16.5H2.5L12 3z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9.5v4.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></svg>',
+    arrow:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M5 12h13m0 0l-5-5m5 5l-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    clock:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    up:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 19V6m0 0l-6 6m6-6l6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    basis:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    gap:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 3l9.5 16.5H2.5L12 3z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
+    okmini:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  };
+  const PT_IC = {
+    going:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 21s-7-4.5-9.3-9C1 8.5 2.7 4 6.5 4 9 4 12 7 12 7s3-3 5.5-3C21.3 4 23 8.5 21.3 12 19 16.5 12 21 12 21z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+    plan:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M9 5h7a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="1.6"/><path d="M9 4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V6H9V4.5z" stroke="currentColor" stroke-width="1.6"/><path d="M9 11h6M9 15h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    meds:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="9" width="13" height="7" rx="3.5" transform="rotate(45 9.5 12.5)" stroke="currentColor" stroke-width="1.6"/><path d="M7.5 8.5l5 5" stroke="currentColor" stroke-width="1.6"/></svg>',
+    follow:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="16" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M4 9h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M9 14l2 2 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    help:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 3l9.5 16.5H2.5L12 3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9.5v4.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></svg>'
+  };
+
+  // =========================================================
+  // HEADER
+  // =========================================================
+  function renderHeader(){
+    const sum = cdi.summary || {};
+    $("#hdr-patient").textContent = meta.patient || (cdi.meta && cdi.meta.patient) || "Unknown patient";
+
+    const metaParts = [];
+    if(has(meta.doctor)) metaParts.push('<span class="pm"><b>'+esc(meta.doctor)+'</b></span>');
+    if(has(meta.specialty)) metaParts.push('<span class="pm">'+esc(titleCase(meta.specialty))+'</span>');
+    if(has(meta.date_of_service)) metaParts.push('<span class="pm">DOS <b>'+esc(meta.date_of_service)+'</b></span>');
+    if(has(meta.mode)) metaParts.push('<span class="pm">'+esc(cap(meta.mode))+' mode</span>');
+    $("#hdr-meta").innerHTML = metaParts.join('<span class="dot">·</span>');
+
+    const cdr = sum.claim_defense_readiness;
+    const ledClass = (cdr === "ready" || cdr === "defensible") ? "good"
+                   : (cdr === "hold_for_review") ? "warn" : "crit";
+    const verdictTxt = has(cdr) ? titleCase(cdr) : "—";
+
+    const score = sum.overall_quality_score;
+    const ringCol = scoreColor(score);
+    const ringPct = has(score) ? Math.max(0, Math.min(100, score)) : 0;
+
+    $("#hdr-verdict").innerHTML =
+      '<div class="verdict-pill">'+
+        '<span class="vp-label">Claim defense</span>'+
+        '<span class="vp-value"><span class="led '+ledClass+'"></span>'+esc(verdictTxt)+'</span>'+
+      '</div>'+
+      '<div class="score-chip" style="--ring:'+ringPct+';--ring-col:'+ringCol+'">'+
+        '<span class="sc-num">'+(has(score)?esc(score):"—")+'</span>'+
+        '<span class="sc-lbl">Quality</span>'+
+      '</div>';
+  }
+
+  // =========================================================
+  // OVERVIEW  (section a)
+  // =========================================================
+  function renderOverview(){
+    const sum = cdi.summary || {};
+    const fc = sum.flag_counts || {};
+    const score = sum.overall_quality_score;
+    const ringCol = scoreColor(score);
+    const pct = has(score) ? Math.max(0,Math.min(100,score)) : 0;
+    const R = 60, C = 2*Math.PI*R;
+    const dash = (pct/100)*C;
+
+    const verdictWord = (score >= 80) ? "Strong"
+      : (score >= 60) ? "Needs attention" : "At risk";
+
+    const subs = [
+      {name:"Specificity", val:sum.specificity_subscore},
+      {name:"Evidence", val:sum.evidence_subscore},
+      {name:"Completeness", val:sum.completeness_subscore}
+    ];
+    const subHtml = '<div class="subscores">'+subs.map(function(s){
+      const v = has(s.val)?s.val:0;
+      return '<div class="subscore">'+
+        '<div class="ss-top"><span class="ss-name">'+esc(s.name)+'</span><span class="ss-val">'+(has(s.val)?esc(s.val):"—")+'<span style="color:var(--ink-3);font-weight:500">/100</span></span></div>'+
+        '<div class="bar"><span style="width:'+v+'%;background:'+scoreColor(s.val)+'"></span></div>'+
+      '</div>';
+    }).join("")+'</div>';
+
+    const badges = [
+      {k:"critical", cls:"fb-crit", label:"Critical", n:fc.critical},
+      {k:"warning",  cls:"fb-warn", label:"Warning",  n:fc.warning},
+      {k:"suggestion",cls:"fb-sugg",label:"Suggestion",n:fc.suggestion},
+      {k:"opportunity",cls:"fb-opp",label:"Opportunity",n:fc.opportunity}
+    ];
+    const badgeHtml = badges.map(function(b){
+      const n = has(b.n)?b.n:0;
+      const muted = (n===0) ? " muted" : "";
+      return '<div class="flag-badge '+b.cls+muted+'">'+
+        '<div class="fb-num">'+esc(n)+'</div><div class="fb-lbl">'+esc(b.label)+'</div></div>';
+    }).join("");
+
+    const mn = sum.medical_necessity_status;
+    const mnColor = (mn==="strong")?"var(--good)":(mn==="moderate")?"var(--mid)":"var(--bad)";
+    const mnBg = (mn==="strong")?"var(--found-bg)":(mn==="moderate")?"var(--warn-bg)":"var(--missing-bg)";
+    const cdr = sum.claim_defense_readiness;
+    const cdrColor = (cdr==="ready"||cdr==="defensible")?"var(--good)":(cdr==="hold_for_review")?"var(--mid)":"var(--bad)";
+    const cdrBg = (cdr==="ready"||cdr==="defensible")?"var(--found-bg)":(cdr==="hold_for_review")?"var(--warn-bg)":"var(--missing-bg)";
+    const appr = sum.clinician_approval_required;
+    const apprColor = appr ? "var(--mid)" : "var(--good)";
+    const apprBg = appr ? "var(--warn-bg)" : "var(--found-bg)";
+
+    const statusHtml =
+      '<div class="status-row">'+
+        '<div class="sr-ic" style="background:'+mnBg+';color:'+mnColor+'">'+IC.necessity+'</div>'+
+        '<div class="sr-body">'+
+          '<div class="sr-label">Medical necessity</div>'+
+          '<div class="sr-value" style="color:'+mnColor+'">'+(has(mn)?esc(titleCase(mn)):"—")+'</div>'+
+          '<div class="sr-note">Strength of the documented necessity narrative</div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="status-row">'+
+        '<div class="sr-ic" style="background:'+cdrBg+';color:'+cdrColor+'">'+IC.claim+'</div>'+
+        '<div class="sr-body">'+
+          '<div class="sr-label">Claim defense readiness</div>'+
+          '<div class="sr-value" style="color:'+cdrColor+'">'+(has(cdr)?esc(titleCase(cdr)):"—")+'</div>'+
+          '<div class="sr-note">Readiness to defend this claim against payer review</div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="status-row">'+
+        '<div class="sr-ic" style="background:'+apprBg+';color:'+apprColor+'">'+IC.approval+'</div>'+
+        '<div class="sr-body">'+
+          '<div class="sr-label">Clinician approval</div>'+
+          '<div class="sr-value" style="color:'+apprColor+'">'+(appr===true?"Required":appr===false?"Not required":"—")+'</div>'+
+          '<div class="sr-note">'+(appr===true?"Sign-off needed before claim submission":"No outstanding sign-off")+'</div>'+
+        '</div>'+
+      '</div>';
+
+    const predicted = em.predicted_em_level;
+    const dcr = em.downcode_risk;
+    const dcrColor = (dcr==="high")?"var(--bad)":(dcr==="moderate")?"var(--mid)":"var(--good)";
+    const necLine = has(mn)
+      ? 'Medical-necessity status is <b>'+esc(titleCase(mn))+'</b> — supporting documentation should be strengthened before submission.'
+      : "";
+
+    // Billing placeholder cell: only render when em.billed_em_code is present.
+    const billedCode = em.billed_em_code;
+    const billingCell = has(billedCode)
+      ? '<div class="ems">'+
+          '<div class="ems-lbl">Billing placeholder</div>'+
+          '<div class="ems-big"><span class="code-strike">'+esc(billedCode)+'</span></div>'+
+          '<div class="ems-sub">Note targets a level above documented MDM</div>'+
+        '</div>'
+      : '';
+
+    const emSnap =
+      '<div class="card em-snapshot">'+
+        '<div class="ems">'+
+          '<div class="ems-lbl">Predicted E/M level</div>'+
+          '<div class="ems-big" style="color:var(--accent-deep)">'+(has(predicted)?esc(predicted):"—")+'</div>'+
+          '<div class="ems-sub">'+(has(em.predicted_complexity)?esc(cap(em.predicted_complexity))+" MDM, "+esc(em.visit_type||"")+" visit":"")+'</div>'+
+        '</div>'+
+        billingCell+
+        '<div class="ems">'+
+          '<div class="ems-lbl">Downcode risk</div>'+
+          '<div class="ems-big" style="color:'+dcrColor+'">'+(has(dcr)?esc(cap(dcr)):"—")+'</div>'+
+          '<div class="ems-sub">Exposure if billed as placed</div>'+
+        '</div>'+
+      '</div>';
+
+    const head =
+      '<div class="section-head"><div>'+
+        '<p class="eyebrow">Verdict &amp; overview</p>'+
+        '<h2 style="display:inline-block">Encounter at a glance</h2>'+
+      '</div></div>';
+
+    const html = head +
+      '<div class="ov-grid">'+
+        '<div>'+
+          '<div class="card ov-score-card">'+
+            '<div class="ring-wrap" aria-label="Overall quality score '+(has(score)?score:"unknown")+' of 100">'+
+              '<svg width="138" height="138" viewBox="0 0 138 138">'+
+                '<circle cx="69" cy="69" r="'+R+'" fill="none" stroke="var(--line-2)" stroke-width="13"/>'+
+                '<circle cx="69" cy="69" r="'+R+'" fill="none" stroke="'+ringCol+'" stroke-width="13" stroke-linecap="round" stroke-dasharray="'+dash.toFixed(1)+' '+C.toFixed(1)+'" transform="rotate(-90 69 69)"/>'+
+              '</svg>'+
+              '<div class="ring-center">'+
+                '<div class="rc-num" style="color:'+ringCol+'">'+(has(score)?esc(score):"—")+'</div>'+
+                '<div class="rc-of">/ 100</div>'+
+                '<div class="rc-lbl">Quality</div>'+
+              '</div>'+
+            '</div>'+
+            '<div class="ov-score-meta">'+
+              '<p class="eyebrow">Overall documentation quality</p>'+
+              '<h3 style="color:'+ringCol+'">'+esc(verdictWord)+'</h3>'+
+              '<p>The composite CDI score across specificity, evidence, and completeness for this encounter.</p>'+
+              subHtml+
+            '</div>'+
+          '</div>'+
+
+          '<div style="margin-top:18px">'+
+            '<p class="eyebrow">Flag counts</p>'+
+            '<div class="flag-badges">'+badgeHtml+'</div>'+
+          '</div>'+
+
+          '<div style="margin-top:18px">'+
+            '<p class="eyebrow">E/M at a glance</p>'+
+            emSnap+
+          '</div>'+
+        '</div>'+
+
+        '<div class="ov-status-stack">'+
+          '<p class="eyebrow" style="margin-bottom:2px">Claim posture</p>'+
+          statusHtml+
+          (necLine ? '<div class="callout alert"><span class="co-ic" style="color:var(--warn)">'+IC.warn+'</span><span class="co-body">'+necLine+'</span></div>' : "")+
+        '</div>'+
+      '</div>';
+
+    $("#section-overview").innerHTML = html;
+  }
+
+  // =========================================================
+  // CDI  (section b)  — flags in severity order
+  // =========================================================
+  function renderCDI(){
+    const flags = arr(cdi.flags).slice().sort(function(a,b){
+      const oa = (SEV_ORDER[a.type] != null) ? SEV_ORDER[a.type] : 9;
+      const ob = (SEV_ORDER[b.type] != null) ? SEV_ORDER[b.type] : 9;
+      if(oa!==ob) return oa-ob;
+      return (b.confidence||0)-(a.confidence||0);
+    });
+
+    const cardsHtml = flags.map(renderFlagCard).join("");
+
+    const head =
+      '<div class="section-head"><div>'+
+        '<p class="eyebrow">Clinical documentation integrity</p>'+
+        '<h2 style="display:inline-block">'+flags.length+' flag'+(flags.length===1?"":"s")+' — severity ordered</h2>'+
+      '</div></div>';
+
+    $("#section-cdi").innerHTML = head +
+      '<div class="flag-list">'+(cardsHtml || '<div class="card" style="padding:20px;color:var(--ink-3)">No flags raised.</div>')+'</div>';
+  }
+
+  function renderFlagCard(f){
+    const sev = SEV[f.type] || {cls:"sugg", tag:"sev-sugg", col:"var(--ink-3)", label:cap(f.type||"")};
+    const conf = has(f.confidence) ? '<div class="fc-conf">conf<b>'+esc(f.confidence)+'%</b></div>' : "";
+
+    const actionHtml = has(f.action) ?
+      '<div class="fc-action"><span class="fa-ic">'+IC.action+'</span>'+
+      '<span class="fa-txt"><span class="fa-kicker">Action</span>'+esc(f.action)+'</span></div>' : "";
+
+    const bodyHtml = has(f.body) ? '<div class="fc-body">'+esc(f.body)+'</div>' : "";
+
+    const metaBits = [];
+    if(has(f.current_code)) metaBits.push('<span class="meta-item"><span class="mi-lbl">Current code</span><code>'+esc(f.current_code)+'</code></span>');
+    const metaHtml = metaBits.length ? '<div class="fc-meta">'+metaBits.join("")+'</div>' : "";
+
+    const reimbHtml = has(f.reimbursement_impact) ?
+      '<div class="reimb"><b>Reimbursement impact:</b> '+esc(f.reimbursement_impact)+'</div>' : "";
+
+    const ef = arr(f.evidence_found), emiss = arr(f.evidence_missing);
+    let evHtml = "";
+    if(ef.length || emiss.length){
+      evHtml = '<div class="evidence-cols">'+
+        '<div class="evbox found"><div class="ev-head">'+IC.found+' Evidence found</div>'+
+          '<ul>'+(ef.length ? ef.map(function(e){return '<li>'+esc(e)+'</li>';}).join("") : '<li style="opacity:.6;list-style:none;padding-left:0">— none recorded</li>')+'</ul></div>'+
+        '<div class="evbox missing"><div class="ev-head">'+IC.missing+' Evidence missing</div>'+
+          '<ul>'+(emiss.length ? emiss.map(function(e){return '<li>'+esc(e)+'</li>';}).join("") : '<li style="opacity:.6;list-style:none;padding-left:0">— none</li>')+'</ul></div>'+
+      '</div>';
+    }
+
+    const sc = arr(f.suggested_codes);
+    const addStyle = (f.type === "critical");
+    const codeHtml = sc.length ? '<div class="codechips">'+
+      sc.map(function(c){return '<span class="codechip '+(addStyle?"add":"")+'">'+
+        '<span class="cc-code">'+esc(c.code)+'</span>'+
+        '<span class="cc-desc">'+esc(c.description)+'</span></span>';}).join("")+
+    '</div>' : "";
+
+    const pq = f.provider_query;
+    let pqHtml = "";
+    if(pq && (has(pq.question) || arr(pq.options).length || arr(pq.clinical_indicators).length)){
+      const ind = arr(pq.clinical_indicators);
+      const opts = arr(pq.options);
+      pqHtml = '<div class="pquery">'+
+        '<div class="pq-head">'+IC.query+' Provider query'+
+          (has(pq.query_type)?'<span class="pq-type">'+esc(titleCase(pq.query_type))+'</span>':"")+'</div>'+
+        (has(pq.question)?'<div class="pq-q">'+esc(pq.question)+'</div>':"")+
+        (ind.length?'<div class="pq-sub">Clinical indicators</div><ul class="pq-list">'+ind.map(function(i){return '<li>'+esc(i)+'</li>';}).join("")+'</ul>':"")+
+        (opts.length?'<div class="pq-sub">Options</div><div class="pq-opts">'+opts.map(function(o){return '<div class="pq-opt"><span class="pq-bullet"></span><span>'+esc(o)+'</span></div>';}).join("")+'</div>':"")+
+      '</div>';
+    }
+
+    const grefHtml = has(f.guideline_reference) ?
+      '<div class="gref"><span class="gr-ic">'+IC.book+'</span><span>'+esc(f.guideline_reference)+'</span></div>' : "";
+
+    return '<article class="flag-card" id="'+esc(f.id)+'" style="--fc-col:'+sev.col+'">'+
+      '<div class="fc-head">'+
+        '<div class="fc-sev"><span class="sev-tag '+sev.tag+'">'+esc(sev.label)+'</span>'+conf+'</div>'+
+        '<div class="fc-headmain">'+
+          (has(f.category)?'<div class="fc-cat">'+esc(f.category)+'</div>':"")+
+          '<h3 class="fc-title">'+esc(f.title)+'</h3>'+
+          '<div class="fc-id">'+esc(f.id)+'</div>'+
+        '</div>'+
+      '</div>'+
+      actionHtml + bodyHtml + metaHtml + reimbHtml + codeHtml + evHtml + pqHtml + grefHtml +
+      '<div class="fc-foot"></div>'+
+    '</article>';
+  }
+
+  // =========================================================
+  // CODE VALIDATION  (section e)
+  // =========================================================
+  function renderCodeValidation(){
+    const cv = cdi.code_validation || {};
+    const inNote = arr(cv.codes_in_note);
+    const supported = {}; arr(cv.supported).forEach(function(c){supported[c]=true;});
+    const flagged = {}; arr(cv.flagged).forEach(function(c){flagged[c]=true;});
+    const missing = arr(cv.missing_codes);
+
+    let rows = "";
+    inNote.forEach(function(code){
+      let status, cls;
+      if(flagged[code]){ status="Flagged"; cls="miss"; }
+      else if(supported[code]){ status="Supported"; cls="ok"; }
+      else { status="In note"; cls="ok"; }
+      rows += '<tr><td><code>'+esc(code)+'</code></td>'+
+        '<td><span class="cv-status '+cls+'"><span class="pip"></span>'+esc(status)+'</span></td>'+
+        '<td style="color:var(--ink-3)">In note</td></tr>';
+    });
+    missing.forEach(function(m){
+      rows += '<tr><td><code>'+esc(m.suggested_code)+'</code></td>'+
+        '<td><span class="cv-status miss"><span class="pip"></span>Missing</span></td>'+
+        '<td>'+esc(m.documented_dx)+(has(m.linked_flag_id)?' <span class="cv-ref">'+esc(m.linked_flag_id)+'</span>':"")+'</td></tr>';
+    });
+
+    const supN = arr(cv.supported).length;
+    const flagN = arr(cv.flagged).length;
+    const missN = missing.length;
+
+    const head =
+      '<div class="section-head"><div>'+
+        '<p class="eyebrow">Code validation</p>'+
+        '<h2 style="display:inline-block">ICD-10-CM code check</h2>'+
+      '</div></div>';
+
+    $("#section-codeval").innerHTML = head +
+      '<div class="card codeval-card">'+
+        '<div class="codeval-head"><h3>Code validation</h3>'+
+          '<p>'+inNote.length+' code'+(inNote.length===1?"":"s")+' in note · '+supN+' supported · '+flagN+' flagged · '+missN+' missing</p></div>'+
+        '<div class="tablescroll"><table class="codeval">'+
+          '<thead><tr><th>Code</th><th>Status</th><th>Documented diagnosis / source</th></tr></thead>'+
+          '<tbody>'+(rows || '<tr><td colspan="3" style="color:var(--ink-3)">No codes recorded.</td></tr>')+'</tbody>'+
+        '</table></div>'+
+      '</div>';
+  }
+
+  // =========================================================
+  // E/M MDM  (section c)
+  // =========================================================
+  function renderEM(){
+    const me = em.mdm_elements || {};
+    const dcr = em.downcode_risk;
+    const dcrColor = (dcr==="high")?"var(--bad)":(dcr==="moderate")?"var(--mid)":"var(--good)";
+
+    const headline = has(em.headline) ?
+      '<div class="card em-headline"><span class="eh-ic" style="color:var(--warn)">'+IC.warn+'</span>'+
+      '<div class="eh-txt">'+esc(em.headline)+'</div></div>' : "";
+
+    const vcards =
+      '<div class="em-verdict-grid">'+
+        '<div class="card em-vcard"><div class="evc-lbl">Predicted level</div>'+
+          '<div class="evc-val" style="color:var(--accent-deep)">'+(has(em.predicted_em_level)?esc(em.predicted_em_level):"—")+'</div>'+
+          '<div class="evc-note">'+esc(cap(em.visit_type||""))+' patient'+(em.visit_type_assumed?" (assumed)":"")+'</div></div>'+
+        '<div class="card em-vcard"><div class="evc-lbl">Complexity</div>'+
+          '<div class="evc-val">'+(has(em.predicted_complexity)?'<span class="cap-pill '+esc(em.predicted_complexity)+'">'+esc(cap(em.predicted_complexity))+'</span>':"—")+'</div>'+
+          '<div class="evc-note">Overall MDM determination</div></div>'+
+        '<div class="card em-vcard"><div class="evc-lbl">Downcode risk</div>'+
+          '<div class="evc-val" style="color:'+dcrColor+'">'+(has(dcr)?esc(cap(dcr)):"—")+'</div>'+
+          '<div class="evc-note">If billed above documented MDM</div></div>'+
+      '</div>';
+
+    // Downcode banner: only render when billed_em_code is known and differs from predicted.
+    const billedCode = em.billed_em_code;
+    const downcodeBanner = (has(billedCode) && has(em.predicted_em_level) && billedCode !== em.predicted_em_level)
+      ? '<div class="downcode-banner">'+
+          '<div class="dc-codes">'+
+            '<div class="dc-code billed"><span class="dcc-num">'+esc(billedCode)+'</span><span class="dcc-lbl">Note placeholder</span></div>'+
+            '<span class="dc-arrow">'+IC.arrow+'</span>'+
+            '<div class="dc-code supported"><span class="dcc-num">'+esc(em.predicted_em_level)+'</span><span class="dcc-lbl">Documented</span></div>'+
+          '</div>'+
+          '<div class="dc-text">The note\'s billing placeholder targets <b>'+esc(billedCode)+'</b>, but the documentation as written substantiates only <b>'+esc(em.predicted_em_level)+'</b>. Billing as placed creates <b>recoupment exposure</b> on the level differential.</div>'+
+        '</div>'
+      : '';
+
+    const elDefs = [
+      {key:"problems_addressed", name:"Problems addressed"},
+      {key:"data_reviewed", name:"Data reviewed & analyzed"},
+      {key:"risk", name:"Risk of management"}
+    ];
+    const elHtml = elDefs.map(function(d){
+      const el = me[d.key] || {};
+      const sc = el.score;
+      const scoreCls = "score-" + (has(sc)?String(sc).toLowerCase():"low");
+      const drivers = arr(el.drivers);
+      const gap = el.documentation_gap;
+      const gapHtml = has(gap)
+        ? '<div class="me-gap"><div class="meg-lbl">'+IC.gap+' Documentation gap</div>'+esc(gap)+'</div>'
+        : '<div class="me-gap none"><div class="meg-lbl">'+IC.okmini+' No gap</div>This element is fully documented as scored.</div>';
+      return '<div class="card mdm-el">'+
+        '<div class="me-top"><div class="me-name">'+esc(d.name)+'</div>'+
+          '<span class="me-score '+scoreCls+'">'+(has(sc)?esc(cap(sc)):"—")+'</span></div>'+
+        '<div class="me-drivers"><div class="me-drivers-lbl">Drivers</div>'+
+          '<ul>'+(drivers.map(function(x){return '<li>'+esc(x)+'</li>';}).join("") || '<li>—</li>')+'</ul></div>'+
+        gapHtml+
+      '</div>';
+    }).join("");
+
+    // Dynamic upgrade path header — derives target level from the predicted level.
+    const NEXT_LEVEL = {'99202':'99203','99203':'99204','99204':'99205','99212':'99213','99213':'99214','99214':'99215'};
+    const nextLevel = NEXT_LEVEL[em.predicted_em_level] || null;
+    const upgradeTitle = 'Upgrade path' + (has(nextLevel) ? ' to ' + esc(nextLevel) : '');
+
+    const narrHtml =
+      '<div class="em-narrative-grid">'+
+        '<div class="card narr-card basis"><h3><span class="nc-ic" style="color:var(--good)">'+IC.basis+'</span> Final level basis</h3>'+
+          '<p>'+(has(em.final_level_basis)?esc(em.final_level_basis):"—")+'</p></div>'+
+        '<div class="card narr-card upgrade"><h3><span class="nc-ic" style="color:var(--accent)">'+IC.up+'</span> '+upgradeTitle+'</h3>'+
+          '<p>'+(has(em.upgrade_path)?esc(em.upgrade_path):"—")+'</p></div>'+
+      '</div>';
+
+    const ta = em.time_alternative || {};
+    const taMin = ta.documented_minutes, taLvl = ta.level_if_time;
+    const taHtml =
+      '<div class="card time-alt"><span class="ta-ic">'+IC.clock+'</span>'+
+        '<div class="ta-body"><div class="ta-lbl">Time-based alternative</div>'+
+          '<div class="ta-val">'+(
+            has(taMin)
+              ? esc(taMin)+' minutes documented'+(has(taLvl)?' → would support '+esc(taLvl):"")
+              : '<span class="empty-inline">No total practitioner time documented — time-based level is unavailable.</span>'
+          )+'</div></div>'+
+      '</div>';
+
+    const head =
+      '<div class="section-head"><div>'+
+        '<p class="eyebrow">E/M MDM scorer · '+esc((em.meta&&em.meta.standards_version) || "AMA 2021")+'</p>'+
+        '<h2 style="display:inline-block">Medical decision making</h2>'+
+      '</div></div>';
+
+    $("#section-em").innerHTML = head + headline + vcards + downcodeBanner +
+      '<p class="eyebrow" style="margin-bottom:12px">The three MDM elements</p>' +
+      '<div class="mdm-grid">'+elHtml+'</div>' +
+      narrHtml + taHtml;
+  }
+
+  // =========================================================
+  // PATIENT  (section d)
+  // =========================================================
+  function renderPatient(){
+    const s = ps.sections || {};
+    const banner =
+      '<div class="pt-banner">'+
+        '<div class="ptb-eyebrow">'+PT_IC.going+' For the patient · '+esc((ps.meta&&ps.meta.patient) || meta.patient || "")+'</div>'+
+        '<div class="ptb-headline">'+(has(ps.headline)?esc(ps.headline):"—")+'</div>'+
+        (has(ps.reading_level)?'<div class="ptb-reading">Written at '+esc(ps.reading_level)+' reading level</div>':"")+
+      '</div>';
+
+    const secDefs = [
+      {key:"whats_going_on", title:"What's going on", ic:PT_IC.going, cls:""},
+      {key:"your_plan", title:"Your plan", ic:PT_IC.plan, cls:""},
+      {key:"medications", title:"Medications", ic:PT_IC.meds, cls:""},
+      {key:"follow_up", title:"Follow-up", ic:PT_IC.follow, cls:""},
+      {key:"when_to_seek_help", title:"When to seek help", ic:PT_IC.help, cls:"help"}
+    ];
+    const secHtml = secDefs.filter(function(d){return has(s[d.key]);}).map(function(d){
+      return '<div class="card pt-sec '+d.cls+'">'+
+        '<div class="ps-ic">'+d.ic+'</div>'+
+        '<div class="ps-body"><div class="ps-title">'+esc(d.title)+'</div>'+
+          '<div class="ps-text">'+esc(s[d.key])+'</div></div>'+
+      '</div>';
+    }).join("");
+
+    const head =
+      '<div class="section-head"><div>'+
+        '<p class="eyebrow">Patient summary</p>'+
+        '<h2 style="display:inline-block">Plain-language visit summary</h2>'+
+      '</div></div>';
+
+    $("#section-patient").innerHTML = head + banner +
+      '<div class="pt-sections">'+(secHtml || '<div class="card" style="padding:20px;color:var(--ink-3)">No summary sections available.</div>')+'</div>';
+  }
+
+  // =========================================================
+  // FOOTER
+  // =========================================================
+  function renderFooter(){
+    const sv = (cdi.meta && cdi.meta.standards_versions) || meta.standards_versions || {};
+    const gen = meta.generated_at || (cdi.meta && cdi.meta.generated_at) || "";
+    const versions = [];
+    if(has(sv.icd10_cm)) versions.push('<span>ICD-10-CM: <b>'+esc(sv.icd10_cm)+'</b></span>');
+    if(has(sv.ahima_acdis)) versions.push('<span>AHIMA/ACDIS: <b>'+esc(sv.ahima_acdis)+'</b></span>');
+    if(has(sv.specialty_pack)) versions.push('<span>Specialty pack: <b>'+esc(sv.specialty_pack)+'</b></span>');
+    if(em.meta && has(em.meta.standards_version)) versions.push('<span>E/M: <b>'+esc(em.meta.standards_version)+'</b></span>');
+
+    const caseName = (meta.case_dir||"").split(/[\\/]/).pop() || "";
+
+    $("#cockpit-foot").innerHTML =
+      '<div>Generated '+(has(gen)?esc(gen):"—")+' · Mode: '+esc(cap(meta.mode||""))+' · Case '+esc(caseName)+'</div>'+
+      '<div class="cf-versions">'+versions.join("")+'</div>'+
+      '<div class="cf-disclaim">Decision-support output for clinician review. Clinician approval '+(cdi.summary&&cdi.summary.clinician_approval_required?"is required":"status per summary")+' before claim submission.</div>';
+  }
+
+  // =========================================================
+  // BOOT
+  // =========================================================
+  try{
+    renderHeader();
+    renderOverview();
+    renderCDI();
+    renderEM();
+    renderPatient();
+    renderCodeValidation();
+    renderFooter();
+  }catch(err){
+    if(window.console && console.error) console.error("Cockpit render issue:", err);
+  }
+})();
+</script>
+</body>
+</html>

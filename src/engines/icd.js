@@ -11,8 +11,8 @@ const icd = {
   stage:        'coding_icd',
   completesCase: false,
 
-  model: (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
-  effort: undefined,
+  model: () => 'claude-sonnet-4-6',
+  effort: 'high',
 
   /**
    * Gate: global enableIcd setting.

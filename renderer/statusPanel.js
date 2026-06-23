@@ -39,6 +39,14 @@ function appendCdiUi(statusRow, entry) {
     cdiBtn.addEventListener('click', () => ipc.openSoapNote(entry.cdiDocxPath))
     statusRow.appendChild(cdiBtn)
   }
+  if (entry.cdiPdfPath) {
+    const pdfBtn = document.createElement('button')
+    pdfBtn.className = 'open-btn open-btn--review'
+    pdfBtn.textContent = 'Review'
+    pdfBtn.title = 'Open combined review PDF (CDI · E/M · Patient summary)'
+    pdfBtn.addEventListener('click', () => ipc.openSoapNote(entry.cdiPdfPath))
+    statusRow.appendChild(pdfBtn)
+  }
 }
 
 export function renderRecordings(recordings) {

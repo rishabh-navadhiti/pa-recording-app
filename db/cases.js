@@ -108,6 +108,7 @@ function updateCaseCdi(id, fields) {
       'cdi_json_path',
       'cdi_md_path',
       'cdi_docx_path',
+      'cdi_pdf_path',
       'cdi_quality_score',
       'cdi_medical_necessity',
       'cdi_claim_defense_readiness',

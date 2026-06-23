@@ -10,6 +10,7 @@ const emScore        = require('../engines/emScore')
 const patientSummary = require('../engines/patientSummary')
 // Namespace import (not destructured) so tests can stub docx.spawnDocxConversion.
 const docx = require('./docx')
+const pdf  = require('./pdf')
 const { planChildCases, materializeChild } = require('./multiPatient')
 
 // ---- Single-patient post-SOAP chain ----------------------------------------
@@ -37,8 +38,11 @@ async function runCaseChain(ctx, caseCtx) {
 
   // E/M scoring → patient summary (toggle-gated; each self-gates off when its
   // setting is off, so no conditional here). JSON-only — no docx for these.
-  await runEngine(emScore, ctx, caseCtx)
-  await runEngine(patientSummary, ctx, caseCtx)
+  const emResult = await runEngine(emScore, ctx, caseCtx)
+  const psResult = await runEngine(patientSummary, ctx, caseCtx)
+
+  // Combined review PDF: CDI + E/M + patient summary → <stem>_review.pdf
+  await pdf.renderReviewPdf(caseCtx, { cdi: cdiResult, emScore: emResult, patientSummary: psResult }, ctx)
 
   // Status update → converting
   if (patientFolderName) {
