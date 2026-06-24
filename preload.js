@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   saveElevenLabsKey: (key)   => ipcRenderer.invoke('save-elevenlabs-key', key),
   getAnthropicKey:   ()     => ipcRenderer.invoke('get-anthropic-key'),
   saveAnthropicKey:  (key)   => ipcRenderer.invoke('save-anthropic-key', key),
+  getGeminiKey:      ()     => ipcRenderer.invoke('get-gemini-key'),
+  saveGeminiKey:     (key)   => ipcRenderer.invoke('save-gemini-key', key),
   getDoctors:         ()     => ipcRenderer.invoke('get-doctors'),
   addDoctor:              (name) => ipcRenderer.invoke('add-doctor', name),
   updateDoctor:          (id, name) => ipcRenderer.invoke('update-doctor', id, name),
