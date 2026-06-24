@@ -275,6 +275,18 @@ function validateAnthropicKey(apiKey) {
   })
 }
 
+function validateGeminiKey(apiKey) {
+  return new Promise(resolve => {
+    const req = https.request(
+      { hostname: 'generativelanguage.googleapis.com', path: '/v1beta/models', method: 'GET',
+        headers: { 'x-goog-api-key': apiKey } },
+      res => resolve(res.statusCode === 200 ? 'valid' : (res.statusCode === 400 || res.statusCode === 403) ? 'invalid' : 'unknown')
+    )
+    req.on('error', () => resolve('unknown'))
+    req.end()
+  })
+}
+
 // extractUsage and logSkillStream imported from src/llm/usage.js above.
 // logSkillStream call sites pass log as first arg: logSkillStream(log, tag, kind, ev)
 
@@ -934,7 +946,7 @@ function registerIpcHandlers(appCtx) {
   const deps = {
     log, setState, STATE, nowIso,
     getAllDoctors, createSessionFolder,
-    readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey,
+    readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, validateGeminiKey,
     extractLastname, sanitizeName, notifyUser,
     readSettings, writeSettings, copyDirSync, waitForExit,
     readTemplateJob, writeTemplateJob,

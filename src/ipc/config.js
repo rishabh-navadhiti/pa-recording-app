@@ -21,7 +21,7 @@ const { spawn } = require('child_process')
 //      byte-equivalent in behavior.
 function registerConfigIpc(ipcMain, appCtx, deps) {
   const {
-    log, appRoot, readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, getAllDoctors,
+    log, appRoot, readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, validateGeminiKey, getAllDoctors,
     readSettings, writeSettings, copyDirSync, extractLastname,
     resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup, setGlobalCtx,
   } = deps
@@ -109,6 +109,27 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
       return { ok: true }
     } catch (e) {
       log(`ERROR saving Anthropic key: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // ---- get-gemini-key ----
+  ipcMain.handle(CHANNELS.GET_GEMINI_KEY, () => {
+    return appCtx.secrets.getGeminiKey() || ''
+  })
+
+  // ---- save-gemini-key ----
+  ipcMain.handle(CHANNELS.SAVE_GEMINI_KEY, async (_, key) => {
+    try {
+      const trimmed = (key || '').trim()
+      if (!trimmed) return { ok: false, error: 'Key cannot be empty' }
+      const status = await validateGeminiKey(trimmed)
+      if (status === 'invalid') return { ok: false, error: 'Key rejected by Google — check it and try again' }
+      appCtx.secrets.setGeminiKey(trimmed)
+      log('Gemini API key saved')
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving Gemini key: ${e.message}`)
       return { ok: false, error: e.message }
     }
   })

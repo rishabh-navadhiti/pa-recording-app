@@ -136,6 +136,18 @@
             <div class="setting-hint">Used for SOAP note generation (API path)</div>
           </div>
           <div class="advanced-settings-inner">
+            <label class="setting-label">Gemini API Key</label>
+            <div id="gemini-key-display-row" class="notes-dir-row">
+              <span id="gemini-key-masked" class="notes-dir-path"></span>
+              <button id="btn-edit-gemini-key" class="small">Edit</button>
+            </div>
+            <div id="gemini-key-edit-row" class="notes-dir-row hidden">
+              <input id="gemini-key-input" type="text" placeholder="AIza..." autocomplete="off" spellcheck="false" style="flex:1;min-width:0;" />
+              <button id="btn-save-gemini-key" class="small">Save</button>
+            </div>
+            <div class="setting-hint">Used for SOAP note generation (Gemini models)</div>
+          </div>
+          <div class="advanced-settings-inner">
             <label class="setting-label">Note Generation Model</label>
             <select id="soap-model-select">
               <option value="gemini-3.5-flash">Gemini 3.5 Flash — recommended</option>
