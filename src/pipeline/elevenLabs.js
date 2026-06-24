@@ -91,10 +91,14 @@ function formatTranscript(data) {
 }
 
 /**
- * Like formatTranscript but WITHOUT speaker labels — words are emitted in order
- * as plain paragraphs (a new paragraph on each speaker change, for readability,
- * but no "Speaker N:" prefix). Used for the realtime path, where the only
- * "speakers" are mic-vs-call (not clinically meaningful) so labels add noise.
+ * Like formatTranscript but WITHOUT speaker labels — ALL words are joined in
+ * chronological order into flowing paragraphs (no "Speaker N:" prefix, no
+ * per-speaker line breaks). Used for the realtime path, where the only
+ * "speakers" are mic-vs-call (not clinically meaningful) and per-word speaker
+ * changes would otherwise put every word on its own line.
+ *
+ * Paragraphs are split on sentence boundaries and grouped so each is a readable
+ * block rather than one wall of text.
  *
  * @param {object} data  Parsed ElevenLabs/merged realtime JSON ({words,text}).
  * @returns {string} transcript markdown.
@@ -102,32 +106,32 @@ function formatTranscript(data) {
 function formatTranscriptPlain(data) {
   const words = (data && data.words) || []
 
-  // Group consecutive same-speaker words into paragraphs (turn boundaries),
-  // dropping the labels — keeps the text in chronological order and readable.
-  const paragraphs = []
-  let current = null  // { speaker, text }
+  // Join every word in order into one flowing string, ignoring speaker.
+  const tokens = []
   for (const w of words) {
     if (!w || w.type !== 'word') continue
-    const speakerId = ('speaker_id' in w) ? w.speaker_id : 'unknown'
-    const text      = ('text' in w)       ? w.text       : ''
-    if (current && current.speaker === speakerId) {
-      current.text += ' ' + text
-    } else {
-      current = { speaker: speakerId, text }
-      paragraphs.push(current)
-    }
+    if ('text' in w && w.text) tokens.push(w.text)
   }
+  let full = tokens.join(' ')
+  // Tidy spaces left before punctuation when punctuation arrives as its own token.
+  full = full.replace(/\s+([,.!?;:])/g, '$1').replace(/\s{2,}/g, ' ').trim()
 
-  if (paragraphs.length === 0) {
-    const plain = ((data && data.text) || '').trim()
-    return `## Transcript\n\n${plain || '*(No transcription available)*'}\n`
+  if (!full) full = ((data && data.text) || '').trim()
+  if (!full) return `## Transcript\n\n*(No transcription available)*\n`
+
+  // Group sentences into ~paragraph-sized blocks for readability.
+  const PARA_MIN_CHARS = 350
+  const sentences = full.match(/[^.!?]+[.!?]+(?:["')\]]+)?|\S[^.!?]*$/g) || [full]
+  const paragraphs = []
+  let cur = ''
+  for (const s of sentences) {
+    cur += (cur ? ' ' : '') + s.trim()
+    if (cur.length >= PARA_MIN_CHARS) { paragraphs.push(cur); cur = '' }
   }
+  if (cur) paragraphs.push(cur)
 
   const lines = ['## Transcript', '']
-  for (const p of paragraphs) {
-    const t = p.text.trim()
-    if (t) { lines.push(t); lines.push('') }
-  }
+  for (const p of paragraphs) { lines.push(p); lines.push('') }
   return lines.join('\n')
 }
 
