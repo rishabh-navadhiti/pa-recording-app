@@ -91,6 +91,47 @@ function formatTranscript(data) {
 }
 
 /**
+ * Like formatTranscript but WITHOUT speaker labels — words are emitted in order
+ * as plain paragraphs (a new paragraph on each speaker change, for readability,
+ * but no "Speaker N:" prefix). Used for the realtime path, where the only
+ * "speakers" are mic-vs-call (not clinically meaningful) so labels add noise.
+ *
+ * @param {object} data  Parsed ElevenLabs/merged realtime JSON ({words,text}).
+ * @returns {string} transcript markdown.
+ */
+function formatTranscriptPlain(data) {
+  const words = (data && data.words) || []
+
+  // Group consecutive same-speaker words into paragraphs (turn boundaries),
+  // dropping the labels — keeps the text in chronological order and readable.
+  const paragraphs = []
+  let current = null  // { speaker, text }
+  for (const w of words) {
+    if (!w || w.type !== 'word') continue
+    const speakerId = ('speaker_id' in w) ? w.speaker_id : 'unknown'
+    const text      = ('text' in w)       ? w.text       : ''
+    if (current && current.speaker === speakerId) {
+      current.text += ' ' + text
+    } else {
+      current = { speaker: speakerId, text }
+      paragraphs.push(current)
+    }
+  }
+
+  if (paragraphs.length === 0) {
+    const plain = ((data && data.text) || '').trim()
+    return `## Transcript\n\n${plain || '*(No transcription available)*'}\n`
+  }
+
+  const lines = ['## Transcript', '']
+  for (const p of paragraphs) {
+    const t = p.text.trim()
+    if (t) { lines.push(t); lines.push('') }
+  }
+  return lines.join('\n')
+}
+
+/**
  * POST the audio file to ElevenLabs scribe_v2 with diarization and return the
  * parsed JSON. Throws an Error on non-2xx (message includes the status code so
  * the markers.js regexes can classify it as auth/rate-limit upstream); the
@@ -182,6 +223,7 @@ function readRealtimeTranscript(jsonPath) {
 
 module.exports = {
   formatTranscript,
+  formatTranscriptPlain,
   extractTranscriptMetrics,
   requestTranscription,
   transcribeToFile,
