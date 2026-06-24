@@ -40,6 +40,10 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       recordArgs.push('--realtime', '--api-key', apiKey, '--realtime-output', realtimeJsonPath)
       log(`Realtime transcription enabled → ${realtimeJsonPath}`)
     }
+    if (settings.enableMic) {
+      recordArgs.push('--mic')
+      log('Microphone capture enabled — mixing mic + loopback audio')
+    }
 
     const recProc = spawn(appCtx.python, recordArgs, { cwd: appRoot })
     appCtx.stores.recorder.setProcess(recProc, tmpMp3)
@@ -54,6 +58,15 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       const msg = d.toString().trim()
       if (!msg) return
       log(`[record.py ERR] ${msg}`)
+      // Mic-open failure is non-fatal: recording continues loopback-only.
+      // Surface a gentle notice rather than the hard setup-warning path.
+      if (msg.includes('MIC_WARNING:')) {
+        appCtx.renderer.send('service-warning', {
+          title:   'Microphone unavailable',
+          message: 'Your microphone could not be opened — this recording captures the call audio only.'
+        })
+        return
+      }
       // Surface BlackHole / setup errors to renderer
       if (msg.includes('ERROR')) {
         appCtx.renderer.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
@@ -181,8 +194,9 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       if (procToStop) {
         waitForExit(procToStop).then(() => {
           const wavPath = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_tmp.wav') : null
+          const micWav = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_mic.wav') : null
           const realtimeJson = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_realtime.json') : null
-          for (const p of [mp3ToDelete, wavPath, realtimeJson]) {
+          for (const p of [mp3ToDelete, wavPath, micWav, realtimeJson]) {
             if (p && fs.existsSync(p)) {
               try { fs.unlinkSync(p) } catch (e) { log(`Failed to delete temp file: ${e.message}`) }
             }
