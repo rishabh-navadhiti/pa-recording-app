@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   enableEmScore: false,
   enablePatientSummary: false,
   realtimeTranscription: false,
+  enableMic: false,
 })
 
 // Valid soapModel option ids. Kept inline to avoid a runtime require in the normalizer.

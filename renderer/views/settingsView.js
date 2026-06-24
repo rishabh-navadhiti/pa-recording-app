@@ -16,7 +16,7 @@ import { setVisible } from '../components/visible.js'
 
 export function createSettingsView() {
   let settingsView, btnSettingsClose,
-      chkAutoRecord, chkRealtimeTranscription,
+      chkAutoRecord, chkRealtimeTranscription, chkEnableMic,
       chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
       chkEnableEmScore, chkEnablePatientSummary,
       deviceSelect, soapModelSelect, templateModelSelect,
@@ -59,6 +59,7 @@ export function createSettingsView() {
     const s = await ipc.getSettings()
     chkAutoRecord.checked = s.autoRecord || false
     if (chkRealtimeTranscription) chkRealtimeTranscription.checked = !!s.realtimeTranscription
+    if (chkEnableMic) chkEnableMic.checked = !!s.enableMic
     // ICD toggle — locked on while CDI is enabled (CDI requires ICD).
     if (chkEnableIcd) chkEnableIcd.checked = !!s.enableIcd
     // CDI toggle + mode — mode row is only visible when CDI is on.
@@ -119,6 +120,7 @@ export function createSettingsView() {
       btnSettingsClose      = root.querySelector('#btn-settings-close')
       chkAutoRecord              = root.querySelector('#chk-auto-record')
       chkRealtimeTranscription   = root.querySelector('#chk-realtime-transcription')
+      chkEnableMic               = root.querySelector('#chk-enable-mic')
       chkEnableIcd               = root.querySelector('#chk-enable-icd')
       chkEnableCdi          = root.querySelector('#chk-enable-cdi')
       cdiModeRow            = root.querySelector('#cdi-mode-row')
@@ -154,6 +156,12 @@ export function createSettingsView() {
       if (chkRealtimeTranscription) {
         on(chkRealtimeTranscription, 'change', () => {
           ipc.saveSettings({ realtimeTranscription: chkRealtimeTranscription.checked })
+        })
+      }
+
+      if (chkEnableMic) {
+        on(chkEnableMic, 'change', () => {
+          ipc.saveSettings({ enableMic: chkEnableMic.checked })
         })
       }
 
