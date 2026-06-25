@@ -44,21 +44,21 @@ test('SESSION_ACTIVE renders Start Recording / Upload / Stop Session', () => {
   assert.ok(!document.getElementById('view-status-bar').classList.contains('hidden'))
 })
 
-test('RECORDING renders Pause / Save Case / Discard + pulsing indicator', () => {
+test('RECORDING renders Pause / Save Case / Discard / Pre-chart + pulsing indicator', () => {
   const { view, document } = mountView()
   view.update(STATE.RECORDING)
-  assert.deepStrictEqual(buttonLabels(document), ['Pause', 'Save Case', 'Discard'])
+  assert.deepStrictEqual(buttonLabels(document), ['Pause', 'Save Case', 'Discard', 'Pre-chart'])
   assert.strictEqual(document.getElementById('status-label').textContent, 'Recording...')
   assert.strictEqual(document.getElementById('indicator').className, 'pulsing')
   // Timer shown while recording.
   assert.ok(!document.getElementById('timer').classList.contains('hidden'))
 })
 
-test('PAUSED renders Resume / Save Case / Discard + paused indicator', () => {
+test('PAUSED renders Resume / Save Case / Discard / Pre-chart + paused indicator', () => {
   const { view, document } = mountView()
   view.update(STATE.RECORDING)
   view.update(STATE.PAUSED)
-  assert.deepStrictEqual(buttonLabels(document), ['Resume', 'Save Case', 'Discard'])
+  assert.deepStrictEqual(buttonLabels(document), ['Resume', 'Save Case', 'Discard', 'Pre-chart'])
   assert.strictEqual(document.getElementById('status-label').textContent, 'Paused')
   assert.strictEqual(document.getElementById('indicator').className, 'paused')
 })

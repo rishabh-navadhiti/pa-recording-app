@@ -244,6 +244,25 @@
         <button id="btn-upload-save-name">Process</button>
         <button id="btn-upload-skip-name" class="secondary">Skip</button>
       </div>
+      <button id="btn-upload-prechart" class="outline">+ Pre-chart</button>
+    </div>
+
+    <!-- In-recording Pre-chart capture (context fed into initial note gen) -->
+    <div id="prechart-capture-view" class="hidden">
+      <div class="subview-header">
+        <button id="btn-prechart-capture-back" class="icon-btn" title="Back">&#8592;</button>
+        <span>Pre-chart</span>
+      </div>
+      <div class="setting-hint">Add context for this recording — notes and documents are sent with the transcript when the note is generated.</div>
+      <textarea id="prechart-capture-text"
+                placeholder="Type pre-chart context (referral details, prior history, reminders)…"
+                spellcheck="false"></textarea>
+      <div class="create-template-files-label">Documents</div>
+      <div id="prechart-capture-files" class="create-template-files-empty">
+        No files added yet
+      </div>
+      <button id="btn-prechart-capture-add-files" class="small">+ Add files</button>
+      <button id="btn-prechart-capture-done">Back to recording</button>
     </div>
 
     <!-- Patient name form (shown after Stop) -->
@@ -253,6 +272,7 @@
         <button id="btn-save-name">Save</button>
         <button id="btn-skip-name" class="secondary">Skip</button>
       </div>
+      <button id="btn-patient-prechart" class="outline">+ Pre-chart</button>
       <div id="form-countdown"></div>
     </div>
 

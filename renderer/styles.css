@@ -1173,7 +1173,8 @@ button.outline:hover { opacity: 0.85; }
   border-color: #1D9E75;
 }
 
-#prechart-instructions {
+#prechart-instructions,
+#prechart-capture-text {
   width: 100%;
   resize: vertical;
   min-height: 96px;
@@ -1188,8 +1189,13 @@ button.outline:hover { opacity: 0.85; }
   box-sizing: border-box;
 }
 
-#prechart-instructions:focus {
+#prechart-instructions:focus,
+#prechart-capture-text:focus {
   border-color: #1D9E75;
+}
+
+#prechart-capture-text {
+  margin: 6px 0;
 }
 
 #prechart-files {

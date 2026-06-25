@@ -25,10 +25,11 @@ function stripFrontmatter(text) {
  * @param {string} [opts.dateOfService]  Date of service MM/DD/YYYY (optional)
  * @param {string} [opts.doctorFullName] Doctor full name (optional, falls back to lastname)
  * @param {string} [opts.targetPatient]  For multi-patient fan-out: generate only this patient
+ * @param {string} [opts.prechartText]   In-recording pre-chart context (clinician-supplied background)
  * @returns {{ system: string, user: string }}
  */
 function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseDir, soapNoteMdPath, doctorLastname,
-  patientName, dateOfService, doctorFullName, targetPatient }) {
+  patientName, dateOfService, doctorFullName, targetPatient, prechartText }) {
   const system = stripFrontmatter(skillText)
 
   const patientLine  = patientName  ? patientName  : '(not provided — use transcript or placeholder)'
@@ -52,6 +53,19 @@ function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseD
     `Generate the SOAP note for doctor ${doctorLastname}.`,
     '',
     injectedFacts.join('\n'),
+  ]
+
+  if (prechartText && prechartText.trim()) {
+    parts.push(
+      '',
+      'PRE-CHART CONTEXT (clinician-supplied — authoritative background for this visit, second only to INJECTED FACTS):',
+      '---',
+      prechartText.trim(),
+      '---'
+    )
+  }
+
+  parts.push(
     '',
     'DOCTOR TEMPLATE:',
     '---',
@@ -63,8 +77,8 @@ function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseD
     transcriptText,
     '---',
     '',
-    'Write the full SOAP note now, following the DOCTOR TEMPLATE and the rules, then the manifest line.',
-  ]
+    'Write the full SOAP note now, following the DOCTOR TEMPLATE and the rules, then the manifest line.'
+  )
 
   return { system, user: parts.join('\n') }
 }

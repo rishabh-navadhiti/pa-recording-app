@@ -7,6 +7,7 @@ const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
 const { DURATION_SECONDS: DURATION_RE } = require('../llm/skill-io/markers')
+const { buildPrechartTempFile } = require('../pipeline/attachments')
 
 // Recording-lifecycle IPC handlers, moved verbatim from main.js's
 // registerIpcHandlers(). Handler bodies are byte-identical except __dirname
@@ -132,6 +133,18 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
     const realtimeTranscriptSrc = readSettings().realtimeTranscription && tempMp3Path
       ? tempMp3Path.replace('.mp3', '_realtime.json')
       : null
+
+    // In-recording pre-chart: combine the captured text + attachments into a temp
+    // .md (consumed → cleared from the recorder store). ingestAudio copies it into
+    // the case folder as prechart.md, which SOAP generation later reads.
+    let prechartSrc = ''
+    try {
+      prechartSrc = await buildPrechartTempFile(appCtx.stores.recorder.consumePrechart(), log)
+    } catch (e) {
+      log(`[prechart][capture] WARNING: could not build pre-chart file: ${e.message}`)
+      prechartSrc = ''
+    }
+
     const { ok: ingestOk } = ingestAudio({
       audioSrc:          tempMp3Path,
       audioDestName:     mp3Filename,
@@ -145,7 +158,14 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       ctx:               appCtx,
       spawnTranscription: _callSpawnTranscription,
       realtimeTranscriptSrc,
+      prechartSrc,
     })
+
+    // Temp pre-chart file has been copied into the case folder by ingestAudio.
+    if (prechartSrc && fs.existsSync(prechartSrc)) {
+      try { fs.unlinkSync(prechartSrc) } catch (e) { log(`[prechart][capture] temp cleanup failed: ${e.message}`) }
+    }
+
     if (!ingestOk) {
       setState(STATE.SESSION_ACTIVE)
       notifyUser('Recording failed', 'Could not save the recording. Check the log.')
@@ -226,6 +246,19 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
     appCtx.stores.recorder.resolvePatientName(sanitizeName(name))
     return true
   })
+
+  // ---- save-prechart-context (in-recording Pre-chart screen) ----
+  // Persist the captured context on the in-flight recording. Consumed at
+  // stop-recording, then written into the case folder as prechart.md.
+  ipcMain.handle(CHANNELS.SAVE_PRECHART_CONTEXT, (_, text, files) => {
+    appCtx.stores.recorder.setPrechart({ text, files })
+    return true
+  })
+
+  // ---- get-prechart-context ----
+  // Returns the current captured context so the Pre-chart screen can repopulate
+  // (survives window hide/show).
+  ipcMain.handle(CHANNELS.GET_PRECHART_CONTEXT, () => appCtx.stores.recorder.getPrechart())
 }
 
 module.exports = { registerRecordingIpc }

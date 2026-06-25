@@ -6,6 +6,7 @@ const assert = require('node:assert/strict')
 const { createStateMachine } = require('../../context/stateMachine')
 const { createSessionStore }  = require('../../context/sessionStore')
 const { createRecordingsStore } = require('../../context/recordingsStore')
+const { createRecorderController } = require('../../context/recorderController')
 const { STATE } = require('../../src/shared/state')
 
 // ---- stateMachine ----------------------------------------------------------
@@ -167,4 +168,50 @@ test('recordingsStore clear() resets entries', () => {
   store.add({ caseTag: 'c1' })
   store.clear()
   assert.strictEqual(store.getAll().length, 0)
+})
+
+// ---- recorderController pre-chart context ----------------------------------
+
+test('recorderController prechart defaults to empty', () => {
+  const r = createRecorderController()
+  assert.deepStrictEqual(r.getPrechart(), { text: '', files: [] })
+})
+
+test('recorderController setPrechart / getPrechart round-trips and sanitizes', () => {
+  const r = createRecorderController()
+  r.setPrechart({ text: 'referral note', files: ['/a.pdf', '', null, '/b.docx'] })
+  const p = r.getPrechart()
+  assert.strictEqual(p.text, 'referral note')
+  assert.deepStrictEqual(p.files, ['/a.pdf', '/b.docx'])
+})
+
+test('recorderController getPrechart returns a copy (no aliasing)', () => {
+  const r = createRecorderController()
+  r.setPrechart({ text: 't', files: ['/a.pdf'] })
+  r.getPrechart().files.push('/mutated.pdf')
+  assert.deepStrictEqual(r.getPrechart().files, ['/a.pdf'])
+})
+
+test('recorderController consumePrechart returns then clears', () => {
+  const r = createRecorderController()
+  r.setPrechart({ text: 'ctx', files: ['/a.pdf'] })
+  const p = r.consumePrechart()
+  assert.strictEqual(p.text, 'ctx')
+  assert.deepStrictEqual(p.files, ['/a.pdf'])
+  assert.deepStrictEqual(r.getPrechart(), { text: '', files: [] })
+})
+
+test('recorderController clearProcess resets prechart', () => {
+  const r = createRecorderController()
+  r.setPrechart({ text: 'ctx', files: ['/a.pdf'] })
+  r.clearProcess()
+  assert.deepStrictEqual(r.getPrechart(), { text: '', files: [] })
+})
+
+test('recorderController setPrechart tolerates missing fields', () => {
+  const r = createRecorderController()
+  r.setPrechart({})
+  assert.deepStrictEqual(r.getPrechart(), { text: '', files: [] })
+  r.setPrechart()
+  assert.deepStrictEqual(r.getPrechart(), { text: '', files: [] })
 })

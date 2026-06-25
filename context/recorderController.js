@@ -24,6 +24,10 @@ function createRecorderController() {
   let _tempMp3Path      = null   // tmp path while recording (before case folder exists)
   let _pendingDuration  = null   // parsed from DURATION_SECONDS: stdout line
   let _patientResolve   = null   // pending patient-name Promise resolver
+  // In-recording pre-chart context for the current recording (text + attachment
+  // file paths). Captured live via the Pre-chart screen; consumed at
+  // stop-recording and written into the case folder as prechart.md.
+  let _prechart         = { text: '', files: [] }
 
   return {
     // ---- process lifecycle ------------------------------------------------
@@ -75,6 +79,7 @@ function createRecorderController() {
       const proc = _proc
       _proc        = null
       _tempMp3Path = null
+      _prechart    = { text: '', files: [] }   // drop pre-chart for the discarded recording
       try {
         proc.stdin.write('discard\n')
         proc.stdin.end()
@@ -85,7 +90,31 @@ function createRecorderController() {
     clearProcess() {
       _proc        = null
       _tempMp3Path = null
+      _prechart    = { text: '', files: [] }
     },
+
+    // ---- in-recording pre-chart context ----------------------------------
+
+    /** Store the pre-chart context captured during the current recording. */
+    setPrechart({ text, files } = {}) {
+      _prechart = {
+        text: typeof text === 'string' ? text : '',
+        files: Array.isArray(files) ? files.filter(f => typeof f === 'string' && f) : [],
+      }
+    },
+
+    /** Return the current pre-chart context (does not clear). */
+    getPrechart() { return { text: _prechart.text, files: _prechart.files.slice() } },
+
+    /** Return the current pre-chart context, then reset it. */
+    consumePrechart() {
+      const p = { text: _prechart.text, files: _prechart.files.slice() }
+      _prechart = { text: '', files: [] }
+      return p
+    },
+
+    /** Reset the pre-chart context without reading it. */
+    clearPrechart() { _prechart = { text: '', files: [] } },
 
     // ---- audio duration side-channel -------------------------------------
 

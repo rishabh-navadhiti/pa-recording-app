@@ -54,6 +54,8 @@ contextBridge.exposeInMainWorld('api', {
   listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
   browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
   startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
+  savePrechartContext:      (text, files)                            => ipcRenderer.invoke('save-prechart-context', text, files),
+  getPrechartContext:       ()                                       => ipcRenderer.invoke('get-prechart-context'),
 
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),

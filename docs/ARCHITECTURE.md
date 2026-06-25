@@ -354,6 +354,8 @@ If the user uploads an existing audio file instead of recording:
 
 Both flows funnel through `src/pipeline/ingest.js → ingestAudio`, which copies/renames the audio into the case folder and probes its duration (shared core for `stop-recording` and `process-audio-file`). `spawnTranscription` (`src/pipeline/transcription.js`) is the joining point of both flows — it transcribes via Node ElevenLabs and, on success, fires its `onSuccess` (SOAP gen) and `spawnDocx` (transcript.docx) callbacks. Don't bake recording-specific assumptions into it.
 
+**In-recording Pre-chart.** The scribe can open a Pre-chart screen (a sub-view of the Record tab — see `renderer/views/prechartCapture.js`) to type context and attach `.md/.txt/.docx/.pdf` files — reachable from the recording action row (RECORDING/PAUSED) **and** from both patient-name forms (post-recording and upload), so context can be added even if it was forgotten during recording or for an uploaded file. The screen is a **pure overlay**: it hides whatever controls are visible and restores them on close, never re-rendering the record state — so the recording timer keeps running (the v1 bug was a re-render calling `timer.start()`). Opening it from the post-recording name form pauses that form's 30s auto-save countdown. The capture is held in `recorderController` (`save-prechart-context`/`get-prechart-context` IPC, saved on every change so it survives window hide/show). At `stop-recording`/`process-audio-file` the text + extracted attachments are combined by `buildPrechartTempFile()` (`src/pipeline/attachments.js`) into a temp `.md`, passed to `ingestAudio` as `prechartSrc`, and written into the case folder as `prechart.md`. On the API note-gen path, `generateSoapViaApi` detects `prechart.md`, switches to the `generate-note-prechart-api` skill, and injects the context into every note-gen call (single + multi-patient fan-out) via `buildSingleCallNoteGen`'s `prechartText`. The CLI/agentic path ignores it.
+
 ---
 
 ## Audio capture (record.py)
@@ -434,6 +436,7 @@ The first two use paths relative to cwd (= `<NOTES_DIR>`). The remaining prompts
 ├── Cases/
 │   └── <patient>_<YYYY-MM-DD>/
 │       ├── <patient>.mp3                       (or recording.mp3 if name skipped)
+│       ├── prechart.md                         in-recording pre-chart context (if any; Windows: hidden) — fed into note gen
 │       ├── transcript.md                       diarised, by speaker
 │       ├── transcript.docx                     auto-converted
 │       ├── <case>_soap_note.md                 SOAP note from skill (with ## ICD-10-CM Codes table appended)
@@ -506,6 +509,7 @@ Renderer → main (request/response):
 - Templates tab (create): `browse-notes-files`, `start-template-creation`, `get-template-job-status`, `cancel-template-creation`, `dismiss-template-job`
 - Templates tab (update): `start-template-update` (takes typed corrections + optional corrections file + optional extra sample notes), `browse-corrections-file`, `get-doctors-with-templates`
 - Pre-chart: `browse-prechart-files`, `list-recent-patient-cases`, `browse-patient-case-folder`, `start-prechart-job` (status uses the shared `get-template-job-status` / `template-job-status` channel)
+- In-recording Pre-chart capture: `save-prechart-context`, `get-prechart-context` (context for the live recording → `recorderController` → `prechart.md`)
 - Audio upload: `browse-audio-file`, `process-audio-file`
 - Config: `get-state`, `get-build-info` (`{isStaging, version, gitSha}` — drives the STAGING badge), `get-config-status`, `get-elevenlabs-key`, `save-elevenlabs-key`, `get-settings`, `save-settings`, `list-audio-devices`, `get-notes-dir`, `change-notes-dir` (now accepts an optional mode)
 - Status window: `get-session-recordings`, `open-status-window`, `close-status-window`

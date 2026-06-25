@@ -464,6 +464,20 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
     if (caseTag) updateRecordingStatus(caseTag, 'failed')
   }
 
+  const caseDir = path.dirname(soapNoteMdPath)
+
+  // In-recording pre-chart context (written into the case folder at stop). When
+  // present, generation uses the prechart-aware skill and the context is injected
+  // into every note-gen call (single-patient + multi-patient fan-out).
+  let prechartText = ''
+  try {
+    const prechartPath = path.join(caseDir, 'prechart.md')
+    if (fs.existsSync(prechartPath)) {
+      const raw = fs.readFileSync(prechartPath, 'utf8')
+      if (raw && raw.trim()) prechartText = raw
+    }
+  } catch (e) { log(`${tag}[soap:api] pre-chart read failed (ignoring): ${e.message}`) }
+
   // Read inputs
   let templateText = ''
   let transcriptText = ''
@@ -473,15 +487,16 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
       templateText = fs.readFileSync(templatePath, 'utf8')
     }
     transcriptText = fs.readFileSync(transcriptAbsPath, 'utf8')
-    const skillPath = path.join(ctx.paths.claudeDir, 'skills', 'generate-note-api', 'SKILL.md')
+    const skillName = prechartText ? 'generate-note-prechart-api' : 'generate-note-api'
+    const skillPath = path.join(ctx.paths.claudeDir, 'skills', skillName, 'SKILL.md')
     skillText = fs.readFileSync(skillPath, 'utf8')
+    if (prechartText) log(`${tag}[soap:api] using pre-chart context (${prechartText.length} chars) via ${skillName}`)
   } catch (e) {
     log(`${tag}[soap:api] [DEV-ALERT] ERROR reading inputs: ${e.message}`)
     await fail('failed', `read inputs: ${e.message}`)
     return
   }
 
-  const caseDir = path.dirname(soapNoteMdPath)
   const doctorLastname = templatePath ? path.basename(templatePath, '.md') : 'unknown'
 
   // Derive injected facts from caseTag (e.g. "jackie_2026-06-18")
@@ -496,7 +511,7 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
 
   const { system, user } = buildSingleCallNoteGen({
     skillText, templateText, transcriptText, caseDir, soapNoteMdPath,
-    doctorLastname, patientName, dateOfService,
+    doctorLastname, patientName, dateOfService, prechartText,
   })
 
   const runResult = await provider.runSingleCall({ system, user, model, tag, label: 'soap:api' })
@@ -580,6 +595,7 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
           doctorLastname, dateOfService,
           patientName: c.patient_name,
           targetPatient: targetPatientLabel,
+          prechartText,
         })
 
         let tEventId = null

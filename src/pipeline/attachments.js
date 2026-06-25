@@ -123,4 +123,35 @@ async function buildCombinedAttachment(filePaths, { log, tmpDir } = {}) {
   return tmp
 }
 
-module.exports = { extractOne, combineAttachments, buildCombinedAttachment }
+/**
+ * Build a single pre-chart markdown blob from the in-recording capture
+ * (free-text + attachment files) and write it to a temp .md. Returns the temp
+ * path, or '' when there is no context. The file is copied into the case folder
+ * as prechart.md by ingestAudio, then fed into note generation.
+ *
+ * @param {{ text?: string, files?: string[] }} prechart
+ * @param {Function} [log]
+ * @returns {Promise<string>} temp .md path, or '' when there is nothing to persist.
+ */
+async function buildPrechartTempFile(prechart, log) {
+  const text = (prechart && prechart.text ? prechart.text : '').trim()
+  const files = (prechart && Array.isArray(prechart.files))
+    ? prechart.files.filter(f => f && fs.existsSync(f))
+    : []
+  if (!text && files.length === 0) return ''
+
+  const sections = []
+  if (text) sections.push(`# Pre-chart context\n\n${text}`)
+  if (files.length) {
+    const filesMd = await combineAttachments(files, { log })
+    sections.push(`# Attached documents\n\n${filesMd.trimEnd()}`)
+  }
+  const combined = sections.join('\n\n---\n\n') + '\n'
+
+  const tmp = path.join(os.tmpdir(), `prechart_ctx_${Date.now()}_${process.pid}.md`)
+  await fs.promises.writeFile(tmp, combined, 'utf8')
+  if (log) log(`[prechart][capture] combined context (${text.length} chars, ${files.length} file(s)) → ${tmp}`)
+  return tmp
+}
+
+module.exports = { extractOne, combineAttachments, buildCombinedAttachment, buildPrechartTempFile }
