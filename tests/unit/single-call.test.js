@@ -6,7 +6,7 @@ const assert = require('node:assert/strict')
 const { buildSingleCallNoteGen } = require('../../src/llm/skill-io/singleCall')
 
 const BASE = {
-  skillText: '---\nname: generate-note-prechart-api\n---\nSYSTEM BODY',
+  skillText: '---\nname: generate-note-api\n---\nSYSTEM BODY',
   templateText: 'TEMPLATE BODY',
   transcriptText: 'TRANSCRIPT BODY',
   caseDir: '/notes/Cases/jane_2026-06-24',

@@ -498,10 +498,12 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
       templateText = fs.readFileSync(templatePath, 'utf8')
     }
     transcriptText = fs.readFileSync(transcriptAbsPath, 'utf8')
-    const skillName = prechartText ? 'generate-note-prechart-api' : 'generate-note-api'
-    const skillPath = path.join(ctx.paths.claudeDir, 'skills', skillName, 'SKILL.md')
+    // One skill handles both cases: generate-note-api has an optional PRE-CHART
+    // CONTEXT rule that only engages when buildSingleCallNoteGen injects the block
+    // (i.e. when prechartText is non-empty).
+    const skillPath = path.join(ctx.paths.claudeDir, 'skills', 'generate-note-api', 'SKILL.md')
     skillText = fs.readFileSync(skillPath, 'utf8')
-    if (prechartText) log(`${tag}[soap:api] using pre-chart context (${prechartText.length} chars) via ${skillName}`)
+    if (prechartText) log(`${tag}[soap:api] using pre-chart context (${prechartText.length} chars)`)
   } catch (e) {
     log(`${tag}[soap:api] [DEV-ALERT] ERROR reading inputs: ${e.message}`)
     await fail('failed', `read inputs: ${e.message}`)
