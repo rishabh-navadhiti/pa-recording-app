@@ -555,12 +555,20 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
       // Finish the detection event (cheap — no note was written)
       try { dbEvents.finishEvent(eventId, { status: 'success', ...usageFields, finishedAt: nowIso() }) } catch {}
 
-      const syntheticCases = []
-      for (let i = 0; i < detectedCases.length; i++) {
-        const c = detectedCases[i]
-        const slug = (c.patient_name ? sanitizeName(c.patient_name) : null) || `unknown_${i + 1}`
-        const targetNotePath = path.join(caseDir, `${slug}_soap_note.md`)
+      // Pre-compute collision-safe slugs/paths before launching parallel calls.
+      const slugsUsed = new Set()
+      const fanOutTargets = detectedCases.map((c, i) => {
+        let baseSlug = (c.patient_name ? sanitizeName(c.patient_name) : null) || `unknown_${i + 1}`
+        let slug = baseSlug; let n = 2
+        while (slugsUsed.has(slug)) { slug = `${baseSlug}_${n}`; n++ }
+        slugsUsed.add(slug)
+        return { c, i, slug, targetNotePath: path.join(caseDir, `${slug}_soap_note.md`) }
+      })
 
+      fs.mkdirSync(caseDir, { recursive: true })
+
+      // Fire all targeted API calls in parallel — each is independent.
+      const fanOutResults = await Promise.all(fanOutTargets.map(async ({ c, i, slug, targetNotePath }) => {
         log(`${tag}[soap:api] fan-out ${i + 1}/${detectedCases.length}: "${c.patient_name}" → ${path.basename(targetNotePath)}`)
 
         // Use positional fallback for unnamed patients so the "Target patient" line
@@ -583,34 +591,30 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
         if (!tResult.ok) {
           log(`${tag}[soap:api] [DEV-ALERT] fan-out "${c.patient_name}" API error: ${tResult.errText}`)
           try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
-          syntheticCases.push({ ...c, soap_note_md: targetNotePath, status: 'failed' })
-          continue
+          return { ...c, soap_note_md: targetNotePath, status: 'failed' }
         }
 
         const { noteBody: tBody, manifest: tManifest } = splitNoteAndManifest(tResult.text)
 
-        // Guard: a targeted call must never bail again — no recursion
+        // Guard: a targeted call must never bail again — no recursion.
         if (tManifest?.multi_patient) {
           log(`${tag}[soap:api] [DEV-ALERT] targeted call for "${c.patient_name}" returned multi_patient:true — skipping, no recursion`)
           try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
-          syntheticCases.push({ ...c, soap_note_md: targetNotePath, status: 'failed' })
-          continue
+          return { ...c, soap_note_md: targetNotePath, status: 'failed' }
         }
 
         try {
-          fs.mkdirSync(caseDir, { recursive: true })
           fs.writeFileSync(targetNotePath, tBody, 'utf8')
           log(`${tag}[soap:api] fan-out note written: ${targetNotePath}`)
         } catch (e) {
           log(`${tag}[soap:api] [DEV-ALERT] fan-out write failed for "${c.patient_name}": ${e.message}`)
           try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
-          syntheticCases.push({ ...c, soap_note_md: targetNotePath, status: 'failed' })
-          continue
+          return { ...c, soap_note_md: targetNotePath, status: 'failed' }
         }
 
         try { dbEvents.finishEvent(tEventId, { status: 'success', ...tUsage, finishedAt: nowIso() }) } catch {}
         const tc = tManifest?.cases?.[0] || {}
-        syntheticCases.push({
+        return {
           patient_name:    c.patient_name,
           doctor_lastname: tc.doctor_lastname || doctorLastname,
           visit_type:      tc.visit_type      || c.visit_type      || null,
@@ -619,8 +623,10 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
           placeholders:    tc.placeholders    || [],
           warnings:        tc.warnings        || [],
           status:          tc.status          || 'ok',
-        })
-      }
+        }
+      }))
+
+      const syntheticCases = fanOutResults
 
       if (!syntheticCases.some(c => c.status !== 'failed')) {
         log(`${tag}[soap:api] all fan-out patients failed`)
