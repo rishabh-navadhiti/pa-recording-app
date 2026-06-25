@@ -242,6 +242,24 @@ button:disabled {
   text-align: center;
 }
 
+.form-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #999;
+  cursor: pointer;
+  user-select: none;
+}
+
+.form-checkbox-label input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  accent-color: #1D9E75;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* Config warnings (ElevenLabs key / doctor name) */
 #config-warnings {
   display: flex;

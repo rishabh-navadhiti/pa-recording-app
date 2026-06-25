@@ -16,7 +16,7 @@ import { setVisible } from '../components/visible.js'
 const AUTOSAVE_SECS = 30
 
 export function createPatientForm() {
-  let patientForm, patientInput, btnSaveName, btnSkipName, formCountdown, viewStatusBar
+  let patientForm, patientInput, btnSaveName, btnSkipName, formCountdown, viewStatusBar, multiPatientCheckbox
 
   // Per-show state.
   let countdownInterval = null
@@ -31,14 +31,16 @@ export function createPatientForm() {
 
   function submitName(name) {
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null }
+    const multi = multiPatientCheckbox?.checked || false
     setVisible(patientForm, false)
-    ipc.submitPatientName(name)
+    ipc.submitPatientName(name, multi)
   }
 
   function show() {
     setVisible(patientForm, true)
     setVisible(viewStatusBar, false)
     patientInput.value = ''
+    if (multiPatientCheckbox) multiPatientCheckbox.checked = false
     patientInput.focus()
 
     let secondsLeft = AUTOSAVE_SECS
@@ -62,12 +64,13 @@ export function createPatientForm() {
 
   return {
     mount(root) {
-      patientForm   = root.querySelector('#patient-form')
-      patientInput  = root.querySelector('#patient-input')
-      btnSaveName   = root.querySelector('#btn-save-name')
-      btnSkipName   = root.querySelector('#btn-skip-name')
-      formCountdown = root.querySelector('#form-countdown')
-      viewStatusBar = root.querySelector('#view-status-bar')
+      patientForm          = root.querySelector('#patient-form')
+      patientInput         = root.querySelector('#patient-input')
+      btnSaveName          = root.querySelector('#btn-save-name')
+      btnSkipName          = root.querySelector('#btn-skip-name')
+      formCountdown        = root.querySelector('#form-countdown')
+      viewStatusBar        = root.querySelector('#view-status-bar')
+      multiPatientCheckbox = root.querySelector('#patient-multi-patient')
 
       on(btnSaveName, 'click', () => {
         if (submitted) return
