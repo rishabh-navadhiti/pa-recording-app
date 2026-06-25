@@ -52,8 +52,15 @@ function createRecordingsStore({ onChange } = {}) {
   }
 
   return {
-    add({ caseTag, displayName }) {
-      entries.push({ caseTag, displayName: displayName || null, startedAt: Date.now(), status: 'transcribing' })
+    add({ caseTag, displayName, multiPatient, patientName }) {
+      entries.push({
+        caseTag,
+        displayName:   displayName   || null,
+        multiPatient:  !!multiPatient,
+        patientName:   patientName   || null,
+        startedAt: Date.now(),
+        status: 'transcribing',
+      })
       notify()
     },
 
