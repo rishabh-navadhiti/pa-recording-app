@@ -694,7 +694,7 @@ async function _runMultiPatientFanOut({
         patientName:  c.patient_name || slug,
         doctorId:     parentDoctorId,
         sessionId:    ctx.stores.session.get().sessionId,
-        caseDir,              // placeholder — chain.js updates to actual child folder
+        caseDir:      path.join(caseDir, slug),  // unique placeholder; chain.js updates to the real child folder
         source:       'recording',
         mp3Path:      null,
         recordedAt:   parentRecordedAt,
@@ -720,6 +720,7 @@ async function _runMultiPatientFanOut({
     if (!tResult.ok) {
       log(`${tag}[soap:api] [DEV-ALERT] fan-out "${c.patient_name}" API error: ${tResult.errText}`)
       try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+      if (childCaseId) { try { dbCases.setCaseStatus(childCaseId, 'failed') } catch {} }
       return { ...c, soap_note_md: targetNotePath, status: 'failed', case_id: childCaseId }
     }
 
@@ -729,6 +730,7 @@ async function _runMultiPatientFanOut({
     if (tManifest?.multi_patient) {
       log(`${tag}[soap:api] [DEV-ALERT] targeted call for "${c.patient_name}" returned multi_patient:true — skipping, no recursion`)
       try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+      if (childCaseId) { try { dbCases.setCaseStatus(childCaseId, 'failed') } catch {} }
       return { ...c, soap_note_md: targetNotePath, status: 'failed', case_id: childCaseId }
     }
 
@@ -738,6 +740,7 @@ async function _runMultiPatientFanOut({
     } catch (e) {
       log(`${tag}[soap:api] [DEV-ALERT] fan-out write failed for "${c.patient_name}": ${e.message}`)
       try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+      if (childCaseId) { try { dbCases.setCaseStatus(childCaseId, 'failed') } catch {} }
       return { ...c, soap_note_md: targetNotePath, status: 'failed', case_id: childCaseId }
     }
 

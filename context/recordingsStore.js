@@ -104,6 +104,10 @@ function createRecordingsStore({ onChange } = {}) {
       if (r) { r.soapDocxPath = docxPath; notify() }
     },
 
+    // Raw entry lookup by caseTag (used by generateSoapViaApi to read the
+    // multiPatient flag + entered patientName written at ingest time).
+    find,
+
     serialize,
 
     clear() { entries = []; notify() },
