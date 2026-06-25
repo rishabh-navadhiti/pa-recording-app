@@ -29,10 +29,10 @@ function registerAudioUploadIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- process-audio-file ----
-  ipcMain.handle(CHANNELS.PROCESS_AUDIO_FILE, async (_, filePath, patientName) => {
+  ipcMain.handle(CHANNELS.PROCESS_AUDIO_FILE, async (_, filePath, patientName, multiPatient) => {
     log(`process-audio-file: ${filePath}`)
     const name = sanitizeName(patientName)
-    log(`Patient name: ${name || '(none)'}`)
+    log(`Patient name: ${name || '(none)'}  multi-patient: ${!!multiPatient}`)
 
     const { doctorId: _uploadDoctorId } = appCtx.stores.session.get()
     const _uploadDoctor = dbDoctors.getDoctor(_uploadDoctorId) || getAllDoctors().find(d => d.id === _uploadDoctorId)
@@ -62,6 +62,7 @@ function registerAudioUploadIpc(ipcMain, appCtx, deps) {
       capturedDuration:  null,
       moveAudio:         false,
       probeDuration:     true,
+      multiPatient:      !!multiPatient,
       ctx:               appCtx,
       spawnTranscription: _callSpawnTranscription,
       prechartSrc,

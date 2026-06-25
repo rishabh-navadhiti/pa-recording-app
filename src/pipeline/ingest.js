@@ -35,6 +35,7 @@ function ingestAudio(opts) {
     ctx, spawnTranscription,
     realtimeTranscriptSrc = null,
     prechartSrc = null,
+    multiPatient = false,
   } = opts
 
   const { log } = ctx
@@ -142,6 +143,8 @@ function ingestAudio(opts) {
     // Unnamed → show the folder default (recording_<date>_<time>) in the status
     // popup rather than a blank name. Named → prettify the slug for display.
     displayName: patientName ? patientName.replace(/_/g, ' ') : folderName,
+    multiPatient,
+    patientName,   // raw sanitized slug; generateSoapViaApi reads this for injection
   })
 
   // ---- 6. Start transcription chain ----------------------------------------

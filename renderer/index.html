@@ -240,6 +240,10 @@
     <div id="upload-form" class="hidden">
       <button id="btn-upload-close" class="upload-close-btn" title="Cancel">&#10005;</button>
       <input id="upload-patient-input" type="text" placeholder="Patient name (optional)" autocomplete="off" spellcheck="false" />
+      <label class="form-checkbox-label">
+        <input id="upload-multi-patient" type="checkbox" />
+        <span>Multiple patients in this recording</span>
+      </label>
       <div id="upload-form-buttons">
         <button id="btn-upload-save-name">Process</button>
         <button id="btn-upload-skip-name" class="secondary">Skip</button>
@@ -268,6 +272,10 @@
     <!-- Patient name form (shown after Stop) -->
     <div id="patient-form" class="hidden">
       <input id="patient-input" type="text" placeholder="Patient name (optional)" autocomplete="off" spellcheck="false" />
+      <label class="form-checkbox-label">
+        <input id="patient-multi-patient" type="checkbox" />
+        <span>Multiple patients in this recording</span>
+      </label>
       <div id="form-buttons">
         <button id="btn-save-name">Save</button>
         <button id="btn-skip-name" class="secondary">Skip</button>

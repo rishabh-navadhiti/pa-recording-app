@@ -16,7 +16,7 @@ function stripFrontmatter(text) {
  *
  * @param {object} opts
  * @param {string} opts.skillText        Raw contents of generate-note-api/SKILL.md
- * @param {string} opts.templateText     Doctor template markdown (may be empty)
+ * @param {string} [opts.templateText]   Doctor template markdown (may be empty; omitted in detectionMode)
  * @param {string} opts.transcriptText   Transcript markdown
  * @param {string} opts.caseDir          Absolute path to the case folder (for the manifest)
  * @param {string} opts.soapNoteMdPath   Absolute path where the app will write the SOAP note
@@ -25,37 +25,51 @@ function stripFrontmatter(text) {
  * @param {string} [opts.dateOfService]  Date of service MM/DD/YYYY (optional)
  * @param {string} [opts.doctorFullName] Doctor full name (optional, falls back to lastname)
  * @param {string} [opts.targetPatient]  For multi-patient fan-out: generate only this patient
- * @param {string} [opts.prechartText]   In-recording pre-chart context (clinician-supplied background)
+ * @param {boolean} [opts.detectionMode] When true: lean detection call — no template, no Patient Name,
+ *                                       appends MODE: MULTI-PATIENT DETECTION instruction.
+ * @param {string} [opts.prechartText]   In-recording pre-chart context (clinician-supplied background;
+ *                                       injected on note-writing calls only, not the detection call)
  * @returns {{ system: string, user: string }}
  */
 function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseDir, soapNoteMdPath, doctorLastname,
-  patientName, dateOfService, doctorFullName, targetPatient, prechartText }) {
+  patientName, dateOfService, doctorFullName, targetPatient, detectionMode = false, prechartText }) {
   const system = stripFrontmatter(skillText)
 
-  const patientLine  = patientName  ? patientName  : '(not provided — use transcript or placeholder)'
-  const dateLine     = dateOfService ? dateOfService : '(not provided — use transcript or placeholder)'
-  const doctorLine   = doctorFullName || doctorLastname
+  const dateLine   = dateOfService ? dateOfService : '(not provided — use transcript or placeholder)'
+  const doctorLine = doctorFullName || doctorLastname
 
   const injectedFacts = [
     'INJECTED FACTS (authoritative — use exactly where given):',
-    `- Patient Name: ${patientLine}`,
+  ]
+
+  // In detection mode we omit Patient Name — it's unused and confusing without a template.
+  if (!detectionMode) {
+    const patientLine = patientName ? patientName : '(not provided — use transcript or placeholder)'
+    injectedFacts.push(`- Patient Name: ${patientLine}`)
+  }
+
+  injectedFacts.push(
     `- Date of Service: ${dateLine}`,
     `- Doctor: ${doctorLine}`,
     `- recording_folder: ${caseDir}`,
     `- soap_note_md: ${soapNoteMdPath}`,
-  ]
+  )
 
   if (targetPatient) {
     injectedFacts.push(`- Target patient (multi-patient fan-out — generate ONLY this patient, ignore the others): ${targetPatient}`)
   }
 
   const parts = [
-    `Generate the SOAP note for doctor ${doctorLastname}.`,
+    detectionMode
+      ? 'Identify every patient in this transcript.'
+      : `Generate the SOAP note for doctor ${doctorLastname}.`,
     '',
     injectedFacts.join('\n'),
   ]
 
-  if (prechartText && prechartText.trim()) {
+  // Pre-chart context — note-writing calls only (omitted from the lean detection
+  // call, which writes no note). Ranked just under INJECTED FACTS.
+  if (!detectionMode && prechartText && prechartText.trim()) {
     parts.push(
       '',
       'PRE-CHART CONTEXT (clinician-supplied — authoritative background for this visit, second only to INJECTED FACTS):',
@@ -65,19 +79,26 @@ function buildSingleCallNoteGen({ skillText, templateText, transcriptText, caseD
     )
   }
 
+  if (!detectionMode) {
+    parts.push(
+      '',
+      'DOCTOR TEMPLATE:',
+      '---',
+      templateText || '(no template provided)',
+      '---',
+    )
+  }
+
   parts.push(
-    '',
-    'DOCTOR TEMPLATE:',
-    '---',
-    templateText || '(no template provided)',
-    '---',
     '',
     'TRANSCRIPT:',
     '---',
     transcriptText,
     '---',
     '',
-    'Write the full SOAP note now, following the DOCTOR TEMPLATE and the rules, then the manifest line.'
+    detectionMode
+      ? 'MODE: MULTI-PATIENT DETECTION — list every patient, write no note; if truly one patient, return multi_patient:false with that one patient.'
+      : 'Write the full SOAP note now, following the DOCTOR TEMPLATE and the rules, then the manifest line.',
   )
 
   return { system, user: parts.join('\n') }

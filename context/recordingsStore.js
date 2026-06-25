@@ -52,8 +52,15 @@ function createRecordingsStore({ onChange } = {}) {
   }
 
   return {
-    add({ caseTag, displayName }) {
-      entries.push({ caseTag, displayName: displayName || null, startedAt: Date.now(), status: 'transcribing' })
+    add({ caseTag, displayName, multiPatient, patientName }) {
+      entries.push({
+        caseTag,
+        displayName:   displayName   || null,
+        multiPatient:  !!multiPatient,
+        patientName:   patientName   || null,
+        startedAt: Date.now(),
+        status: 'transcribing',
+      })
       notify()
     },
 
@@ -96,6 +103,10 @@ function createRecordingsStore({ onChange } = {}) {
       const r = find(caseTag)
       if (r) { r.soapDocxPath = docxPath; notify() }
     },
+
+    // Raw entry lookup by caseTag (used by generateSoapViaApi to read the
+    // multiPatient flag + entered patientName written at ingest time).
+    find,
 
     serialize,
 
