@@ -449,10 +449,21 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   if (isRetry) log(`${tag}[soap:api] retry attempt`)
 
+  // Read the multi-patient flag and entered name from the recordings store.
+  // The entry was written by ingestAudio before transcription started.
+  const rec = ctx.stores.recordings.find(caseTag) || {}
+  let multiPatient = !!rec.multiPatient
+  let enteredName  = rec.patientName || null   // sanitized slug (e.g. "jane_doe") or null
+  // Regex fallback: entered name that is itself a multi-patient descriptor.
+  // Must NOT match re-record names like "john_2" or "smith_xray".
+  if (enteredName && /^(multiple|multi|two|three|four|five|\d+)\s*patients?$/i.test(enteredName.replace(/_/g, ' '))) {
+    multiPatient = true; enteredName = null
+  }
+
   const startedAt = nowIso()
   let eventId = null
   try {
-    eventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: model, startedAt })
+    eventId = dbEvents.startEvent({ caseId, jobKind: multiPatient ? 'soap_detect' : 'soap', modelUsed: model, startedAt })
   } catch (e) { log(`[db] startEvent(soap:api) failed: ${e.message}`) }
 
   const fail = async (status, errorMessage) => {
@@ -484,19 +495,62 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
   const caseDir = path.dirname(soapNoteMdPath)
   const doctorLastname = templatePath ? path.basename(templatePath, '.md') : 'unknown'
 
-  // Derive injected facts from caseTag (e.g. "jackie_2026-06-18")
-  const dateMatch = caseTag ? caseTag.match(/_(\d{4}-\d{2}-\d{2})$/) : null
+  // Fix: match date anywhere in caseTag — handles "jackie_2026-06-18" and
+  // "recording_2026-06-25_05-49-35" (time suffix appears after the date).
+  const dateMatch   = caseTag ? caseTag.match(/(\d{4}-\d{2}-\d{2})/) : null
   const dateOfService = dateMatch
     ? dateMatch[1].replace(/(\d{4})-(\d{2})-(\d{2})/, '$2/$3/$1')
     : null
-  const patientSlug = dateMatch ? caseTag.slice(0, caseTag.length - dateMatch[0].length) : caseTag
-  const patientName = patientSlug
-    ? patientSlug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-    : null
+
+  // Checkbox-ticked → lean detection call first (no template, no patient name).
+  // The model lists patients; self-confirms single if appropriate.
+  if (multiPatient) {
+    log(`${tag}[soap:api] multi-patient checkbox — running detection call`)
+    const { system: dSys, user: dUser } = buildSingleCallNoteGen({
+      skillText, transcriptText, caseDir, soapNoteMdPath, doctorLastname, dateOfService,
+      detectionMode: true,
+    })
+    const dResult = await provider.runSingleCall({ system: dSys, user: dUser, model, tag, label: 'soap:api:detect' })
+    const dUsage  = normalizeApiUsage({ model, rawUsage: dResult.rawUsage, durationMs: dResult.durationMs })
+
+    if (!dResult.ok) {
+      const keyEnvName = providerName === 'Gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY'
+      const isAuthErr  = !!(dResult.errText?.includes(`${keyEnvName} not set`) || dResult.statusCode === 401)
+      const isRateLim  = dResult.statusCode === 429 || dResult.statusCode === 529
+      ctx.renderer.send('service-warning', {
+        title:   isAuthErr ? `${providerName} API key missing or invalid` : isRateLim ? `${providerName} API rate limit reached` : 'Note generation failed',
+        message: isAuthErr ? `Set your ${providerName} API key in Settings → Advanced.`
+               : isRateLim ? 'Your recording has been saved. Notes could not be generated — try again in a moment.'
+               : `Your recording has been saved. Error: ${(dResult.errText || 'unknown').slice(0, 200)}`,
+      })
+      log(`${tag}[soap:api] [DEV-ALERT] detection call failed: ${dResult.errText}`)
+      await fail('failed', dResult.errText)
+      return
+    }
+
+    const { manifest: dManifest } = splitNoteAndManifest(dResult.text)
+    if (dManifest?.schema_version === 1 && dManifest.multi_patient && Array.isArray(dManifest.cases) && dManifest.cases.length >= 2) {
+      log(`${tag}[soap:api] detection confirmed ${dManifest.cases.length} patients — fanning out`)
+      try { dbEvents.finishEvent(eventId, { status: 'success', ...dUsage, finishedAt: nowIso() }) } catch {}
+      try { dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: null, multi_patient: 1 }) } catch {}
+      await _runMultiPatientFanOut({
+        tag, caseTag, caseId, detectedCases: dManifest.cases, caseDir,
+        skillText, templateText, transcriptText, doctorLastname, dateOfService,
+        model, provider, providerName, fail,
+      })
+      return
+    }
+
+    // Self-confirmed single (or unreadable manifest) — fall through to normal generation.
+    log(`${tag}[soap:api] detection: single patient — generating normally`)
+    if (!enteredName && dManifest?.cases?.[0]?.patient_name) enteredName = dManifest.cases[0].patient_name
+    try { dbEvents.finishEvent(eventId, { status: 'success', ...dUsage, finishedAt: nowIso() }) } catch {}
+    try { eventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: model, startedAt: nowIso() }) } catch {}
+  }
 
   const { system, user } = buildSingleCallNoteGen({
     skillText, templateText, transcriptText, caseDir, soapNoteMdPath,
-    doctorLastname, patientName, dateOfService,
+    doctorLastname, patientName: enteredName, dateOfService,
   })
 
   const runResult = await provider.runSingleCall({ system, user, model, tag, label: 'soap:api' })
@@ -543,119 +597,19 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
     return
   }
 
-  // Multi-patient: detect → bail → fan out (M2).
+  // Multi-patient: RULE 6 in-call detection (model signalled multi_patient:true).
   if (manifest.multi_patient) {
     const detectedCases = manifest.cases || []
     if (detectedCases.length === 0) {
       log(`${tag}[soap:api] [DEV-ALERT] multi_patient:true but no cases in detection manifest — falling back to single-note`)
-      // No patients detected — treat as single-patient fallback
     } else {
-      log(`${tag}[soap:api] multi-patient detection: ${detectedCases.length} patients — fanning out`)
-
-      // Finish the detection event (cheap — no note was written)
+      log(`${tag}[soap:api] [rule-6] in-call multi-patient: ${detectedCases.length} patients — fanning out`)
       try { dbEvents.finishEvent(eventId, { status: 'success', ...usageFields, finishedAt: nowIso() }) } catch {}
-
-      // Pre-compute collision-safe slugs/paths before launching parallel calls.
-      const slugsUsed = new Set()
-      const fanOutTargets = detectedCases.map((c, i) => {
-        let baseSlug = (c.patient_name ? sanitizeName(c.patient_name) : null) || `unknown_${i + 1}`
-        let slug = baseSlug; let n = 2
-        while (slugsUsed.has(slug)) { slug = `${baseSlug}_${n}`; n++ }
-        slugsUsed.add(slug)
-        return { c, i, slug, targetNotePath: path.join(caseDir, `${slug}_soap_note.md`) }
-      })
-
-      fs.mkdirSync(caseDir, { recursive: true })
-
-      // Fire all targeted API calls in parallel — each is independent.
-      const fanOutResults = await Promise.all(fanOutTargets.map(async ({ c, i, slug, targetNotePath }) => {
-        log(`${tag}[soap:api] fan-out ${i + 1}/${detectedCases.length}: "${c.patient_name}" → ${path.basename(targetNotePath)}`)
-
-        // Use positional fallback for unnamed patients so the "Target patient" line
-        // is always present — without it the model re-enters detection mode and bails.
-        const targetPatientLabel = c.patient_name || `(patient ${i + 1} in transcript, unnamed)`
-        const { system: tSys, user: tUser } = buildSingleCallNoteGen({
-          skillText, templateText, transcriptText,
-          caseDir, soapNoteMdPath: targetNotePath,
-          doctorLastname, dateOfService,
-          patientName: c.patient_name,
-          targetPatient: targetPatientLabel,
-        })
-
-        let tEventId = null
-        try { tEventId = dbEvents.startEvent({ caseId, jobKind: 'soap', modelUsed: model, startedAt: nowIso() }) } catch {}
-
-        const tResult = await ctx.api.runSingleCall({ system: tSys, user: tUser, model, tag, label: `soap:api:p${i + 1}` })
-        const tUsage  = normalizeApiUsage({ model, rawUsage: tResult.rawUsage, durationMs: tResult.durationMs })
-
-        if (!tResult.ok) {
-          log(`${tag}[soap:api] [DEV-ALERT] fan-out "${c.patient_name}" API error: ${tResult.errText}`)
-          try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
-          return { ...c, soap_note_md: targetNotePath, status: 'failed' }
-        }
-
-        const { noteBody: tBody, manifest: tManifest } = splitNoteAndManifest(tResult.text)
-
-        // Guard: a targeted call must never bail again — no recursion.
-        if (tManifest?.multi_patient) {
-          log(`${tag}[soap:api] [DEV-ALERT] targeted call for "${c.patient_name}" returned multi_patient:true — skipping, no recursion`)
-          try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
-          return { ...c, soap_note_md: targetNotePath, status: 'failed' }
-        }
-
-        try {
-          fs.writeFileSync(targetNotePath, tBody, 'utf8')
-          log(`${tag}[soap:api] fan-out note written: ${targetNotePath}`)
-        } catch (e) {
-          log(`${tag}[soap:api] [DEV-ALERT] fan-out write failed for "${c.patient_name}": ${e.message}`)
-          try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
-          return { ...c, soap_note_md: targetNotePath, status: 'failed' }
-        }
-
-        try { dbEvents.finishEvent(tEventId, { status: 'success', ...tUsage, finishedAt: nowIso() }) } catch {}
-        const tc = tManifest?.cases?.[0] || {}
-        return {
-          patient_name:    c.patient_name,
-          doctor_lastname: tc.doctor_lastname || doctorLastname,
-          visit_type:      tc.visit_type      || c.visit_type      || null,
-          chief_complaint: tc.chief_complaint || c.chief_complaint || null,
-          soap_note_md:    targetNotePath,
-          placeholders:    tc.placeholders    || [],
-          warnings:        tc.warnings        || [],
-          status:          tc.status          || 'ok',
-        }
-      }))
-
-      const syntheticCases = fanOutResults
-
-      if (!syntheticCases.some(c => c.status !== 'failed')) {
-        log(`${tag}[soap:api] all fan-out patients failed`)
-        await fail('failed', 'all fan-out patients failed')
-        return
-      }
-
-      const syntheticManifest = {
-        schema_version:   1,
-        skill:            'generate-note',
-        status:           syntheticCases.every(c => c.status === 'ok') ? 'ok' : 'partial',
-        multi_patient:    true,
-        recording_folder: caseDir,
-        cases:            syntheticCases,
-        warnings:         [],
-      }
-
-      try { dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: null }) } catch {}
-
-      const _mpDoctorId = ctx.stores.session.get().doctorId
-      let _mpDoctor = null
-      try { _mpDoctor = dbDoctors?.getDoctor(_mpDoctorId) || null } catch {}
-
-      await runMultiPatientChain(ctx, {
-        caseTag,
-        parentCaseId: caseId,
-        manifest:     syntheticManifest,
-        recordingFolder: caseDir,
-        doctor:       _mpDoctor,
+      try { dbCases.updateCasePaths(caseId, { status: 'converting', soap_note_path: null, multi_patient: 1 }) } catch {}
+      await _runMultiPatientFanOut({
+        tag, caseTag, caseId, detectedCases, caseDir,
+        skillText, templateText, transcriptText, doctorLastname, dateOfService,
+        model, provider, providerName, fail,
       })
       return
     }
@@ -692,6 +646,142 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
     doctor,
     soapNoteMdPath,
     caseDir,
+  })
+}
+
+// Shared fan-out: fires one targeted API call per detected patient (in parallel),
+// pre-creates child DB rows for per-patient event attribution, then hands the
+// synthetic manifest to runMultiPatientChain for folder materialization + ICD/CDI/docx.
+// Used by both the checkbox-detection path and the RULE 6 in-call detection path.
+async function _runMultiPatientFanOut({
+  tag, caseTag, caseId, detectedCases, caseDir,
+  skillText, templateText, transcriptText, doctorLastname, dateOfService,
+  model, provider, providerName, fail,
+}) {
+  log(`${tag}[soap:api] fan-out: ${detectedCases.length} patients`)
+
+  // Inherit parent DB fields for child row creation.
+  let parentDoctorId   = ctx.stores.session.get().doctorId
+  let parentRecordedAt = nowIso()
+  try {
+    const parentRow = dbCases.getCaseRow(caseId)
+    if (parentRow) {
+      parentDoctorId   = parentRow.doctor_id   || parentDoctorId
+      parentRecordedAt = parentRow.recorded_at  || parentRecordedAt
+    }
+  } catch {}
+
+  // Pre-compute collision-safe slugs/paths before launching parallel calls.
+  const slugsUsed = new Set()
+  const fanOutTargets = detectedCases.map((c, i) => {
+    let baseSlug = (c.patient_name ? sanitizeName(c.patient_name) : null) || `unknown_${i + 1}`
+    let slug = baseSlug; let n = 2
+    while (slugsUsed.has(slug)) { slug = `${baseSlug}_${n}`; n++ }
+    slugsUsed.add(slug)
+    return { c, i, slug, targetNotePath: path.join(caseDir, `${slug}_soap_note.md`) }
+  })
+
+  fs.mkdirSync(caseDir, { recursive: true })
+
+  // Fire all targeted API calls in parallel — each is independent.
+  const fanOutResults = await Promise.all(fanOutTargets.map(async ({ c, i, slug, targetNotePath }) => {
+    log(`${tag}[soap:api] fan-out ${i + 1}/${detectedCases.length}: "${c.patient_name}" → ${path.basename(targetNotePath)}`)
+
+    // Pre-create child DB row before the API call for per-patient event attribution.
+    let childCaseId = null
+    try {
+      childCaseId = dbCases.createCase({
+        patientName:  c.patient_name || slug,
+        doctorId:     parentDoctorId,
+        sessionId:    ctx.stores.session.get().sessionId,
+        caseDir,              // placeholder — chain.js updates to actual child folder
+        source:       'recording',
+        mp3Path:      null,
+        recordedAt:   parentRecordedAt,
+        parentCaseId: caseId,
+      })
+    } catch (e) { log(`${tag}[db] pre-createCase(child) failed: ${e.message}`) }
+
+    const targetPatientLabel = c.patient_name || `(patient ${i + 1} in transcript, unnamed)`
+    const { system: tSys, user: tUser } = buildSingleCallNoteGen({
+      skillText, templateText, transcriptText,
+      caseDir, soapNoteMdPath: targetNotePath,
+      doctorLastname, dateOfService,
+      patientName: c.patient_name,
+      targetPatient: targetPatientLabel,
+    })
+
+    let tEventId = null
+    try { tEventId = dbEvents.startEvent({ caseId: childCaseId || caseId, jobKind: 'soap', modelUsed: model, startedAt: nowIso() }) } catch {}
+
+    const tResult = await provider.runSingleCall({ system: tSys, user: tUser, model, tag, label: `soap:api:p${i + 1}` })
+    const tUsage  = normalizeApiUsage({ model, rawUsage: tResult.rawUsage, durationMs: tResult.durationMs })
+
+    if (!tResult.ok) {
+      log(`${tag}[soap:api] [DEV-ALERT] fan-out "${c.patient_name}" API error: ${tResult.errText}`)
+      try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+      return { ...c, soap_note_md: targetNotePath, status: 'failed', case_id: childCaseId }
+    }
+
+    const { noteBody: tBody, manifest: tManifest } = splitNoteAndManifest(tResult.text)
+
+    // Guard: a targeted call must never bail again — no recursion.
+    if (tManifest?.multi_patient) {
+      log(`${tag}[soap:api] [DEV-ALERT] targeted call for "${c.patient_name}" returned multi_patient:true — skipping, no recursion`)
+      try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+      return { ...c, soap_note_md: targetNotePath, status: 'failed', case_id: childCaseId }
+    }
+
+    try {
+      fs.writeFileSync(targetNotePath, tBody, 'utf8')
+      log(`${tag}[soap:api] fan-out note written: ${targetNotePath}`)
+    } catch (e) {
+      log(`${tag}[soap:api] [DEV-ALERT] fan-out write failed for "${c.patient_name}": ${e.message}`)
+      try { dbEvents.finishEvent(tEventId, { status: 'failed', ...tUsage, finishedAt: nowIso() }) } catch {}
+      return { ...c, soap_note_md: targetNotePath, status: 'failed', case_id: childCaseId }
+    }
+
+    try { dbEvents.finishEvent(tEventId, { status: 'success', ...tUsage, finishedAt: nowIso() }) } catch {}
+    const tc = tManifest?.cases?.[0] || {}
+    return {
+      patient_name:    c.patient_name,
+      doctor_lastname: tc.doctor_lastname || doctorLastname,
+      visit_type:      tc.visit_type      || c.visit_type      || null,
+      chief_complaint: tc.chief_complaint || c.chief_complaint || null,
+      soap_note_md:    targetNotePath,
+      placeholders:    tc.placeholders    || [],
+      warnings:        tc.warnings        || [],
+      status:          tc.status          || 'ok',
+      case_id:         childCaseId,
+    }
+  }))
+
+  if (!fanOutResults.some(c => c.status !== 'failed')) {
+    log(`${tag}[soap:api] all fan-out patients failed`)
+    await fail('failed', 'all fan-out patients failed')
+    return
+  }
+
+  const syntheticManifest = {
+    schema_version:   1,
+    skill:            'generate-note',
+    status:           fanOutResults.every(c => c.status === 'ok') ? 'ok' : 'partial',
+    multi_patient:    true,
+    recording_folder: caseDir,
+    cases:            fanOutResults,
+    warnings:         [],
+  }
+
+  const _mpDoctorId = ctx.stores.session.get().doctorId
+  let _mpDoctor = null
+  try { _mpDoctor = dbDoctors?.getDoctor(_mpDoctorId) || null } catch {}
+
+  await runMultiPatientChain(ctx, {
+    caseTag,
+    parentCaseId: caseId,
+    manifest:     syntheticManifest,
+    recordingFolder: caseDir,
+    doctor:       _mpDoctor,
   })
 }
 
