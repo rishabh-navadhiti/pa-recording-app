@@ -110,12 +110,12 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
 
     // Wait for patient name entry and Python's WAV→MP3 conversion concurrently.
     // The scribe can name the case while the conversion runs in the background.
-    const [name] = await Promise.all([
+    const [{ name, multiPatient }] = await Promise.all([
       appCtx.stores.recorder.awaitPatientName(),
       exitPromise
     ])
 
-    log(`Patient name: ${name || '(none)'}`)
+    log(`Patient name: ${name || '(none)'}  multi-patient: ${!!multiPatient}`)
 
     const { doctorId: _stopDoctorId } = appCtx.stores.session.get()
     const _stopDoctor = dbDoctors.getDoctor(_stopDoctorId) || getAllDoctors().find(d => d.id === _stopDoctorId)
@@ -142,6 +142,7 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       capturedDuration,
       moveAudio:         true,
       probeDuration:     false,
+      multiPatient:      !!multiPatient,
       ctx:               appCtx,
       spawnTranscription: _callSpawnTranscription,
       realtimeTranscriptSrc,
@@ -222,8 +223,8 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- submit-patient-name (registered once at startup) ----
-  ipcMain.handle(CHANNELS.SUBMIT_PATIENT_NAME, (_, name) => {
-    appCtx.stores.recorder.resolvePatientName(sanitizeName(name))
+  ipcMain.handle(CHANNELS.SUBMIT_PATIENT_NAME, (_, name, multiPatient) => {
+    appCtx.stores.recorder.resolvePatientName({ name: sanitizeName(name), multiPatient: !!multiPatient })
     return true
   })
 }

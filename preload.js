@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   pauseRecording:    ()     => ipcRenderer.invoke('pause-recording'),
   resumeRecording:   ()     => ipcRenderer.invoke('resume-recording'),
   discardRecording:  ()     => ipcRenderer.invoke('discard-recording'),
-  submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
+  submitPatientName: (name, multiPatient) => ipcRenderer.invoke('submit-patient-name', name, multiPatient),
 
   getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
   getElevenLabsKey:  ()     => ipcRenderer.invoke('get-elevenlabs-key'),
@@ -39,7 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   selectDoctor:       (id)   => ipcRenderer.invoke('select-doctor', id),
 
   browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
-  processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
+  processAudioFile:   (filePath, patientName, multiPatient) => ipcRenderer.invoke('process-audio-file', filePath, patientName, multiPatient),
 
   browseNotesFiles:         ()                                                           => ipcRenderer.invoke('browse-notes-files'),
   browseCorrectionsFile:    ()                                                           => ipcRenderer.invoke('browse-corrections-file'),

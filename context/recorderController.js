@@ -112,16 +112,16 @@ function createRecorderController() {
     },
 
     /**
-     * Deliver the patient name from submit-patient-name IPC handler.
-     * Resolves the promise started by awaitPatientName().
+     * Deliver the patient name + multi-patient flag from submit-patient-name IPC handler.
+     * Resolves the promise started by awaitPatientName() with { name, multiPatient }.
      */
-    resolvePatientName(name) {
-      if (_patientResolve) { _patientResolve(name); _patientResolve = null }
+    resolvePatientName({ name, multiPatient = false } = {}) {
+      if (_patientResolve) { _patientResolve({ name: name || null, multiPatient: !!multiPatient }); _patientResolve = null }
     },
 
     /** Cancel a pending patient-name prompt (e.g. on discard or stop-session). */
     cancelPatientName() {
-      if (_patientResolve) { _patientResolve(null); _patientResolve = null }
+      if (_patientResolve) { _patientResolve({ name: null, multiPatient: false }); _patientResolve = null }
     },
   }
 }
