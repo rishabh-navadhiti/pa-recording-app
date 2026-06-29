@@ -88,7 +88,9 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     })
 
     const startedAt = new Date().toISOString()
-    try { eventId = require('../../db/events').startEvent({ caseId: caseId || null, jobKind: 'costigan', relatedDoctorId: doctor?.id || null, modelUsed: MODEL, effort: 'high', startedAt }) } catch (e) { log(`${tag} startEvent: ${e.message}`) }
+    log(`${tag} start: ${patientName} model=${MODEL}`)
+    try { eventId = require('../../db/events').startEvent({ caseId: caseId || null, jobKind: 'costigan', relatedDoctorId: doctor?.id || null, modelUsed: MODEL, effort: 'high', startedAt }) } catch (e) { log(`${tag} startEvent error: ${e.message}`) }
+    if (eventId == null) log(`${tag} WARN: processing_events row not recorded (startEvent returned null)`)
 
     let result = await ctx.api.runSingleCall({ system, user, model: MODEL, tag, label: 'cdi-costigan:api' })
     if (!result.ok) { log(`${tag} API failed: ${result.errText}`); finish('failed', normalizeApiUsage({ model: MODEL, rawUsage: result.rawUsage, durationMs: result.durationMs }), result.errText); return }
@@ -124,6 +126,10 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
 
     finish(data.parse_error ? 'failed' : 'success', normalizeApiUsage({ model: MODEL, rawUsage: result.rawUsage, durationMs: result.durationMs }), data.parse_error ? 'JSON parse failed after retry' : null)
     log(`${tag} done: ${data.summary?.overall_status || (data.parse_error ? 'parse_error' : '?')} -> ${jsonPath}`)
+    if (data.summary && !data.parse_error) {
+      const { overall_status, verdict_counts, procedures_in_play } = data.summary
+      log(`${tag}[manifest] overall_status=${overall_status} verdict_counts=${JSON.stringify(verdict_counts)} procedures_in_play=${JSON.stringify(procedures_in_play)} json_path=${jsonPath}`)
+    }
   } catch (e) {
     log(`${tag} unexpected error: ${e.message}`)
     finish('failed', null, e.message)

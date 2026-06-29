@@ -12,6 +12,22 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-29 (rs) — Costigan checklist telemetry fixes (non-silent event row, log parity)
+
+**Context:** First real-app runs showed: (a) `processing_events` rows with `job_kind='costigan'` were never written even when the checklist ran successfully; (b) the Anthropic API provider log line omitted the model name (unlike the Gemini provider); (c) Costigan had no start log line and no manifest summary line (unlike the SOAP API path).
+
+**Decision:**
+- `costiganChecklist.js:startEvent`: If `startEvent` returns `null` (DB not ready or insert failed without throwing), log `WARN: processing_events row not recorded (startEvent returned null)` via `ctx.log`, which writes to `app.log`. The try/catch previously only caught thrown errors; a silent null return was invisible.
+- Added `[costigan] start: <patient> model=<model>` log line before the API call, and a `[costigan][manifest] …` summary line after a successful run (mirrors the `[soap:api][manifest]` line in main.js).
+- `anthropicApiProvider.js`: Added `model=${model}` to the success log line, matching the Gemini provider format. This affects all Anthropic-API skills (soap, edit-note, costigan).
+- `db/events.js:startEvent`: Changed `console.error` to `process.stderr.write` to match `finishEvent`'s pattern (consistent stderr format; the real app-log line comes from the costiganChecklist.js WARN above).
+
+**Rejected:** Injecting `ctx.log` into `db/events.js` — would require either a module-level settable logger or a constructor change, touching all callers of `startEvent`/`finishEvent`. The costiganChecklist-level WARN covers the Costigan use case; the broader db-layer logger injection is a future refactor.
+
+**Implications:** On the next Costigan run the log will show whether `startEvent` is actually returning null (→ DB timing/context issue) or whether the insert is silently failing (→ the `process.stderr.write` line will appear). The root cause is still TBD pending that next run.
+
+---
+
 ## 2026-06-29 (rs) — Costigan checklist ported to single-call Anthropic API (`cdi-costigan-api`)
 
 **Context:** The agentic `cdi-costigan` skill (connector-based, CLI-spawned) was not wired into the app pipeline because it requires the ICD-10 MCP connector at runtime, which cannot be used outside a `claude -p` subprocess. The feature needed to run inside the pre-chart `onSuccess` callback as a direct `ctx.api` call — the same single-call pattern as `generate-note-api` — so a connector-free variant was needed.
