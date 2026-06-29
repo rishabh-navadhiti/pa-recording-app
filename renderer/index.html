@@ -88,6 +88,11 @@
           <span>Enable patient summary</span>
         </label>
         <div class="setting-hint">Generates a plain-language patient-facing summary for every new case.</div>
+        <label class="setting-row">
+          <input type="checkbox" id="chk-enable-costigan-cdi" />
+          <span>Costigan procedure checklist (interventional pain)</span>
+        </label>
+        <div class="setting-hint">Shows a chart textarea in the Pre-chart tab for procedure checklist generation (Costigan method).</div>
       </div>
 
       <div class="settings-group advanced-settings-group">
@@ -184,6 +189,12 @@
     <div id="template-job-banner" class="hidden">
       <div id="template-job-banner-text"></div>
       <button id="btn-template-job-cancel" class="icon-btn" title="Cancel">&#10005;</button>
+    </div>
+
+    <!-- Costigan checklist report ready (opt-in, detached from the pre-chart job) -->
+    <div id="costigan-report-banner" class="hidden">
+      <div id="costigan-report-text"></div>
+      <button id="btn-costigan-report-dismiss" class="icon-btn" title="Dismiss">&#10005;</button>
     </div>
 
     <!-- ============================================================ -->
@@ -416,6 +427,14 @@
         </div>
         <button id="btn-prechart-add-files" class="small">+ Add files</button>
         <div class="setting-hint">Optional. Prechart docs, prior visit summaries, typed handwritten slips (.md/.txt/.docx/.pdf).</div>
+
+        <div id="prechart-chart-row" class="hidden">
+          <label class="setting-label">Chart for checklist <span class="setting-hint">(Costigan)</span></label>
+          <textarea id="prechart-chart"
+                    placeholder="Paste the Epic chart used for the procedure checklist: physical exam, imaging/radiology reports, prior injections/procedures with dates &amp; relief, conservative-care history…"
+                    rows="6" spellcheck="false"></textarea>
+          <div class="setting-hint">Used only for the procedure checklist — not added to the note.</div>
+        </div>
 
         <button id="btn-prechart-start" disabled>Start</button>
         <div id="prechart-error" class="config-warn hidden"></div>

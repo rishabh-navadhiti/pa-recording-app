@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   browsePrechartFiles:      ()                                       => ipcRenderer.invoke('browse-prechart-files'),
   listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
   browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
-  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
+  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths, chartText) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths, chartText),
   savePrechartContext:      (text, files)                            => ipcRenderer.invoke('save-prechart-context', text, files),
   getPrechartContext:       ()                                       => ipcRenderer.invoke('get-prechart-context'),
 
@@ -77,5 +77,6 @@ contextBridge.exposeInMainWorld('api', {
   onPickDoctor:            (cb) => ipcRenderer.on('pick-doctor',             (_, doctors) => cb(doctors)),
   onServiceWarning:        (cb) => ipcRenderer.on('service-warning',         (_, data)    => cb(data)),
   onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data)),
-  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job))
+  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job)),
+  onCostiganReportReady:   (cb) => ipcRenderer.on('costigan-report-ready',   (_, data)    => cb(data))
 })

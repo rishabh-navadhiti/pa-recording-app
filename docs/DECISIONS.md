@@ -12,6 +12,42 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-29 (rs) — Costigan checklist telemetry fixes (non-silent event row, log parity)
+
+**Context:** First real-app runs showed: (a) `processing_events` rows with `job_kind='costigan'` were never written even when the checklist ran successfully; (b) the Anthropic API provider log line omitted the model name (unlike the Gemini provider); (c) Costigan had no start log line and no manifest summary line (unlike the SOAP API path).
+
+**Decision:**
+- `costiganChecklist.js:startEvent`: If `startEvent` returns `null` (DB not ready or insert failed without throwing), log `WARN: processing_events row not recorded (startEvent returned null)` via `ctx.log`, which writes to `app.log`. The try/catch previously only caught thrown errors; a silent null return was invisible.
+- Added `[costigan] start: <patient> model=<model>` log line before the API call, and a `[costigan][manifest] …` summary line after a successful run (mirrors the `[soap:api][manifest]` line in main.js).
+- `anthropicApiProvider.js`: Added `model=${model}` to the success log line, matching the Gemini provider format. This affects all Anthropic-API skills (soap, edit-note, costigan).
+- `db/events.js:startEvent`: Changed `console.error` to `process.stderr.write` to match `finishEvent`'s pattern (consistent stderr format; the real app-log line comes from the costiganChecklist.js WARN above).
+
+**Rejected:** Injecting `ctx.log` into `db/events.js` — would require either a module-level settable logger or a constructor change, touching all callers of `startEvent`/`finishEvent`. The costiganChecklist-level WARN covers the Costigan use case; the broader db-layer logger injection is a future refactor.
+
+**Implications:** On the next Costigan run the log will show whether `startEvent` is actually returning null (→ DB timing/context issue) or whether the insert is silently failing (→ the `process.stderr.write` line will appear). The root cause is still TBD pending that next run.
+
+---
+
+## 2026-06-29 (rs) — Costigan checklist ported to single-call Anthropic API (`cdi-costigan-api`)
+
+**Context:** The agentic `cdi-costigan` skill (connector-based, CLI-spawned) was not wired into the app pipeline because it requires the ICD-10 MCP connector at runtime, which cannot be used outside a `claude -p` subprocess. The feature needed to run inside the pre-chart `onSuccess` callback as a direct `ctx.api` call — the same single-call pattern as `generate-note-api` — so a connector-free variant was needed.
+
+**Decision:** New skill `cdi-costigan-api` (`notes-claude/skills/cdi-costigan-api/SKILL.md`): system prompt = skill body + the 5 procedure packs (`esi`, `facet`, `tpi`, `si`, `pva`) concatenated by `loadProcedurePacks()`; user message = final SOAP note + pasted Epic chart (Box B); model `claude-sonnet-4-6`; no tools, no live connector. **No connector needed** — the 5 packs carry connector-validated closed code lists (per the 2026-06-05 `cdi-costigan` decision). Wired into the pre-chart `onSuccess` (both API and CLI edit-note paths) via `runCostiganChecklist()` (`src/jobs/costiganChecklist.js`), gated by `enableCostiganCdi` (default off) + a Costigan-doctor check (`isCostiganDoctor()`). **Inputs are split**: Box A (edit-note instructions) flows unchanged into the edit-note step; Box B (pasted Epic chart) flows only into the checklist. Writes `<stem>_costigan.json` + `<stem>_costigan.md` (rendered by `src/render/costiganMd.js`) + `<stem>_chart_input.md`; **no DB schema change** — one `processing_events` row with `job_kind='costigan'`. No transcript input in v1 (note alone carries the auditable documentation). A 2nd "Epic chart" text area appears in the Pre-chart view only when `enableCostiganCdi` is on for a Costigan doctor.
+
+**Rejected:**
+- *Live connector at runtime.* The ICD-10 MCP connector is only available to `claude -p` subprocesses (cwd NOTES_DIR, `.mcp.json` loaded); `ctx.api` is a direct Anthropic SDK call and has no tool-call layer. Since the packs already carry connector-validated codes, the connector adds no value at inference time — it was only needed during pack authoring.
+- *Running via `claude -p` CLI spawn.* Would work but adds the same process-management overhead as `cdi-costigan`, and the chart text (Box B) would have to be written to a temp file and passed by path — more fragile than the API call. The pre-chart job dispatcher already holds a `ctx.api` reference.
+- *Folding the checklist into the edit-note API call.* Different output shape, different token budget, and a separate `processing_events` row with its own error surface. Keeping them independent makes each step debuggable in isolation.
+- *Transcript as input.* V1 uses the final SOAP note as the auditable record (mirrors how `cdi-review` consumes the completed note). Adding the transcript as a cross-reference is a v2 follow-up.
+
+**Implications:**
+- `enableCostiganCdi` (`settings.json`, default `false`) is independent of `enableCdi`/`enableIcd` — no coupling invariant.
+- The skill file + packs are synced to `<NOTES_DIR>/.claude/` on every launch (same skills-sync mechanism), but the checklist uses them by direct `fs.readFileSync` from the repo path, not via `claude -p`.
+- HTML→PDF presentation (matching the `engine-output-html-pdf` plan) is deferred — the JSON is the data layer; the MD is the interim human-readable output.
+- Plan: `docs/plans/2026-06-26-rs-costigan-cdi-api.md`.
+
+---
+
 ## 2026-06-11 (rs) — PA engines v0.2: E/M scorer + patient summary as pipeline engines; provider-query + E/M reimbursement on CDI; generic `engine_outputs` table
 
 **Context:** Next batch of PA capabilities after CDI v1 + the Costigan procedure-checklist. Four deliverables: an **E/M MDM scorer**, a **patient summary**, **provider-query generation**, and a **per-flag E/M reimbursement signal**. Branch `feature/pa-engines-v0.2` off develop. (An earlier draft of the plan scoped these as on-demand/ephemeral with no UI; rish reversed that mid-implementation — they now run in the pipeline, gated by toggles.)
@@ -516,3 +552,25 @@ Every other skill writes `.md` only and lets `main.js → spawnDocxConversion �
 4. **Old CLI skills + `prompts.js` builders left on disk, dormant.** `notes-claude/skills/{em-score,patient-summary}` and `scoreEm`/`patientSummary` in `prompts.js` are unchanged and no longer wired to the engines — kept for standalone manual "score em" invocation.
 
 Branched from `develop` (which predates the `resolveCliModel` fix on `feature/engine-pdf-render`), so the model resolution is inlined in `engineRunner` rather than depending on that helper. **Post-merge note:** after merging `feature/engine-pdf-render`, `resolveCliModel` now exists in `modelOptions.js` and is functionally identical to `engineRunner.pinnedAnthropicModel()` — a candidate for de-duplication (use `resolveCliModel` and drop the local helper).
+
+## 2026-06-29 — Costigan procedure checklist gets a visible HTML report (sr)
+
+**Context:** The opt-in Costigan checklist (`runCostiganChecklist`, 2026-06-26) wrote `_costigan.json` + a plain `_costigan.md`, both hidden on Windows — no human-friendly visual surface. The user already has a combined "Clinical Cockpit" report for the CDI/E/M/patient-summary engines and wanted the Costigan checklist (a different, procedure-checklist JSON shape) rendered in the same look, generated automatically whenever the checklist runs.
+
+**Decisions:**
+
+1. **New Node string-builder renderer, not the embed-+-client-JS cockpit approach.** `src/render/costiganHtml.js` exports `renderCostiganHtml(data) -> string` (a complete self-contained document), mirroring the sibling `renderCostiganMd`. Chosen over the reference scroller's "inject `PA_DATA` into an inline `<script>` + render in the browser" pattern because a Node builder is deterministic, unit-testable without a browser, and structurally immune to the `</script>`-in-clinical-text escaping hazard. Every dynamic value is routed through one `esc()` helper (covered by an escaping test). It reads ONLY from `data`, so the "swap data, re-renders for any case" contract still holds. Design tokens/components are adapted from `docs/notes/cdi-ui-reference/presentation_cockpit_scroller.html` (navy header, teal accent, severity palette).
+
+2. **The HTML is visible; the `.json`/`.md` stay hidden.** Wired at the single call site in `runCostiganChecklist` (covers both CLI `prechart.js` and API `prechartApi.js` paths, no caller change), gated by the existing `enableCostiganCdi` + Costigan-doctor checks. The `_costigan_report.html` is written but deliberately NOT added to `writtenArtifacts`, so it escapes the Windows `attrib +h` pass and stays visible like the SOAP `.docx`. Best-effort: a render failure logs and continues — the HTML is derivative of the already-persisted JSON, so the job's success/`processing_events` status is unaffected. No new Claude call, no DB schema change, no change to the checklist JSON shape or the `cdi-costigan-api` skill.
+
+3. **HTML-only this batch; PDF is a confirmed fast-follow.** Per the user, HTML now for testing. The renderer ships with `@media print` / `@page Letter` + `break-inside:avoid` rules already in place, so a later Electron `printToPDF` pass (the engine-cockpit plan's approach) is a small, self-contained add. Plan: `docs/plans/2026-06-29-sr-costigan-html-report.md`.
+
+### 2026-06-29 addendum — PDF + "Open report" button (sr)
+
+Extended the same-day Costigan HTML report: the job now also writes `<stem>_costigan_report.pdf` (visible) by printing the just-written HTML through an offscreen Electron `BrowserWindow.printToPDF` (`src/render/htmlToPdf.js`, zero new deps, Letter, `printBackground`). Best-effort — a PDF failure logs and keeps the HTML; both stay visible (neither joins `writtenArtifacts`). Smoke-verified: a 396 KB valid PDF renders from the real `rizorodriguez_randy` report.
+
+**Surfacing the button without entangling the pre-chart banner.** The checklist is fired-and-not-awaited after the pre-chart job already reports `success`, so the report does not exist when the pre-chart success banner shows — piggybacking on it would race. Instead the job pushes a dedicated one-way **`costigan-report-ready`** event on completion; a new global, persistent (non-auto-dismiss) banner (`renderer/views/costiganBanner.js`) shows an **"Open report"** button. The channel was added to `CHANNELS` + the `preload.js` literal (drift test guards the pair); it is a *send* channel (`ipcRenderer.on`), so it adds no `ipcMain.handle` (the "49 handlers" registrar count is unchanged). Opening reuses the existing `open-soap-note` IPC — the report path is inside `casesDir`, which that handler already confines to — so no new open-channel was needed. Chosen over reusing `template-job-status` (whose 6s auto-dismiss + jobState polling would drop the button and entangle a detached job with the single-flight lock).
+
+### 2026-06-29 addendum 2 — Costigan report adopts the shared cockpit design (sr)
+
+The first cut of `renderCostiganHtml` hand-rolled a trimmed subset of the cockpit styling; the resulting PDF did not match the polish of the combined CDI/E·M/patient-summary report. Reworked it to reuse the **exact** Clinical-Cockpit design system: extracted the reference stylesheet verbatim into a committed `src/render/cockpit.css` (the same CSS the combined report uses) and rebuilt the renderer to map the Costigan procedure-checklist shape onto the cockpit component vocabulary — `.cockpit-header` + verdict pills, `.flag-badges` (procedures / audit-ready / needs-edits / likely-denied), one `.flag-card` per procedure (verdict `sev-tag`, `fc-action` denial-risk block, `fc-meta`) and per checklist criterion (status-colored, `evbox found`, `fc-action` fix), `.codechips` + issues, a Frequency card with a within-cap pill, and the `.codeval` table for flagged narrative codes. `costiganHtml.js` reads `cockpit.css` at module load and inlines it, so the output stays fully self-contained; a tiny `EXTRA_CSS` block adds only Costigan-specific needs (crit callout, grey led, within-cap/freq pills, muted badges). Committing a render asset is consistent with the pipeline path (auto-generated when Costigan is enabled), distinct from the manual-path "no committed template" preference. Verified by screenshot against the reference look.

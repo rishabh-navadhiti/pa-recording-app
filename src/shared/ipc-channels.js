@@ -82,7 +82,8 @@ const CHANNELS = Object.freeze({
   PICK_DOCTOR:              'pick-doctor',
   SERVICE_WARNING:          'service-warning',
   RECORDING_STATUS_UPDATE:  'recording-status-update',
-  TEMPLATE_JOB_STATUS:      'template-job-status'
+  TEMPLATE_JOB_STATUS:      'template-job-status',
+  COSTIGAN_REPORT_READY:    'costigan-report-ready'
 })
 
 module.exports = { CHANNELS }

@@ -17,7 +17,7 @@ import { renderFileList } from '../components/fileListField.js'
 export function createPrechartView() {
   let prechartView, prechartDoctorSelect, prechartCaseSelect, btnPrechartBrowseCase,
       prechartInstructions, prechartFilesEl, btnPrechartAddFiles, btnPrechartStart,
-      prechartError
+      prechartError, prechartChartRow, prechartChart
   let onJobStartedCb = null
 
   let prechartFiles = []
@@ -63,6 +63,11 @@ export function createPrechartView() {
     hidePrechartError()
     renderPrechartFiles()
     updatePrechartStartEnabled()
+    try {
+      const s = await ipc.getSettings()
+      if (prechartChartRow) prechartChartRow.classList.toggle('hidden', !s.enableCostiganCdi)
+    } catch {}
+    if (prechartChart) prechartChart.value = ''
 
     // Populate the doctor dropdown (only doctors with a template path)
     if (prechartDoctorSelect) {
@@ -111,6 +116,8 @@ export function createPrechartView() {
       btnPrechartAddFiles   = root.querySelector('#btn-prechart-add-files')
       btnPrechartStart      = root.querySelector('#btn-prechart-start')
       prechartError         = root.querySelector('#prechart-error')
+      prechartChartRow      = root.querySelector('#prechart-chart-row')
+      prechartChart         = root.querySelector('#prechart-chart')
 
       if (prechartDoctorSelect) {
         on(prechartDoctorSelect, 'change', updatePrechartStartEnabled)
@@ -187,7 +194,8 @@ export function createPrechartView() {
             return
           }
           btnPrechartStart.disabled = true
-          const res = await ipc.startPrechartJob(doctorId, caseDir, instructions, prechartFiles)
+          const chartText = prechartChart ? prechartChart.value : ''
+          const res = await ipc.startPrechartJob(doctorId, caseDir, instructions, prechartFiles, chartText)
           if (!res || !res.ok) {
             showPrechartError((res && res.error) || 'Failed to start')
             btnPrechartStart.disabled = false

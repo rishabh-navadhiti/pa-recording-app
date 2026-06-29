@@ -18,7 +18,7 @@ export function createSettingsView() {
   let settingsView, btnSettingsClose,
       chkAutoRecord, chkRealtimeTranscription, chkEnableMic,
       chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
-      chkEnableEmScore, chkEnablePatientSummary,
+      chkEnableEmScore, chkEnablePatientSummary, chkEnableCostiganCdi,
       deviceSelect, soapModelSelect, templateModelSelect,
       btnAdvancedToggle, advancedSettingsContent,
       notesDirPath, btnChangeNotesDir,
@@ -72,6 +72,8 @@ export function createSettingsView() {
     // E/M scoring + patient summary — independent toggles, no coupling.
     if (chkEnableEmScore) chkEnableEmScore.checked = !!s.enableEmScore
     if (chkEnablePatientSummary) chkEnablePatientSummary.checked = !!s.enablePatientSummary
+    // Costigan procedure checklist — independent toggle, no coupling.
+    if (chkEnableCostiganCdi) chkEnableCostiganCdi.checked = !!s.enableCostiganCdi
     const dir = await ipc.getNotesDir()
     notesDirPath.textContent = dir
     notesDirPath.title = dir
@@ -133,6 +135,7 @@ export function createSettingsView() {
       cdiModeSelect         = root.querySelector('#cdi-mode-select')
       chkEnableEmScore      = root.querySelector('#chk-enable-em-score')
       chkEnablePatientSummary = root.querySelector('#chk-enable-patient-summary')
+      chkEnableCostiganCdi  = root.querySelector('#chk-enable-costigan-cdi')
       deviceSelect          = root.querySelector('#device-select')
       soapModelSelect       = root.querySelector('#soap-model-select')
       templateModelSelect   = root.querySelector('#template-model-select')
@@ -208,6 +211,12 @@ export function createSettingsView() {
       if (chkEnablePatientSummary) {
         on(chkEnablePatientSummary, 'change', () => {
           ipc.saveSettings({ enablePatientSummary: chkEnablePatientSummary.checked })
+        })
+      }
+
+      if (chkEnableCostiganCdi) {
+        on(chkEnableCostiganCdi, 'change', () => {
+          ipc.saveSettings({ enableCostiganCdi: chkEnableCostiganCdi.checked })
         })
       }
 

@@ -266,7 +266,58 @@ function parseJsonResponse(text) {
   return null
 }
 
+/**
+ * Build the system + user messages for the single-call Costigan procedure checklist.
+ * Pure — the caller reads the skill, the 5 packs, the note, and the chart and passes text in.
+ *
+ * @param {object} opts
+ * @param {string} opts.skillText       Raw contents of cdi-costigan-api/SKILL.md
+ * @param {string} opts.packsText       The 5 procedure packs, concatenated (single source of truth)
+ * @param {string} opts.noteText        Final SOAP note (HPI + A&P) — the auditable note
+ * @param {string} [opts.chartText]     Pasted Epic chart (exam/imaging/prior procedures); may be empty
+ * @param {string} [opts.patientName]
+ * @param {string} [opts.dateOfService] MM/DD/YYYY (anchors rolling-12-month frequency math)
+ * @param {string} [opts.doctorName]
+ * @returns {{ system: string, user: string }}
+ */
+function buildSingleCallCostiganCdi({ skillText, packsText, noteText, chartText, patientName, dateOfService, doctorName }) {
+  const system = stripFrontmatter(skillText)
+    + '\n\n# PROCEDURE RUBRIC PACKS (reference — evaluate the record against these; do not invent criteria or codes beyond them)\n\n'
+    + packsText
+
+  const parts = [
+    'Review the clinical record below against the procedure rubric packs in your instructions, and output the checklist JSON.',
+    '',
+    'INJECTED FACTS (authoritative — use exactly where given):',
+    `- Patient: ${patientName || '(not provided)'}`,
+    `- Date of Service: ${dateOfService || '(not provided — use the note, else leave empty)'}`,
+    `- Doctor: ${doctorName || '(not provided)'}`,
+    '',
+    'SOAP NOTE (HPI + Assessment & Plan — the auditable note):',
+    '---',
+    noteText,
+    '---',
+  ]
+
+  if (chartText && chartText.trim()) {
+    parts.push(
+      '',
+      'EPIC CHART (physical exam, imaging, prior-procedure history — the rest of the auditable record):',
+      '---', chartText, '---',
+    )
+  } else {
+    parts.push(
+      '',
+      'EPIC CHART: (not provided — evaluate on the SOAP note alone; mark exam/imaging-dependent items "unclear", never "met").',
+    )
+  }
+
+  parts.push('', 'Output ONLY the checklist JSON now — no prose, no code fences.')
+  return { system, user: parts.join('\n') }
+}
+
 module.exports = {
-  buildSingleCallNoteGen, buildSingleCallNoteEdit, splitNoteAndManifest, stripFrontmatter,
+  buildSingleCallNoteGen, buildSingleCallNoteEdit, buildSingleCallCostiganCdi,
+  splitNoteAndManifest, stripFrontmatter,
   buildSingleCallEngineJson, parseJsonResponse,
 }
