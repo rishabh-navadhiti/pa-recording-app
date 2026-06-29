@@ -1301,31 +1301,13 @@ button.outline:hover { opacity: 0.85; }
 
 #costigan-report-text {
   flex: 1;
-  min-width: 0;            /* allow the text column to shrink so buttons stay inside */
-  overflow-wrap: anywhere; /* break long patient names instead of forcing overflow */
+  min-width: 0;        /* let the text wrap by words instead of overflowing */
   line-height: 1.4;
 }
 
 #costigan-report-text .costigan-verdict {
   text-transform: capitalize;
   opacity: 0.85;
-}
-
-#btn-costigan-report-open {
-  flex-shrink: 0;
-  background: #0f6e8c;
-  border: none;
-  color: #fff;
-  border-radius: 5px;
-  padding: 4px 9px;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-#btn-costigan-report-open:hover {
-  background: #128bb0;
 }
 
 #btn-costigan-report-dismiss {
