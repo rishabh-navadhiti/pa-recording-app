@@ -12,6 +12,26 @@ Append-only log of non-obvious technical choices. Latest at top. Don't edit old 
 
 ---
 
+## 2026-06-29 (rs) — Costigan checklist ported to single-call Anthropic API (`cdi-costigan-api`)
+
+**Context:** The agentic `cdi-costigan` skill (connector-based, CLI-spawned) was not wired into the app pipeline because it requires the ICD-10 MCP connector at runtime, which cannot be used outside a `claude -p` subprocess. The feature needed to run inside the pre-chart `onSuccess` callback as a direct `ctx.api` call — the same single-call pattern as `generate-note-api` — so a connector-free variant was needed.
+
+**Decision:** New skill `cdi-costigan-api` (`notes-claude/skills/cdi-costigan-api/SKILL.md`): system prompt = skill body + the 5 procedure packs (`esi`, `facet`, `tpi`, `si`, `pva`) concatenated by `loadProcedurePacks()`; user message = final SOAP note + pasted Epic chart (Box B); model `claude-sonnet-4-6`; no tools, no live connector. **No connector needed** — the 5 packs carry connector-validated closed code lists (per the 2026-06-05 `cdi-costigan` decision). Wired into the pre-chart `onSuccess` (both API and CLI edit-note paths) via `runCostiganChecklist()` (`src/jobs/costiganChecklist.js`), gated by `enableCostiganCdi` (default off) + a Costigan-doctor check (`isCostiganDoctor()`). **Inputs are split**: Box A (edit-note instructions) flows unchanged into the edit-note step; Box B (pasted Epic chart) flows only into the checklist. Writes `<stem>_costigan.json` + `<stem>_costigan.md` (rendered by `src/render/costiganMd.js`) + `<stem>_chart_input.md`; **no DB schema change** — one `processing_events` row with `job_kind='costigan'`. No transcript input in v1 (note alone carries the auditable documentation). A 2nd "Epic chart" text area appears in the Pre-chart view only when `enableCostiganCdi` is on for a Costigan doctor.
+
+**Rejected:**
+- *Live connector at runtime.* The ICD-10 MCP connector is only available to `claude -p` subprocesses (cwd NOTES_DIR, `.mcp.json` loaded); `ctx.api` is a direct Anthropic SDK call and has no tool-call layer. Since the packs already carry connector-validated codes, the connector adds no value at inference time — it was only needed during pack authoring.
+- *Running via `claude -p` CLI spawn.* Would work but adds the same process-management overhead as `cdi-costigan`, and the chart text (Box B) would have to be written to a temp file and passed by path — more fragile than the API call. The pre-chart job dispatcher already holds a `ctx.api` reference.
+- *Folding the checklist into the edit-note API call.* Different output shape, different token budget, and a separate `processing_events` row with its own error surface. Keeping them independent makes each step debuggable in isolation.
+- *Transcript as input.* V1 uses the final SOAP note as the auditable record (mirrors how `cdi-review` consumes the completed note). Adding the transcript as a cross-reference is a v2 follow-up.
+
+**Implications:**
+- `enableCostiganCdi` (`settings.json`, default `false`) is independent of `enableCdi`/`enableIcd` — no coupling invariant.
+- The skill file + packs are synced to `<NOTES_DIR>/.claude/` on every launch (same skills-sync mechanism), but the checklist uses them by direct `fs.readFileSync` from the repo path, not via `claude -p`.
+- HTML→PDF presentation (matching the `engine-output-html-pdf` plan) is deferred — the JSON is the data layer; the MD is the interim human-readable output.
+- Plan: `docs/plans/2026-06-26-rs-costigan-cdi-api.md`.
+
+---
+
 ## 2026-06-11 (rs) — PA engines v0.2: E/M scorer + patient summary as pipeline engines; provider-query + E/M reimbursement on CDI; generic `engine_outputs` table
 
 **Context:** Next batch of PA capabilities after CDI v1 + the Costigan procedure-checklist. Four deliverables: an **E/M MDM scorer**, a **patient summary**, **provider-query generation**, and a **per-flag E/M reimbursement signal**. Branch `feature/pa-engines-v0.2` off develop. (An earlier draft of the plan scoped these as on-demand/ephemeral with no UI; rish reversed that mid-implementation — they now run in the pipeline, gated by toggles.)
