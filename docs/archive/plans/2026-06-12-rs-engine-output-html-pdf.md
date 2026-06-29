@@ -1,9 +1,19 @@
 # Engine outputs: Markdown/docx → HTML→PDF render path
 
 **Owner:** rs
-**Status:** Planned (design only — do NOT implement from this doc yet; open questions below)
-**Branch (when implementing):** off `feature/pa-engines-v0.2` (or `develop` if v0.2 has merged by then) — confirm at start
+**Status:** ✅ **Implemented 2026-06-26** on `feature/engine-pdf-render` (off `develop`). See the 2026-06-26 DECISIONS entry + ARCHITECTURE.md *Engine-output rendering*.
 **Date:** 2026-06-12
+
+> **Implemented-as (divergences from the recommendations below — confirmed with the owner at build time):**
+> - **Q1 → ONE combined report per case**, not per-engine PDFs. `src/pipeline/report.js → renderCaseReport()` reads whatever `<stem>_{cdi,em,patient_summary}.json` exist, assembles `PA_DATA`, and renders a single `<stem>_report.html` + `<stem>_report.pdf`. No per-engine `toDocument()` hooks — it's a single case-level post-step.
+> - **Format → BOTH** a self-contained `<stem>_report.html` and a `<stem>_report.pdf` (printToPDF), both kept visible.
+> - **Q2/Q3 → template committed** at `templates/engine-report/cockpit.html` (the scroller, with a `<script id="pa-data">` injection seam); the scroller stays as the design sandbox.
+> - **Q4 → two `cases` columns** `report_html_path` / `report_pdf_path` (migration **008** — 006/007 were already taken), not `engine_outputs.pdf_path` (the report is per-case, not per-engine).
+> - **§3e → CDI's `.md`/`.docx` KEPT** (not dropped) — the report is purely additive.
+> - **§3f → done:** em-score emits `billed_em_code`/`billed_em_source`; the template's billed-vs-supported UI is data-driven and omitted when null.
+> - **Q5 → "Open Report"** button in the status popup via the existing `open-soap-note` IPC. **Q6** docx 'cdi' branch left in place. **Q7** `cdi-costigan` untouched (fast-follow). **Q9** inline render script runs with no restrictive CSP on the offscreen window. **Q10** Letter via the template's `@page` + `preferCSSPageSize`.
+>
+> _The recommendations and open questions below are the original design doc, preserved for context._
 
 ---
 

@@ -55,7 +55,8 @@ function updateCasePaths(id, fields) {
   if (!db || !id) return
   try {
     const allowed = ['status', 'transcript_path', 'transcript_docx_path', 'soap_note_path', 'soap_docx_path',
-      'completed_at', 'mp3_path', 'parent_case_id', 'multi_patient', 'case_dir']
+      'completed_at', 'mp3_path', 'parent_case_id', 'multi_patient', 'case_dir',
+      'report_html_path', 'report_pdf_path']
     const sets = []
     const vals = []
     for (const [k, v] of Object.entries(fields)) {
