@@ -36,3 +36,19 @@ test('parse_error renders a stub', () => {
   const md = renderCostiganMd({ meta: { patient: 'X' }, parse_error: true, raw_output_path: '/tmp/x.raw.txt' })
   assert.ok(/could not be produced/i.test(md))
 })
+
+test('renders Frequency section when within_cap=false even with empty cap and prior_dates', () => {
+  const data = {
+    meta: { patient: 'Test Patient', generated_at: '2026-06-29T00:00:00Z' },
+    summary: { procedures_in_play: 1, overall_status: 'likely_denied', likely_denied_count: 1 },
+    procedures_detected: [{
+      procedure: 'TPI', verdict: 'likely_denied',
+      checklist: [],
+      coding: {},
+      frequency: { cap: '', prior_dates: [], within_cap: false },
+    }],
+  }
+  const md = renderCostiganMd(data)
+  assert.ok(/### Frequency/.test(md), 'Frequency section should be rendered')
+  assert.ok(/\*\*Within cap:\*\* no/.test(md), 'within_cap=false should render as "no"')
+})

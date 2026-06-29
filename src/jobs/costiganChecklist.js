@@ -113,6 +113,8 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     data.meta = data.meta || {}
     data.meta.generated_at = data.meta.generated_at || startedAt
     data.meta.case_dir = caseDir
+    data.meta.patient = data.meta.patient || patientName
+    data.meta.doctor = data.meta.doctor || (doctor && doctor.name) || ''
 
     try { fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8'); writtenArtifacts.push(jsonPath) } catch (e) { log(`${tag} json write failed: ${e.message}`) }
     try { fs.writeFileSync(mdPath, renderCostiganMd(data), 'utf8'); writtenArtifacts.push(mdPath) } catch (e) { log(`${tag} md write failed: ${e.message}`) }

@@ -51,7 +51,7 @@ function renderProc(p) {
   }
 
   const f = p.frequency || {}
-  if (f.cap || (f.prior_dates && f.prior_dates.length)) {
+  if (f.cap || (f.prior_dates && f.prior_dates.length) || f.within_cap === false) {
     out.push('### Frequency', '')
     if (f.cap) out.push(`**Cap:** ${f.cap}  `)
     const priors = f.prior_dates || []
