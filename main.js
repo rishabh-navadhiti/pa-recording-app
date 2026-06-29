@@ -960,7 +960,7 @@ function buildCombinedAttachment(filePaths) {
   return combineAttachmentFiles(filePaths, { log })
 }
 
-function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath) {
+function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmentPath, chartText, doctor) {
   const caseName = path.basename(caseDir)
   const patientLabel = caseName.replace(/_\d{4}-\d{2}-\d{2}.*$/, '').replace(/_/g, ' ') || caseName
   let prechartCaseId = null
@@ -971,6 +971,7 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     templatePath:   templatePath.replace(/\\/g, '/'),
     attachmentPath: (combinedAttachmentPath || '').replace(/\\/g, '/'),
     instructions:   (instructions || '').replace(/\r?\n/g, ' '),
+    chartText:      chartText || '',
   }
 
   const opt        = resolveOption(readSettings().soapModel)
@@ -980,6 +981,7 @@ function spawnPrechartJob(caseDir, templatePath, instructions, combinedAttachmen
     patientLabel,
     caseId: prechartCaseId,
     combinedAttachmentPath,   // raw temp path, for cleanup
+    doctor: doctor || null,
     runEngine,
     icdEngine,
     spawnDocxConversionFn: (md, tag, folder, cid) => spawnDocxConversion(md, tag, folder, cid),

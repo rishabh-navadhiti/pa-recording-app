@@ -30,6 +30,7 @@ function makeApi() {
     onAutoStartRecording: () => {},
     onRecordingStatusUpdate: () => {},
     onTemplateJobStatus: () => {},
+    onCostiganReportReady: () => {},
     // Misc no-ops init/handlers may touch.
     getSettings: () => ({}),
     getNotesDir: () => 'C:\\Notes',
