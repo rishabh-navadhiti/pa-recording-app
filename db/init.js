@@ -98,6 +98,14 @@ function ensureCaseColumns(db) {
       db.exec('ALTER TABLE cases ADD COLUMN multi_patient INTEGER NOT NULL DEFAULT 0')
       console.log('[db] ensureCaseColumns: added cases.multi_patient')
     }
+    if (!cols.includes('report_html_path')) {
+      db.exec('ALTER TABLE cases ADD COLUMN report_html_path TEXT NULL')
+      console.log('[db] ensureCaseColumns: added cases.report_html_path')
+    }
+    if (!cols.includes('report_pdf_path')) {
+      db.exec('ALTER TABLE cases ADD COLUMN report_pdf_path TEXT NULL')
+      console.log('[db] ensureCaseColumns: added cases.report_pdf_path')
+    }
   } catch (e) {
     console.error('[db] ensureCaseColumns failed:', e.message)
   }
