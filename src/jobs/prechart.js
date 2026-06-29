@@ -3,6 +3,7 @@
 const fs   = require('fs')
 const path = require('path')
 const { parseSkillManifest } = require('../llm/skill-io/manifest')
+const { resolveCliModel } = require('../llm/modelOptions')
 
 /** @type {JobDescriptor} */
 const prechart = {
@@ -12,7 +13,9 @@ const prechart = {
   jobKind:  'prechart',
   lockType: 'prechart',
 
-  model:  (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  // CLI prechart runs via `claude -p` — resolve to a CLI-valid Anthropic model
+  // (an option id like `sonnet-4-6-api` passed raw would 404). See modelOptions.
+  model:  (cfg) => resolveCliModel(cfg.soapModel),
   effort: () => 'high',
 
   onRunning(input, ctx, extra, { startedAt }) {

@@ -237,6 +237,19 @@ body {
   color: #fff;
 }
 
+/* Report variant — the combined Clinical Cockpit (CDI · E/M · patient). Teal
+   accent to echo the report's own header colour. */
+.open-btn--report {
+  margin-left: 4px;
+  border-color: #0f6e8c;
+  color: #0f9ec0;
+}
+
+.open-btn--report:hover {
+  background: #0f6e8c;
+  color: #fff;
+}
+
 /* Critical-flag indicator. Sits between the status label and the open buttons. */
 .cdi-approval-badge {
   margin-left: 6px;

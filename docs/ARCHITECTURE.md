@@ -88,7 +88,7 @@ gates → status(running) → startEvent → run-the-LLM → classify(rate-limit
 If `gates()` returns a reason the step is skipped (logged + reported `skipped`, no skill call). Engines are best-effort: a failure returns `null` and the chain continues. `src/engines/registry.js` declares the canonical order `[soap, icd, cdi, em-score, patient-summary]`.
 
 The **chain** that drives these per case is `src/pipeline/chain.js`:
-- `runCaseChain(ctx, caseCtx)` — single-patient: `runEngine(icd)` → `runEngine(cdi)` → `runEngine(emScore)` → `runEngine(patientSummary)` → `docx.spawnDocxConversion(soap)` → `docx(cdi)`. em-score + patient-summary self-gate off when their toggles are off, are JSON-only (no docx), and persist to `engine_outputs`.
+- `runCaseChain(ctx, caseCtx)` — single-patient: `runEngine(icd)` → `runEngine(cdi)` → `runEngine(emScore)` → `runEngine(patientSummary)` → `docx.spawnDocxConversion(soap)` → `docx(cdi)` → `report.renderCaseReport(...)`. em-score + patient-summary self-gate off when their toggles are off, are JSON-only (no docx), and persist to `engine_outputs`. `renderCaseReport` is the final post-step (see *Engine-output rendering* below).
 - `runMultiPatientChain(ctx, opts)` — plans child folders (`src/pipeline/multiPatient.js → planChildCases`), publishes the full patient list to the status UI, then loops children sequentially, materializing each folder and calling `runCaseChain` on it (so the two new engines apply per child automatically).
 
 (SOAP itself runs slightly upstream of the chain, in `main.js → spawnSoapGeneration`, which parses the manifest and then dispatches to `runCaseChain` / `runMultiPatientChain`. ICD + CDI + em-score + patient-summary run via `runEngine` inside the chain; docx is a fixed post-step, not an engine.)
@@ -230,7 +230,7 @@ Properties:
 - **Per-patient cost attribution for SOAP is intrinsically not separable.** One Claude invocation generates content for all patients, so SOAP cost lives on the audit row only. Per-child queries see ICD + docx costs only. Per-session totals (joining through `case_id` → `cases.session_id`) include the SOAP cost via the parent row.
 - **No cleanup or "resume" logic in v1.** If the app crashes between skill exit and split completion, the recording folder is durable; the user can re-process manually. A future "resume split" feature could re-read the manifest from `app.log`.
 
-### Per-case post-processing chain (ICD → CDI → E/M score → patient summary → docx)
+### Per-case post-processing chain (ICD → CDI → E/M score → patient summary → docx → report)
 
 Both single-patient and multi-patient cases run the same per-case post-processing chain after the SOAP `.md` is in its final on-disk location:
 
@@ -246,6 +246,8 @@ The chain itself lives in `src/pipeline/chain.js` (`runCaseChain` for single-pat
 
 4. **`docx.spawnDocxConversion(soapNoteMdPath, …)`** (`src/pipeline/docx.js`) runs after the engines resolve, generating the soap `.docx` from the now-coded `.md`. A second `spawnDocxConversion(cdiMdPath, …)` runs when CDI produced a `.md`, generating the cdi `.docx`. The kind ('soap' / 'cdi' / 'transcript') is detected from the filename (`*_cdi.md` → 'cdi'); the close handler branches accordingly. Soap-docx success flips the case to `'completed'` (primary deliverable); cdi-docx success only populates `cdi_docx_path` (via `dbCases.updateCaseCdi`) and surfaces the Open CDI Review button in the popup. **The two v0.2 engines get no docx** — their output is JSON.
 
+5. **`report.renderCaseReport(ctx, caseCtx)`** (`src/pipeline/report.js`) runs last — the *Engine-output rendering* step below. It renders ONE combined "Clinical Cockpit" `<stem>_report.html` + `<stem>_report.pdf` from whatever engine JSONs landed; awaited (one offscreen render at a time), best-effort.
+
 Properties:
 - **ICD + CDI are both best-effort.** Failure (MCP unreachable, model error, rate limit, network, skill bug) logs + emits a `service-warning` IPC + records the failure status on `processing_events`, but the chain always falls through to docx. A SOAP note without codes — or without a CDI review — is still useful.
 - **ICD + CDI are per case folder, never on audit folders.** Single-patient runs them once on the parent's `.md`. Multi-patient runs them once per child folder's `.md`. The recording (audit) folder retains the SOAP `.md` files the skill wrote — never appended to, never CDI-reviewed, never converted to docx.
@@ -255,6 +257,25 @@ Properties:
 - **Pre-chart re-runs ICD only.** When `edit-note` rewrites a SOAP `.md`, the diagnoses may have changed — `runEngine(icd, …)` re-runs before the docx refresh. CDI is **not** re-run automatically (v1.1 follow-up); the old `_cdi.{json,md,docx}` artifacts remain in the case folder.
 - **All children visible in the status UI upfront.** `runMultiPatientChain` (`src/pipeline/chain.js`) does a planning pass (`planChildCases`, `src/pipeline/multiPatient.js`) to compute every child's slug + folder + UI entry, calls `ctx.stores.recordings.setPatients` once, then runs the processing pass. Each child starts in state `queued` (muted, static dot in the popup); the active one transitions to `coding_icd` → `running_cdi` → `converting` → `completed` (or `failed`) while siblings sit on `queued`. This decouples "show all patients" from "process them one at a time" — the per-child sequencing only affects work, not visibility.
 - **CDI UI fields ride alongside the main status.** Each entry / patient is intended to carry `cdiStatus`, `cdiFlagCount`, `cdiQualityScore`, `cdiClinicianApprovalRequired`, `cdiDocxPath` independent of the main status state machine. The status popup uses these to render the "⚠ Review" badge (when approval required) and the Open CDI Review button (when `cdiDocxPath` is set). The recordings store's `onChange` payload and `get-session-recordings` spread the entry, so these fields flow to the renderer without a separate IPC channel. ⚠️ Tied to the regression above: only `cdiDocxPath` is populated by the live pipeline today (set in docx.js); the other `cdi*` UI fields are produced by `cdi.render()`, which `engineRunner` does not currently call.
+
+### Engine-output rendering (combined "Clinical Cockpit" HTML → PDF)
+
+The review/scoring engines (CDI, E/M MDM, patient-summary) keep their **JSON as canonical**; the *presentation* of those JSONs is one combined report per case, rendered by `src/pipeline/report.js → renderCaseReport(ctx, caseCtx)` — a **fixed post-step** after the engines + docx, structured like docx (not an engine, not inside `runEngine`).
+
+Flow:
+1. **Assemble `PA_DATA`.** `assemblePaData(caseDir)` resolves the file stem from the `*_soap_note.md` name (NOT always the folder/patient name) and reads whatever of `<stem>_{cdi,em,patient_summary}.json` exist. Returns `{ meta, cdi, em, patient_summary }` with `meta` sourced from the richest engine (CDI carries specialty + mode + standards versions). If **no** engine JSON exists, the step no-ops (nothing to render).
+2. **Inject into the template.** `buildReportHtml(template, paData)` reads `templates/engine-report/cockpit.html` (the committed, shipped template — the scroller's CSS + render layer with the hardcoded data block replaced by a `<script id="pa-data" type="application/json">__PA_DATA_JSON__</script>` seam) and replaces the placeholder with the JSON. `<`/`>` (and the U+2028/U+2029 separators) are escaped to their `\uXXXX` forms so a stray `</script>` or `<` in note text can't break out of the inline script block; the template's render layer `JSON.parse`s the seam's `textContent`, which decodes them back. The render layer reads **only** from `PA_DATA` — case-agnostic; swap the data and it re-renders for any case.
+3. **Write HTML.** `<stem>_report.html` is written first — a self-contained, offline, shareable artifact even if the PDF render later fails.
+4. **Print to PDF.** An **offscreen Electron `BrowserWindow`** (`show:false`, sandboxed) loads the HTML; `webContents.printToPDF({ printBackground:true, preferCSSPageSize:true })` honors the template's `@page { size:Letter; margin… }` + `break-inside:avoid` rules and preserves the navy header + severity palette. The Buffer is written to `<stem>_report.pdf`; the window is destroyed in `finally`. Chromium, **zero new deps**.
+5. **Persist + surface.** Both paths are written to `cases.report_html_path` / `report_pdf_path` (migration 008); a `processing_events` row (`job_kind:'report'`) records duration/status. The recordings store gets `reportPdfPath`/`reportHtmlPath` (via `setReport`/`setPatientReport`), and the status popup shows an **"Open Report"** button (prefers the PDF, falls back to HTML; opened through the existing `open-soap-note` IPC, which confines to `CASES_DIR`).
+
+Design choices (see the 2026-06-26 DECISIONS entry):
+- **One combined report per case, not per-engine.** Matches the cockpit reference's "one cockpit per case" intent; makes this a single case-level post-step rather than per-engine `toDocument()` hooks.
+- **Both HTML and PDF stay on disk and visible** (the `.md`-hiding logic doesn't touch `.html`/`.pdf`).
+- **Best-effort.** A render failure logs and leaves the engine JSONs untouched — SOAP completion is the primary deliverable.
+- **Data-driven, no hardcoded codes.** em-score now emits `billed_em_code`/`billed_em_source` (parsed from the note's Level-of-Service placeholder, null when absent); the report's billed-vs-supported card + downcode banner render from that field and are omitted when it's null or equals the predicted level.
+- **Multi-patient:** because the report runs inside `runCaseChain`, each child folder gets its own report; the parent (audit) folder gets none.
+- **Reference + sandbox:** `docs/notes/cdi-ui-reference/presentation_cockpit_scroller.html` is the design sandbox the shipped template was lifted from; `presentation_cockpit.html` (tabbed) is the reference for a future in-app interactive surface, which can consume the same `PA_DATA` contract.
 
 ---
 

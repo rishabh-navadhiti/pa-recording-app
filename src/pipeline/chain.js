@@ -10,6 +10,7 @@ const emScore        = require('../engines/emScore')
 const patientSummary = require('../engines/patientSummary')
 // Namespace import (not destructured) so tests can stub docx.spawnDocxConversion.
 const docx = require('./docx')
+const report = require('./report')
 const { planChildCases, materializeChild } = require('./multiPatient')
 
 // ---- Single-patient post-SOAP chain ----------------------------------------
@@ -54,6 +55,15 @@ async function runCaseChain(ctx, caseCtx) {
   const cdiMdPath = cdiResult?.manifest?.md_path || null
   if (cdiMdPath && fs.existsSync(cdiMdPath)) {
     docx.spawnDocxConversion(cdiMdPath, caseTag, patientFolderName || null, caseId, ctx)
+  }
+
+  // Combined "Clinical Cockpit" report (HTML + PDF) rendered from the engine
+  // JSONs on disk. Fixed post-step like docx; best-effort, awaited so only one
+  // offscreen Chromium render runs at a time. No-op when no engine JSON exists.
+  try {
+    await report.renderCaseReport(ctx, caseCtx)
+  } catch (e) {
+    ctx.log(`${caseTag ? `[${caseTag}] ` : ''}[report] render error: ${e.message}`)
   }
 }
 
