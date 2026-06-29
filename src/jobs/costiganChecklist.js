@@ -56,6 +56,13 @@ function parseHeaderFacts(noteText, caseDir) {
 async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx }) {
   const { log } = ctx
   const tag = '[costigan]'
+  let eventId = null
+  let finished = false
+  const finish = (status, usage, errMsg) => {
+    if (finished) return
+    finished = true
+    try { require('../../db/events').finishEvent(eventId, { status, errorMessage: errMsg || null, finishedAt: new Date().toISOString(), ...(usage || {}) }) } catch {}
+  }
   try {
     if (!ctx.config.get().enableCostiganCdi) { log(`${tag} disabled — skip`); return }
     if (!isCostiganDoctor(doctor))           { log(`${tag} not Dr. Costigan — skip`); return }
@@ -67,10 +74,12 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     const packsText = loadProcedurePacks()
     const { dateOfService, patientName } = parseHeaderFacts(noteText, caseDir)
     const stem = path.basename(notePath, '_soap_note.md')
+    const writtenArtifacts = []   // paths to hide on Windows after the run
 
     // Persist the raw chart input so it isn't lost (it lives only as pasted text).
     if (chartText && chartText.trim()) {
-      try { fs.writeFileSync(path.join(caseDir, `${stem}_chart_input.md`), chartText, 'utf8') } catch (e) { log(`${tag} chart save failed: ${e.message}`) }
+      const chartPath = path.join(caseDir, `${stem}_chart_input.md`)
+      try { fs.writeFileSync(chartPath, chartText, 'utf8'); writtenArtifacts.push(chartPath) } catch (e) { log(`${tag} chart save failed: ${e.message}`) }
     }
 
     const { system, user } = buildSingleCallCostiganCdi({
@@ -79,12 +88,7 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     })
 
     const startedAt = new Date().toISOString()
-    let eventId = null
     try { eventId = require('../../db/events').startEvent({ caseId: caseId || null, jobKind: 'costigan', relatedDoctorId: doctor?.id || null, modelUsed: MODEL, effort: 'high', startedAt }) } catch (e) { log(`${tag} startEvent: ${e.message}`) }
-
-    const finish = (status, usage, errMsg) => {
-      try { require('../../db/events').finishEvent(eventId, { status, errorMessage: errMsg || null, finishedAt: new Date().toISOString(), ...(usage || {}) }) } catch {}
-    }
 
     let result = await ctx.api.runSingleCall({ system, user, model: MODEL, tag, label: 'cdi-costigan:api' })
     if (!result.ok) { log(`${tag} API failed: ${result.errText}`); finish('failed', normalizeApiUsage({ model: MODEL, rawUsage: result.rawUsage, durationMs: result.durationMs }), result.errText); return }
@@ -101,7 +105,7 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     const mdPath   = path.join(caseDir, `${stem}_costigan.md`)
     if (!data) {
       const rawPath = path.join(caseDir, `${stem}_costigan.raw.txt`)
-      try { fs.writeFileSync(rawPath, result.text || '', 'utf8') } catch {}
+      try { fs.writeFileSync(rawPath, result.text || '', 'utf8'); writtenArtifacts.push(rawPath) } catch {}
       data = { meta: { patient: patientName, case_dir: caseDir, generated_at: startedAt }, parse_error: true, raw_output_path: rawPath }
     }
 
@@ -110,16 +114,17 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     data.meta.generated_at = data.meta.generated_at || startedAt
     data.meta.case_dir = caseDir
 
-    try { fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8') } catch (e) { log(`${tag} json write failed: ${e.message}`) }
-    try { fs.writeFileSync(mdPath, renderCostiganMd(data), 'utf8') } catch (e) { log(`${tag} md write failed: ${e.message}`) }
+    try { fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8'); writtenArtifacts.push(jsonPath) } catch (e) { log(`${tag} json write failed: ${e.message}`) }
+    try { fs.writeFileSync(mdPath, renderCostiganMd(data), 'utf8'); writtenArtifacts.push(mdPath) } catch (e) { log(`${tag} md write failed: ${e.message}`) }
 
-    // Hide artifacts on Windows (no-op on macOS).
-    try { for (const p of [jsonPath, mdPath]) ctx.platform?.hideInternal?.(p) } catch {}
+    // Hide all written artifacts on Windows (no-op on macOS).
+    try { for (const p of writtenArtifacts) ctx.platform?.hideInternal?.(p) } catch {}
 
     finish(data.parse_error ? 'failed' : 'success', normalizeApiUsage({ model: MODEL, rawUsage: result.rawUsage, durationMs: result.durationMs }), data.parse_error ? 'JSON parse failed after retry' : null)
     log(`${tag} done: ${data.summary?.overall_status || (data.parse_error ? 'parse_error' : '?')} -> ${jsonPath}`)
   } catch (e) {
     log(`${tag} unexpected error: ${e.message}`)
+    finish('failed', null, e.message)
   }
 }
 
