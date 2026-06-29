@@ -79,9 +79,11 @@ The three Claude-backed per-case steps — **SOAP**, **ICD**, **CDI** — are un
 `runEngine` walks every engine through the same steps:
 
 ```
-gates → status(running) → startEvent → ctx.llm.runSkill → classify(rate-limit/MCP-error)
+gates → status(running) → startEvent → run-the-LLM → classify(rate-limit/MCP-error)
       → interpret → finishEvent → persist → service-warning → status(complete)
 ```
+
+**run-the-LLM has two modes.** Engines with no `runLlm` method (SOAP, ICD, CDI) run agentically via `ctx.llm.runSkill` (`claude -p`). Engines that expose `runLlm(input, ctx, caseCtx, {model, provider})` (em-score, patient-summary) instead run as a single Anthropic Messages-API call: `runEngine` branches on `!!engine.runLlm`, passes `ctx.api` (pinned Anthropic — never Gemini, model via `pinnedAnthropicModel()`), and the engine's `runLlm` reads inputs, calls `provider.runSingleCall`, writes its `_em.json`/`_patient_summary.json`, and returns a normalized `{code, text(=synthesized manifest), usage}` so the rest of the lifecycle is identical for both modes. See DECISIONS 2026-06-29. (These two need `ANTHROPIC_API_KEY` even on the "Agentic" SOAP option.)
 
 If `gates()` returns a reason the step is skipped (logged + reported `skipped`, no skill call). Engines are best-effort: a failure returns `null` and the chain continues. `src/engines/registry.js` declares the canonical order `[soap, icd, cdi, em-score, patient-summary]`.
 
@@ -150,9 +152,9 @@ User           Renderer            Main                Python              Eleve
  │               │                  │         on-disk _cdi.json (recovery layer, intact)        │
  │               │                  │       → cdi.persist() writes cdi_* cols + cdi_flags rows  │
  │               │                  │       → best-effort; failure falls through to docx        │
- │               │                  │     runEngine(emScore) → <case>_em.json (if enabled)      │
- │               │                  │     runEngine(patientSummary) → _patient_summary.json     │
- │               │                  │       → JSON only; each writes 1 engine_outputs row       │
+ │               │                  │     runEngine(emScore) → Anthropic API → <case>_em.json   │
+ │               │                  │     runEngine(patientSummary) → API → _patient_summary    │
+ │               │                  │       → API-only (runLlm); JSON only; 1 engine_outputs row │
  │               │                  │     docx.spawnDocxConversion on the now-coded soap .md    │
  │               │                  │     docx.spawnDocxConversion on cdi .md (if CDI succeeded)│
  │               │                  │   if  multi_patient: per cases[] entry —                  │

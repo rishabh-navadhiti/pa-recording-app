@@ -202,4 +202,71 @@ function buildSingleCallNoteEdit({ skillText, templateText, existingNoteText, tr
   return { system, user: parts.join('\n') }
 }
 
-module.exports = { buildSingleCallNoteGen, buildSingleCallNoteEdit, splitNoteAndManifest, stripFrontmatter }
+/**
+ * Build the system + user messages for a single-call API engine that emits ONE
+ * JSON object (em-score, patient-summary). Generic — the engine supplies the
+ * skill text, a one-line instruction, authoritative facts, the inline context
+ * blocks (note / transcript / standards pack), and a closer telling the model to
+ * return raw JSON only. Node reads all inputs and writes the resulting file; the
+ * model returns nothing but the JSON object (no manifest line).
+ *
+ * @param {object} opts
+ * @param {string}   opts.skillText        Raw contents of the *-api SKILL.md (frontmatter stripped → system)
+ * @param {string}   opts.instruction      One-line task line, e.g. "Score the E/M level for this note."
+ * @param {string[]} [opts.injectedFacts]  Authoritative facts, e.g. ["Patient: jane_doe", "Doctor: sabbag"]
+ * @param {Array<{title:string, body:string}>} [opts.contextBlocks]  Inline content blocks (note, transcript, pack)
+ * @param {string}   opts.closer           Final instruction, e.g. "Output the JSON object now — raw JSON only."
+ * @returns {{ system: string, user: string }}
+ */
+function buildSingleCallEngineJson({ skillText, instruction, injectedFacts = [], contextBlocks = [], closer }) {
+  const system = stripFrontmatter(skillText)
+  const parts = [instruction, '']
+
+  if (injectedFacts.length) {
+    parts.push('INJECTED FACTS (authoritative — use exactly as given):')
+    for (const f of injectedFacts) parts.push(`- ${f}`)
+    parts.push('')
+  }
+
+  for (const { title, body } of contextBlocks) {
+    if (!body || !body.trim()) continue
+    parts.push(`${title}:`, '---', body, '---', '')
+  }
+
+  parts.push(closer)
+  return { system, user: parts.join('\n') }
+}
+
+/**
+ * Parse a single JSON object out of a model response. The *-api engine skills
+ * instruct the model to return raw JSON only, so the primary path is a direct
+ * JSON.parse; the fence-strip + largest-balanced-block fallbacks are defensive
+ * against a stray code fence or surrounding prose.
+ *
+ * @param {string} text  Full model response text
+ * @returns {object|null}  Parsed object, or null if no valid JSON found
+ */
+function parseJsonResponse(text) {
+  if (!text) return null
+  let t = text.trim()
+
+  // Strip a wrapping ```json … ``` (or bare ``` … ```) fence if present.
+  const fence = t.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/)
+  if (fence) t = fence[1].trim()
+
+  try { return JSON.parse(t) } catch {}
+
+  // Fallback: widest balanced span between the first { and the last }.
+  const start = t.indexOf('{')
+  const end   = t.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(t.slice(start, end + 1)) } catch {}
+  }
+
+  return null
+}
+
+module.exports = {
+  buildSingleCallNoteGen, buildSingleCallNoteEdit, splitNoteAndManifest, stripFrontmatter,
+  buildSingleCallEngineJson, parseJsonResponse,
+}

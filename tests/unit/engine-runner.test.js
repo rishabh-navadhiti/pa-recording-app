@@ -94,3 +94,62 @@ test('runEngine sends service-warning on MCP error for ICD', async () => {
   const result = await runEngine(icdEngine(), ctx, fakeCaseCtx())
   assert.ok(warnings.some(w => w.ch === 'service-warning' && w.data.title.includes('ICD')))
 })
+
+// ---- API-only engine branch (runLlm) ---------------------------------------
+
+// A minimal API-only engine descriptor (exposes runLlm).
+function apiEngine(runLlm) {
+  return {
+    id: 'em-score', skillId: 'em-score', jobKind: 'em_score', stage: 'scoring_em',
+    label: 'E/M scoring', completesCase: false,
+    model: () => 'unused-for-api', effort: 'high',
+    gates: () => [],
+    buildInput: () => ({ caseDir: '/tmp/notes/Cases/x' }),
+    runLlm,
+    interpret: () => ({ ok: true }),
+    persist: () => {},
+    render: () => null,
+  }
+}
+
+test('runEngine uses runLlm (not runSkill) for an API engine and passes ctx.api', async () => {
+  let runSkillCalled = false
+  let seenOpts = null
+  const ctx = fakeCtx()
+  ctx.llm.runSkill = async () => { runSkillCalled = true; return { code: 0 } }
+  ctx.api = { tag: 'anthropic-fake' }
+
+  const engine = apiEngine(async (_input, _ctx, _caseCtx, opts) => {
+    seenOpts = opts
+    return { code: 0, text: '{"status":"ok"}', usage: { inputTokens: 5 } }
+  })
+
+  const result = await runEngine(engine, ctx, fakeCaseCtx())
+  assert.strictEqual(runSkillCalled, false, 'CLI path must not run for an API engine')
+  assert.ok(seenOpts, 'runLlm should be called')
+  assert.strictEqual(seenOpts.provider, ctx.api, 'provider should be ctx.api')
+  assert.strictEqual(seenOpts.model, 'claude-sonnet-4-6', 'pinned Anthropic model resolved')
+  assert.deepStrictEqual(result, { ok: true })
+})
+
+test('runEngine treats runLlm isRateLimit as a usage-limit service-warning', async () => {
+  const warnings = []
+  const ctx = fakeCtx()
+  ctx.api = {}
+  ctx.renderer.send = (ch, data) => warnings.push({ ch, data })
+
+  const engine = apiEngine(async () => ({ code: 1, text: '', errText: 'HTTP 429', isRateLimit: true, statusCode: 429, usage: {} }))
+  await runEngine(engine, ctx, fakeCaseCtx())
+  assert.ok(warnings.some(w => w.ch === 'service-warning' && /usage limit/i.test(w.data.title)))
+})
+
+test('runEngine surfaces an auth (401) failure for an API engine', async () => {
+  const warnings = []
+  const ctx = fakeCtx()
+  ctx.api = {}
+  ctx.renderer.send = (ch, data) => warnings.push({ ch, data })
+
+  const engine = apiEngine(async () => ({ code: 1, text: '', errText: 'HTTP 401', statusCode: 401, usage: {} }))
+  await runEngine(engine, ctx, fakeCaseCtx())
+  assert.ok(warnings.some(w => w.ch === 'service-warning' && /API key/i.test(w.data.title)))
+})
