@@ -77,5 +77,6 @@ contextBridge.exposeInMainWorld('api', {
   onPickDoctor:            (cb) => ipcRenderer.on('pick-doctor',             (_, doctors) => cb(doctors)),
   onServiceWarning:        (cb) => ipcRenderer.on('service-warning',         (_, data)    => cb(data)),
   onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data)),
-  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job))
+  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job)),
+  onCostiganReportReady:   (cb) => ipcRenderer.on('costigan-report-ready',   (_, data)    => cb(data))
 })

@@ -4,6 +4,7 @@ const fs   = require('fs')
 const path = require('path')
 const { buildSingleCallCostiganCdi } = require('../llm/skill-io/singleCall')
 const { renderCostiganMd }           = require('../render/costiganMd')
+const { renderCostiganHtml }         = require('../render/costiganHtml')
 const { normalizeApiUsage }          = require('../llm/pricing')
 
 const SKILL_PATH     = path.join(__dirname, '../../notes-claude/skills/cdi-costigan-api/SKILL.md')
@@ -121,11 +122,35 @@ async function runCostiganChecklist({ caseDir, doctor, chartText, caseId, ctx })
     try { fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8'); writtenArtifacts.push(jsonPath) } catch (e) { log(`${tag} json write failed: ${e.message}`) }
     try { fs.writeFileSync(mdPath, renderCostiganMd(data), 'utf8'); writtenArtifacts.push(mdPath) } catch (e) { log(`${tag} md write failed: ${e.message}`) }
 
-    // Hide all written artifacts on Windows (no-op on macOS).
+    // Visible report (the deliverable the scribe opens) — NOT pushed to
+    // writtenArtifacts, so neither the .html nor the .pdf is hidden on Windows.
+    // `reportPath` is the best available artifact to open: the PDF if it rendered,
+    // otherwise the HTML. Both are best-effort and never fail the job.
+    const htmlPath = path.join(caseDir, `${stem}_costigan_report.html`)
+    const pdfPath  = path.join(caseDir, `${stem}_costigan_report.pdf`)
+    let reportPath = null
+    try { fs.writeFileSync(htmlPath, renderCostiganHtml(data), 'utf8'); reportPath = htmlPath } catch (e) { log(`${tag} html write failed: ${e.message}`) }
+    if (reportPath) {
+      try {
+        const { htmlToPdf } = require('../render/htmlToPdf')
+        await htmlToPdf(htmlPath, pdfPath)
+        reportPath = pdfPath
+      } catch (e) { log(`${tag} pdf render failed (keeping html): ${e.message}`) }
+    }
+
+    // Hide internal artifacts on Windows (no-op on macOS). The report stays visible.
     try { for (const p of writtenArtifacts) ctx.platform?.hideInternal?.(p) } catch {}
 
+    // Tell the renderer the report is ready so it can offer an "Open report" button.
+    // (The checklist runs detached from the pre-chart job, so its own signal is needed.)
+    if (!data.parse_error && reportPath) {
+      const payload = { patient: data.meta.patient, overallStatus: data.summary?.overall_status || '', reportPath, caseDir }
+      try { ctx.renderer?.send?.('costigan-report-ready', payload) } catch {}
+      try { ctx.sendStatus?.('costigan-report-ready', payload) } catch {}
+    }
+
     finish(data.parse_error ? 'failed' : 'success', normalizeApiUsage({ model: MODEL, rawUsage: result.rawUsage, durationMs: result.durationMs }), data.parse_error ? 'JSON parse failed after retry' : null)
-    log(`${tag} done: ${data.summary?.overall_status || (data.parse_error ? 'parse_error' : '?')} -> ${jsonPath}`)
+    log(`${tag} done: ${data.summary?.overall_status || (data.parse_error ? 'parse_error' : '?')} -> ${jsonPath} (report: ${reportPath || htmlPath})`)
     if (data.summary && !data.parse_error) {
       const { overall_status, verdict_counts, procedures_in_play } = data.summary
       log(`${tag}[manifest] overall_status=${overall_status} verdict_counts=${JSON.stringify(verdict_counts)} procedures_in_play=${JSON.stringify(procedures_in_play)} json_path=${jsonPath}`)
