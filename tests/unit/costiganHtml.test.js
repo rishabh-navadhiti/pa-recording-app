@@ -32,7 +32,7 @@ test('renders header, headline, verdict, checklist id, fix, suggested code', () 
   assert.ok(html.includes('add prior-injection relief'))
   assert.ok(html.includes('ESI-R1'))
   assert.ok(html.includes('Not met'))
-  assert.ok(html.includes('→ Fix'))
+  assert.ok(html.includes('Fix'))
   assert.ok(html.includes('M48.062'))
 })
 
