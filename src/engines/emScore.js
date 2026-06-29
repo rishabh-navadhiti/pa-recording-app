@@ -4,6 +4,7 @@ const fs   = require('fs')
 const path = require('path')
 const { parseSkillManifest } = require('../llm/skill-io/manifest')
 const { CLAUDE_RATE_LIMITED } = require('../llm/skill-io/markers')
+const { resolveCliModel } = require('../llm/modelOptions')
 
 const emScore = {
   id:           'em-score',
@@ -13,7 +14,7 @@ const emScore = {
   stage:        'scoring_em',
   completesCase: false,
 
-  model: (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  model: (cfg) => resolveCliModel(cfg.soapModel),
   effort: 'high',
 
   /**
