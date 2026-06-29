@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   browsePrechartFiles:      ()                                       => ipcRenderer.invoke('browse-prechart-files'),
   listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
   browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
-  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
+  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths, chartText) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths, chartText),
   savePrechartContext:      (text, files)                            => ipcRenderer.invoke('save-prechart-context', text, files),
   getPrechartContext:       ()                                       => ipcRenderer.invoke('get-prechart-context'),
 
