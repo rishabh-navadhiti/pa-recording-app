@@ -20,6 +20,7 @@ function initDb(notesDir) {
     _db.pragma('foreign_keys = ON')
     _db.pragma('busy_timeout = 5000')
     runMigrations(_db)
+    ensureCaseColumns(_db)
     return _db
   } catch (e) {
     console.error('[db] Failed to open database:', e.message)
@@ -78,6 +79,35 @@ function runMigrations(db) {
       console.error(`[db] Migration failed: ${file} — ${e.message}`)
       throw e
     }
+  }
+}
+
+// Defensive self-heal for the multi-patient columns (parent_case_id, multi_patient).
+// Normally added by migration 007; a dev DB that churned through intermediate branch
+// states can end up at user_version>=7 WITHOUT the columns, after which the
+// version-gated runner skips 007. This idempotent check repairs such DBs and is a
+// harmless no-op on correctly-migrated databases. (Production upgrades apply via 007.)
+function ensureCaseColumns(db) {
+  try {
+    const cols = db.pragma('table_info(cases)').map(c => c.name)
+    if (!cols.includes('parent_case_id')) {
+      db.exec('ALTER TABLE cases ADD COLUMN parent_case_id TEXT NULL REFERENCES cases(id)')
+      console.log('[db] ensureCaseColumns: added cases.parent_case_id')
+    }
+    if (!cols.includes('multi_patient')) {
+      db.exec('ALTER TABLE cases ADD COLUMN multi_patient INTEGER NOT NULL DEFAULT 0')
+      console.log('[db] ensureCaseColumns: added cases.multi_patient')
+    }
+    if (!cols.includes('report_html_path')) {
+      db.exec('ALTER TABLE cases ADD COLUMN report_html_path TEXT NULL')
+      console.log('[db] ensureCaseColumns: added cases.report_html_path')
+    }
+    if (!cols.includes('report_pdf_path')) {
+      db.exec('ALTER TABLE cases ADD COLUMN report_pdf_path TEXT NULL')
+      console.log('[db] ensureCaseColumns: added cases.report_pdf_path')
+    }
+  } catch (e) {
+    console.error('[db] ensureCaseColumns failed:', e.message)
   }
 }
 

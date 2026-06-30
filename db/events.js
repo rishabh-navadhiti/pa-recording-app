@@ -13,7 +13,7 @@ function startEvent({ caseId, jobKind, relatedDoctorId, modelUsed, effort, start
     `).run(caseId || null, jobKind, relatedDoctorId || null, modelUsed || null, effort || null, startedAt || new Date().toISOString())
     return info.lastInsertRowid
   } catch (e) {
-    console.error(`[db] startEvent(${jobKind}) failed:`, e.message)
+    process.stderr.write(`[db] startEvent(${jobKind}) failed: ${e.message}\n`)
     return null
   }
 }

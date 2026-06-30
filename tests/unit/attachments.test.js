@@ -12,7 +12,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const { extractOne, combineAttachments, buildCombinedAttachment } = require('../../src/pipeline/attachments')
+const { extractOne, combineAttachments, buildCombinedAttachment, buildPrechartTempFile } = require('../../src/pipeline/attachments')
 
 function tmpFile(name, content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'att-'))
@@ -68,6 +68,44 @@ test('buildCombinedAttachment: writes a temp .md and returns its path', async ()
   const out = await buildCombinedAttachment([f])
   assert.ok(out.endsWith('.md'), 'returns a .md path')
   assert.strictEqual(fs.readFileSync(out, 'utf8'), 'content here\n')
+  fs.rmSync(out, { force: true })
+})
+
+test('buildPrechartTempFile: empty context returns empty string (no temp file)', async () => {
+  assert.strictEqual(await buildPrechartTempFile({ text: '', files: [] }), '')
+  assert.strictEqual(await buildPrechartTempFile({}), '')
+  assert.strictEqual(await buildPrechartTempFile(null), '')
+  assert.strictEqual(await buildPrechartTempFile({ text: '   ', files: [] }), '')
+})
+
+test('buildPrechartTempFile: text-only writes a # Pre-chart context blob', async () => {
+  const out = await buildPrechartTempFile({ text: 'prior ACL repair 2021', files: [] })
+  assert.ok(out.endsWith('.md'))
+  const body = fs.readFileSync(out, 'utf8')
+  assert.ok(body.includes('# Pre-chart context'))
+  assert.ok(body.includes('prior ACL repair 2021'))
+  assert.ok(!body.includes('# Attached documents'), 'no docs section when no files')
+  fs.rmSync(out, { force: true })
+})
+
+test('buildPrechartTempFile: text + files combine into both sections', async () => {
+  const a = tmpFile('ref.txt', 'referral body')
+  const out = await buildPrechartTempFile({ text: 'reminder note', files: [a] })
+  const body = fs.readFileSync(out, 'utf8')
+  assert.ok(body.includes('# Pre-chart context'))
+  assert.ok(body.includes('reminder note'))
+  assert.ok(body.includes('# Attached documents'))
+  assert.ok(body.includes('referral body'))
+  fs.rmSync(out, { force: true })
+})
+
+test('buildPrechartTempFile: files-only skips the context section', async () => {
+  const a = tmpFile('ref.txt', 'just the doc')
+  const out = await buildPrechartTempFile({ text: '', files: [a] })
+  const body = fs.readFileSync(out, 'utf8')
+  assert.ok(!body.includes('# Pre-chart context'))
+  assert.ok(body.includes('# Attached documents'))
+  assert.ok(body.includes('just the doc'))
   fs.rmSync(out, { force: true })
 })
 

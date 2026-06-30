@@ -7,6 +7,7 @@ const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
 const { DURATION_SECONDS: DURATION_RE } = require('../llm/skill-io/markers')
+const { buildPrechartTempFile } = require('../pipeline/attachments')
 
 // Recording-lifecycle IPC handlers, moved verbatim from main.js's
 // registerIpcHandlers(). Handler bodies are byte-identical except __dirname
@@ -40,6 +41,10 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       recordArgs.push('--realtime', '--api-key', apiKey, '--realtime-output', realtimeJsonPath)
       log(`Realtime transcription enabled → ${realtimeJsonPath}`)
     }
+    if (settings.enableMic) {
+      recordArgs.push('--mic')
+      log('Microphone capture enabled — mixing mic + loopback audio')
+    }
 
     const recProc = spawn(appCtx.python, recordArgs, { cwd: appRoot })
     appCtx.stores.recorder.setProcess(recProc, tmpMp3)
@@ -54,6 +59,15 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       const msg = d.toString().trim()
       if (!msg) return
       log(`[record.py ERR] ${msg}`)
+      // Mic-open failure is non-fatal: recording continues loopback-only.
+      // Surface a gentle notice rather than the hard setup-warning path.
+      if (msg.includes('MIC_WARNING:')) {
+        appCtx.renderer.send('service-warning', {
+          title:   'Microphone unavailable',
+          message: 'Your microphone could not be opened — this recording captures the call audio only.'
+        })
+        return
+      }
       // Surface BlackHole / setup errors to renderer
       if (msg.includes('ERROR')) {
         appCtx.renderer.send('setup-warning', msg.replace(/^ERROR:\s*/, ''))
@@ -97,12 +111,12 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
 
     // Wait for patient name entry and Python's WAV→MP3 conversion concurrently.
     // The scribe can name the case while the conversion runs in the background.
-    const [name] = await Promise.all([
+    const [{ name, multiPatient }] = await Promise.all([
       appCtx.stores.recorder.awaitPatientName(),
       exitPromise
     ])
 
-    log(`Patient name: ${name || '(none)'}`)
+    log(`Patient name: ${name || '(none)'}  multi-patient: ${!!multiPatient}`)
 
     const { doctorId: _stopDoctorId } = appCtx.stores.session.get()
     const _stopDoctor = dbDoctors.getDoctor(_stopDoctorId) || getAllDoctors().find(d => d.id === _stopDoctorId)
@@ -119,6 +133,18 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
     const realtimeTranscriptSrc = readSettings().realtimeTranscription && tempMp3Path
       ? tempMp3Path.replace('.mp3', '_realtime.json')
       : null
+
+    // In-recording pre-chart: combine the captured text + attachments into a temp
+    // .md (consumed → cleared from the recorder store). ingestAudio copies it into
+    // the case folder as prechart.md, which SOAP generation later reads.
+    let prechartSrc = ''
+    try {
+      prechartSrc = await buildPrechartTempFile(appCtx.stores.recorder.consumePrechart(), log)
+    } catch (e) {
+      log(`[prechart][capture] WARNING: could not build pre-chart file: ${e.message}`)
+      prechartSrc = ''
+    }
+
     const { ok: ingestOk } = ingestAudio({
       audioSrc:          tempMp3Path,
       audioDestName:     mp3Filename,
@@ -129,10 +155,18 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       capturedDuration,
       moveAudio:         true,
       probeDuration:     false,
+      multiPatient:      !!multiPatient,
       ctx:               appCtx,
       spawnTranscription: _callSpawnTranscription,
       realtimeTranscriptSrc,
+      prechartSrc,
     })
+
+    // Temp pre-chart file has been copied into the case folder by ingestAudio.
+    if (prechartSrc && fs.existsSync(prechartSrc)) {
+      try { fs.unlinkSync(prechartSrc) } catch (e) { log(`[prechart][capture] temp cleanup failed: ${e.message}`) }
+    }
+
     if (!ingestOk) {
       setState(STATE.SESSION_ACTIVE)
       notifyUser('Recording failed', 'Could not save the recording. Check the log.')
@@ -181,8 +215,9 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
       if (procToStop) {
         waitForExit(procToStop).then(() => {
           const wavPath = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_tmp.wav') : null
+          const micWav = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_mic.wav') : null
           const realtimeJson = mp3ToDelete ? mp3ToDelete.replace('.mp3', '_realtime.json') : null
-          for (const p of [mp3ToDelete, wavPath, realtimeJson]) {
+          for (const p of [mp3ToDelete, wavPath, micWav, realtimeJson]) {
             if (p && fs.existsSync(p)) {
               try { fs.unlinkSync(p) } catch (e) { log(`Failed to delete temp file: ${e.message}`) }
             }
@@ -208,10 +243,23 @@ function registerRecordingIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- submit-patient-name (registered once at startup) ----
-  ipcMain.handle(CHANNELS.SUBMIT_PATIENT_NAME, (_, name) => {
-    appCtx.stores.recorder.resolvePatientName(sanitizeName(name))
+  ipcMain.handle(CHANNELS.SUBMIT_PATIENT_NAME, (_, name, multiPatient) => {
+    appCtx.stores.recorder.resolvePatientName({ name: sanitizeName(name), multiPatient: !!multiPatient })
     return true
   })
+
+  // ---- save-prechart-context (in-recording Pre-chart screen) ----
+  // Persist the captured context on the in-flight recording. Consumed at
+  // stop-recording, then written into the case folder as prechart.md.
+  ipcMain.handle(CHANNELS.SAVE_PRECHART_CONTEXT, (_, text, files) => {
+    appCtx.stores.recorder.setPrechart({ text, files })
+    return true
+  })
+
+  // ---- get-prechart-context ----
+  // Returns the current captured context so the Pre-chart screen can repopulate
+  // (survives window hide/show).
+  ipcMain.handle(CHANNELS.GET_PRECHART_CONTEXT, () => appCtx.stores.recorder.getPrechart())
 }
 
 module.exports = { registerRecordingIpc }

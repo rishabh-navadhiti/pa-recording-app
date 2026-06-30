@@ -3,6 +3,18 @@
 const { buildPrompt } = require('../llm/skill-io/prompts')
 const { extractUsage, logSkillStream } = require('../llm/usage')
 const { CLAUDE_RATE_LIMITED, MCP_AUTH_ERROR } = require('../llm/skill-io/markers')
+const { resolveOption, DEFAULT_OPTION_ID, NOTE_GEN_OPTIONS } = require('../llm/modelOptions')
+
+/**
+ * The Anthropic model an API-only engine (em-score, patient-summary) should use.
+ * The API path is pinned to Anthropic, so a Gemini SOAP selection (which has no
+ * Anthropic model) falls back to the default Anthropic option's model.
+ */
+function pinnedAnthropicModel(cfg) {
+  const opt = resolveOption(cfg.soapModel)
+  if (opt && (opt.provider === 'api' || opt.provider === 'cli')) return opt.model
+  return NOTE_GEN_OPTIONS[DEFAULT_OPTION_ID].model
+}
 
 /**
  * Run a single engine against one case.
@@ -22,6 +34,12 @@ async function runEngine(engine, ctx, caseCtx) {
   const { log } = ctx
   const { caseId, caseTag, patientFolderName } = caseCtx
   const tag   = caseTag ? `[${caseTag}] ` : ''
+
+  // Engines exposing runLlm run API-only (single Anthropic Messages-API call);
+  // the rest run agentically via ctx.llm.runSkill. The API path is pinned to
+  // Anthropic, so its recorded model is resolved here (not engine.model()).
+  const isApiEngine    = !!engine.runLlm
+  const effectiveModel = isApiEngine ? pinnedAnthropicModel(ctx.config.get()) : engine.model(ctx.config.get())
 
   // ---- 1. Gates -----------------------------------------------------------
   const skips = engine.gates(ctx, caseCtx)
@@ -47,7 +65,7 @@ async function runEngine(engine, ctx, caseCtx) {
         caseId,
         jobKind:         engine.jobKind,
         relatedDoctorId: caseCtx.doctor?.id || null,
-        modelUsed:       engine.model(ctx.config.get()),
+        modelUsed:       effectiveModel,
         effort:          engine.effort || null,
         startedAt,
       })
@@ -57,14 +75,23 @@ async function runEngine(engine, ctx, caseCtx) {
   // ---- 4. Run the skill ---------------------------------------------------
   let runResult
   try {
-    const prompt = buildPrompt(engine.skillId, engine.buildInput(ctx, caseCtx))
-    runResult = await ctx.llm.runSkill({
-      prompt,
-      model:  engine.model(ctx.config.get()),
-      effort: engine.effort,
-      tag,
-      label:  engine.id,
-    })
+    if (isApiEngine) {
+      // API-only: single Anthropic Messages-API call. Node reads inputs + writes
+      // the output file; runResult.text IS the synthesized run manifest.
+      runResult = await engine.runLlm(engine.buildInput(ctx, caseCtx), ctx, caseCtx, {
+        model:    effectiveModel,
+        provider: ctx.api,
+      })
+    } else {
+      const prompt = buildPrompt(engine.skillId, engine.buildInput(ctx, caseCtx))
+      runResult = await ctx.llm.runSkill({
+        prompt,
+        model:  effectiveModel,
+        effort: engine.effort,
+        tag,
+        label:  engine.id,
+      })
+    }
   } catch (err) {
     log(`${tag}[${engine.id}] spawn error: ${err.message}`)
     finishEventSafe(eventId, 'failed', Date.now() - wallStart, err.message)
@@ -72,11 +99,14 @@ async function runEngine(engine, ctx, caseCtx) {
     return null
   }
 
-  logSkillStream(log, tag, engine.id, runResult.resultEvent)
+  // CLI runs carry a stream-json result event; API runs don't.
+  if (runResult.resultEvent) logSkillStream(log, tag, engine.id, runResult.resultEvent)
 
   // ---- 5. Classify output -------------------------------------------------
   const combined = (runResult.text || '') + '\n' + (runResult.errText || '')
-  const isRateLimited = CLAUDE_RATE_LIMITED.test(combined)
+  // API runs flag rate limits via runResult.isRateLimit (HTTP 429/529); CLI runs
+  // surface it as text matched by the regex.
+  const isRateLimited = !!runResult.isRateLimit || CLAUDE_RATE_LIMITED.test(combined)
   const isMcpError    = MCP_AUTH_ERROR.test(combined)
 
   // ---- 6. Interpret -------------------------------------------------------
@@ -97,9 +127,12 @@ async function runEngine(engine, ctx, caseCtx) {
     const db = ctx.db
     if (db && eventId != null) {
       const { dbEvents } = requireDb()
+      // API runs carry a normalized `usage` object; CLI runs carry a stream-json
+      // result event extractUsage() reads. Both yield the same column set.
+      const usageFields = runResult.usage || extractUsage(runResult.resultEvent)
       dbEvents.finishEvent(eventId, {
         status: eventStatus,
-        ...extractUsage(runResult.resultEvent),
+        ...usageFields,
         durationMs,
         errorMessage: runResult.code !== 0 ? (runResult.errText || '').slice(0, 1024) : null,
         finishedAt: new Date().toISOString(),
@@ -123,6 +156,13 @@ async function runEngine(engine, ctx, caseCtx) {
     ctx.renderer.send('service-warning', {
       title:   'Claude usage limit reached',
       message: `${labels[engine.id] || engine.label} could not complete — try again once the limit resets.`
+    })
+  } else if (isApiEngine && runResult.code !== 0 &&
+             (runResult.statusCode === 401 || /ANTHROPIC_API_KEY not set/.test(runResult.errText || ''))) {
+    // API-only engines need an Anthropic key even on the agentic SOAP option.
+    ctx.renderer.send('service-warning', {
+      title:   'Anthropic API key missing or invalid',
+      message: `${engine.label} could not run — set your Anthropic API key in Settings → Advanced.`
     })
   }
 

@@ -62,8 +62,12 @@ async function runJob(descriptor, input, ctx, extra = {}) {
 
   let runResult
   try {
-    const prompt = buildPrompt(descriptor.skillId, input)
-    runResult = await ctx.llm.runSkill({ prompt, model, effort, label, signal: ac.signal })
+    if (typeof descriptor.runLlm === 'function') {
+      runResult = await descriptor.runLlm(input, ctx, { model, effort, signal: ac.signal })
+    } else {
+      const prompt = buildPrompt(descriptor.skillId, input)
+      runResult = await ctx.llm.runSkill({ prompt, model, effort, label, signal: ac.signal })
+    }
   } catch (err) {
     _finishEventSafe(eventId, 'failed', Date.now() - startMs, err.message, ctx)
     descriptor.onError?.(err, input, ctx, extra, eventId)
@@ -76,8 +80,13 @@ async function runJob(descriptor, input, ctx, extra = {}) {
     const durationMs = Date.now() - startMs
     logSkillStream(log, '', label, resultEvent)
 
-    if (CLAUDE_RATE_LIMITED.test(resultText + errText)) {
-      _finishEventSafe(eventId, 'rate_limited', durationMs, 'Claude usage limit reached', ctx, { resultEvent })
+    // API descriptors (runLlm) return a pre-normalized `usage` record; CLI
+    // descriptors return a stream-json `resultEvent`. _finishEventSafe prefers
+    // `usage` and falls back to extractUsage(resultEvent) — see below.
+    const usage = runResult.usage
+
+    if (CLAUDE_RATE_LIMITED.test(resultText + errText) || runResult.isRateLimit) {
+      _finishEventSafe(eventId, 'rate_limited', durationMs, 'Claude usage limit reached', ctx, { resultEvent, usage })
       descriptor.onRateLimit?.(input, ctx, extra, durationMs)
     } else if (code === 0) {
       // Run the descriptor's side effects FIRST so it can (a) override the
@@ -88,9 +97,9 @@ async function runJob(descriptor, input, ctx, extra = {}) {
       // second call would clobber status/usage/cost to NULL).
       const outcome = (await descriptor.onSuccess?.(runResult, input, ctx, extra, { eventId, durationMs })) || {}
       const status  = outcome.ok === false ? 'failed' : 'success'
-      _finishEventSafe(eventId, status, durationMs, outcome.error || null, ctx, { resultEvent, fields: outcome.eventFields })
+      _finishEventSafe(eventId, status, durationMs, outcome.error || null, ctx, { resultEvent, usage, fields: outcome.eventFields })
     } else {
-      _finishEventSafe(eventId, 'failed', durationMs, errText.slice(0, 1024), ctx, { resultEvent })
+      _finishEventSafe(eventId, 'failed', durationMs, errText.slice(0, 1024), ctx, { resultEvent, usage })
       descriptor.onFailure?.(runResult, input, ctx, extra, durationMs)
     }
   } finally {
@@ -103,12 +112,17 @@ function _finishEventSafe(eventId, status, durationMs, errMsg, ctx, opts = {}) {
   if (eventId == null) return
   try {
     const { dbEvents } = requireDb()
+    // Usage columns: a runLlm (API) descriptor returns an already-normalized
+    // `usage` record; a CLI descriptor returns a stream-json `resultEvent`.
+    // Prefer the normalized record so API jobs record tokens/cost/duration
+    // (extractUsage reads the stream-json shape and would yield all-null here).
+    const usageFields = opts.usage || (opts.resultEvent ? extractUsage(opts.resultEvent) : {})
     dbEvents.finishEvent(eventId, {
       status,
       durationMs,
       errorMessage: errMsg || null,
       finishedAt: new Date().toISOString(),
-      ...(opts.resultEvent ? extractUsage(opts.resultEvent) : {}),
+      ...usageFields,
       ...(opts.fields || {}),   // descriptor-contributed columns (e.g. backupPath)
     })
   } catch (e) { ctx.log?.(`[db] finishEvent failed: ${e.message}`) }

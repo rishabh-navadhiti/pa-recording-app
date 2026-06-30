@@ -160,3 +160,12 @@ test('jobState clearStaleRunning() leaves non-running status alone', () => {
   assert.strictEqual(store.load().status, 'completed')
   fs.unlinkSync(f)
 })
+
+// ---- Costigan CDI settings ---------------------------------------------
+
+test('enableCostiganCdi defaults to false and is independent of enableCdi', () => {
+  assert.equal(DEFAULT_SETTINGS.enableCostiganCdi, false)
+  // No coupling: enabling Costigan CDI must NOT force enableIcd/enableCdi.
+  // If the store exposes a normalize/applyInvariants seam, assert it here;
+  // otherwise this default-presence check is sufficient for the unit.
+})

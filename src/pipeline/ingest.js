@@ -34,6 +34,8 @@ function ingestAudio(opts) {
     moveAudio = false, probeDuration = false,
     ctx, spawnTranscription,
     realtimeTranscriptSrc = null,
+    prechartSrc = null,
+    multiPatient = false,
   } = opts
 
   const { log } = ctx
@@ -65,6 +67,20 @@ function ingestAudio(opts) {
       log(`[ingest] Realtime transcript → ${realtimeJsonDest}`)
     } catch (e) {
       log(`[ingest] realtime JSON copy failed: ${e.message}`)
+    }
+  }
+
+  // ---- 2b. Copy in-recording pre-chart context (if present) ----------------
+  // Written before transcription/SOAP generation so generateSoapViaApi finds it.
+  // Hidden on Windows like the other internal .md files in the case folder.
+  if (prechartSrc && fs.existsSync(prechartSrc)) {
+    const prechartDest = path.join(caseDir, 'prechart.md')
+    try {
+      fs.copyFileSync(prechartSrc, prechartDest)
+      ctx.platform.hideInternal(prechartDest)
+      log(`[ingest] Pre-chart context → ${prechartDest}`)
+    } catch (e) {
+      log(`[ingest] pre-chart copy failed: ${e.message}`)
     }
   }
 
@@ -127,6 +143,8 @@ function ingestAudio(opts) {
     // Unnamed → show the folder default (recording_<date>_<time>) in the status
     // popup rather than a blank name. Named → prettify the slug for display.
     displayName: patientName ? patientName.replace(/_/g, ' ') : folderName,
+    multiPatient,
+    patientName,   // raw sanitized slug; generateSoapViaApi reads this for injection
   })
 
   // ---- 6. Start transcription chain ----------------------------------------

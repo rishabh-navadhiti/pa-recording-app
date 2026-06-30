@@ -180,3 +180,47 @@ test('DB: onSuccess eventFields persist (backupPath)', async () => {
   assert.strictEqual(row.status, 'success')
   assert.strictEqual(row.backup_path, '/notes/case/backup_123.md')
 })
+
+// ---- runLlm (API descriptor) path: normalized `usage` is recorded -----------
+// API descriptors (e.g. prechartApi) bypass ctx.llm.runSkill via a runLlm hook
+// and return a pre-normalized `usage` record instead of a stream-json
+// resultEvent. The dispatcher must write those token/cost/duration columns.
+
+test('DB: runLlm descriptor records normalized usage (tokens + cost)', async () => {
+  const ctx = dbCtx(null)   // llm.runSkill must NOT be used
+  let runSkillCalled = false
+  ctx.llm.runSkill = async () => { runSkillCalled = true; return { code: 0, text: 'x' } }
+  const desc = {
+    ...descBase(),
+    skillId: null,
+    runLlm: async () => ({
+      code: 0,
+      text: '{"skill":"edit-note","status":"ok"}',
+      usage: { inputTokens: 1200, outputTokens: 800, cacheReadTokens: 21000, cacheCreatedTokens: 0, costUsd: 0.0156, numTurns: 1, durationMs: 4200 },
+    }),
+    onSuccess: () => ({ ok: true }),
+  }
+  await runJob(desc, { doctorName: 'X', stagingRel: 's' }, ctx, {})
+  assert.strictEqual(runSkillCalled, false, 'runLlm replaces ctx.llm.runSkill')
+  const row = ctx._db.prepare('SELECT status, input_tokens, output_tokens, cost_usd, duration_ms FROM processing_events ORDER BY id DESC LIMIT 1').get()
+  assert.strictEqual(row.status, 'success')
+  assert.strictEqual(row.input_tokens, 1200, 'API usage tokens recorded (not null)')
+  assert.strictEqual(row.output_tokens, 800)
+  assert.strictEqual(row.cost_usd, 0.0156, 'API cost recorded (the #1 bug)')
+  assert.strictEqual(row.duration_ms, 4200)
+})
+
+test('DB: runLlm failure still records usage on the failed row', async () => {
+  const ctx = dbCtx(null)
+  const desc = {
+    ...descBase(),
+    skillId: null,
+    runLlm: async () => ({ code: 1, text: '', errText: 'Write failed: EPERM', usage: { inputTokens: 1000, outputTokens: 500, costUsd: 0.012, numTurns: 1, durationMs: 3000 } }),
+    onFailure: () => {},
+  }
+  await runJob(desc, { doctorName: 'X', stagingRel: 's' }, ctx, {})
+  const row = ctx._db.prepare('SELECT status, input_tokens, cost_usd FROM processing_events ORDER BY id DESC LIMIT 1').get()
+  assert.strictEqual(row.status, 'failed')
+  assert.strictEqual(row.input_tokens, 1000, 'usage recorded even when the write failed (tokens were spent)')
+  assert.strictEqual(row.cost_usd, 0.012)
+})

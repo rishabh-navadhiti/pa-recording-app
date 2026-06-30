@@ -51,6 +51,11 @@
           <span>Realtime transcription</span>
         </label>
         <div class="setting-hint">Stream audio to ElevenLabs during recording so the transcript is ready instantly when you stop. Requires a stable network connection while recording. Falls back to normal if streaming fails.</div>
+        <label class="setting-row">
+          <input type="checkbox" id="chk-enable-mic" />
+          <span>Enable microphone</span>
+        </label>
+        <div class="setting-hint">Also record your microphone and mix it with the call audio, so anyone speaking in the room is transcribed too. Uses your default microphone.</div>
       </div>
 
       <div class="settings-group">
@@ -83,6 +88,11 @@
           <span>Enable patient summary</span>
         </label>
         <div class="setting-hint">Generates a plain-language patient-facing summary for every new case.</div>
+        <label class="setting-row">
+          <input type="checkbox" id="chk-enable-costigan-cdi" />
+          <span>Costigan procedure checklist (interventional pain)</span>
+        </label>
+        <div class="setting-hint">Shows a chart textarea in the Pre-chart tab for procedure checklist generation (Costigan method).</div>
       </div>
 
       <div class="settings-group advanced-settings-group">
@@ -131,6 +141,18 @@
             <div class="setting-hint">Used for SOAP note generation (API path)</div>
           </div>
           <div class="advanced-settings-inner">
+            <label class="setting-label">Gemini API Key</label>
+            <div id="gemini-key-display-row" class="notes-dir-row">
+              <span id="gemini-key-masked" class="notes-dir-path"></span>
+              <button id="btn-edit-gemini-key" class="small">Edit</button>
+            </div>
+            <div id="gemini-key-edit-row" class="notes-dir-row hidden">
+              <input id="gemini-key-input" type="text" placeholder="AIza..." autocomplete="off" spellcheck="false" style="flex:1;min-width:0;" />
+              <button id="btn-save-gemini-key" class="small">Save</button>
+            </div>
+            <div class="setting-hint">Used for SOAP note generation (Gemini models)</div>
+          </div>
+          <div class="advanced-settings-inner">
             <label class="setting-label">Note Generation Model</label>
             <select id="soap-model-select">
               <option value="gemini-3.5-flash">Gemini 3.5 Flash — recommended</option>
@@ -167,6 +189,12 @@
     <div id="template-job-banner" class="hidden">
       <div id="template-job-banner-text"></div>
       <button id="btn-template-job-cancel" class="icon-btn" title="Cancel">&#10005;</button>
+    </div>
+
+    <!-- Costigan checklist report ready (opt-in, detached from the pre-chart job) -->
+    <div id="costigan-report-banner" class="hidden">
+      <div id="costigan-report-text"></div>
+      <button id="btn-costigan-report-dismiss" class="icon-btn" title="Dismiss">&#10005;</button>
     </div>
 
     <!-- ============================================================ -->
@@ -223,19 +251,47 @@
     <div id="upload-form" class="hidden">
       <button id="btn-upload-close" class="upload-close-btn" title="Cancel">&#10005;</button>
       <input id="upload-patient-input" type="text" placeholder="Patient name (optional)" autocomplete="off" spellcheck="false" />
+      <label class="form-checkbox-label">
+        <input id="upload-multi-patient" type="checkbox" />
+        <span>Multiple patients in this recording</span>
+      </label>
       <div id="upload-form-buttons">
         <button id="btn-upload-save-name">Process</button>
         <button id="btn-upload-skip-name" class="secondary">Skip</button>
       </div>
+      <button id="btn-upload-prechart" class="outline">+ Pre-chart</button>
+    </div>
+
+    <!-- In-recording Pre-chart capture (context fed into initial note gen) -->
+    <div id="prechart-capture-view" class="hidden">
+      <div class="subview-header">
+        <button id="btn-prechart-capture-back" class="icon-btn" title="Back">&#8592;</button>
+        <span>Pre-chart</span>
+      </div>
+      <div class="setting-hint">Add context for this recording — notes and documents are sent with the transcript when the note is generated.</div>
+      <textarea id="prechart-capture-text"
+                placeholder="Type pre-chart context (referral details, prior history, reminders)…"
+                spellcheck="false"></textarea>
+      <div class="create-template-files-label">Documents</div>
+      <div id="prechart-capture-files" class="create-template-files-empty">
+        No files added yet
+      </div>
+      <button id="btn-prechart-capture-add-files" class="small">+ Add files</button>
+      <button id="btn-prechart-capture-done">Back to recording</button>
     </div>
 
     <!-- Patient name form (shown after Stop) -->
     <div id="patient-form" class="hidden">
       <input id="patient-input" type="text" placeholder="Patient name (optional)" autocomplete="off" spellcheck="false" />
+      <label class="form-checkbox-label">
+        <input id="patient-multi-patient" type="checkbox" />
+        <span>Multiple patients in this recording</span>
+      </label>
       <div id="form-buttons">
         <button id="btn-save-name">Save</button>
         <button id="btn-skip-name" class="secondary">Skip</button>
       </div>
+      <button id="btn-patient-prechart" class="outline">+ Pre-chart</button>
       <div id="form-countdown"></div>
     </div>
 
@@ -371,6 +427,14 @@
         </div>
         <button id="btn-prechart-add-files" class="small">+ Add files</button>
         <div class="setting-hint">Optional. Prechart docs, prior visit summaries, typed handwritten slips (.md/.txt/.docx/.pdf).</div>
+
+        <div id="prechart-chart-row" class="hidden">
+          <label class="setting-label">Chart for checklist <span class="setting-hint">(Costigan)</span></label>
+          <textarea id="prechart-chart"
+                    placeholder="Paste the Epic chart used for the procedure checklist: physical exam, imaging/radiology reports, prior injections/procedures with dates &amp; relief, conservative-care history…"
+                    rows="6" spellcheck="false"></textarea>
+          <div class="setting-hint">Used only for the procedure checklist — not added to the note.</div>
+        </div>
 
         <button id="btn-prechart-start" disabled>Start</button>
         <div id="prechart-error" class="config-warn hidden"></div>

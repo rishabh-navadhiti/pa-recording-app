@@ -30,6 +30,7 @@ function makeApi() {
     onAutoStartRecording: () => {},
     onRecordingStatusUpdate: () => {},
     onTemplateJobStatus: () => {},
+    onCostiganReportReady: () => {},
     // Misc no-ops init/handlers may touch.
     getSettings: () => ({}),
     getNotesDir: () => 'C:\\Notes',
@@ -78,5 +79,5 @@ test('settingsOpen does NOT drop a state push (the Phase 4 fix)', async () => {
   await flush()
   assert.ok(global.document.getElementById('settings-view').classList.contains('hidden'), 'settings overlay closed')
   assert.strictEqual(statusLabel(), 'Recording...')
-  assert.deepStrictEqual(actionLabels(), ['Pause', 'Save Case', 'Discard'])
+  assert.deepStrictEqual(actionLabels(), ['Pause', 'Save Case', 'Discard', 'Pre-chart'])
 })

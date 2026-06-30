@@ -299,6 +299,109 @@ test('synthesizePatientSummaryFromDisk recovers from a valid _patient_summary.js
   }
 })
 
+// ---- em-score / patient-summary runLlm (API-only path) ---------------------
+
+const CLAUDE_DIR    = path.join(__dirname, '../../notes-claude')
+const STANDARDS_DIR = path.join(__dirname, '../../notes-claude/standards')
+
+function apiCtx() {
+  return { log: () => {}, paths: { claudeDir: CLAUDE_DIR } }
+}
+function fakeProvider(result) {
+  return { runSingleCall: async () => result }
+}
+function caseWithNote() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-api-'))
+  fs.writeFileSync(path.join(dir, `${path.basename(dir)}_soap_note.md`), '# SOAP\nKnee pain, started lisinopril.')
+  return dir
+}
+
+test('emScore.runLlm writes _em.json and returns an ok manifest', async () => {
+  const dir = caseWithNote()
+  try {
+    const emObj = { meta: {}, predicted_em_level: '99214', predicted_complexity: 'moderate', downcode_risk: 'low' }
+    const provider = fakeProvider({ ok: true, text: JSON.stringify(emObj), rawUsage: { input_tokens: 10, output_tokens: 20 }, durationMs: 5 })
+    const r = await emScore.runLlm(
+      { caseDir: dir, specialty: 'orthopedics', standardsDir: STANDARDS_DIR },
+      apiCtx(), { caseTag: path.basename(dir), doctor: { name: 'Dr. Smith' } }, { model: 'claude-sonnet-4-6', provider })
+
+    assert.strictEqual(r.code, 0)
+    assert.ok(fs.existsSync(path.join(dir, `${path.basename(dir)}_em.json`)), 'wrote _em.json')
+    const manifest = JSON.parse(r.text)
+    assert.strictEqual(manifest.skill, 'em-score')
+    assert.strictEqual(manifest.status, 'ok')
+    assert.strictEqual(manifest.predicted_em_level, '99214')
+    assert.strictEqual(r.usage.inputTokens, 10)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('emScore.runLlm maps skipped_reason JSON to a skipped manifest', async () => {
+  const dir = caseWithNote()
+  try {
+    const emObj = { meta: {}, predicted_em_level: null, skipped_reason: 'procedure op-note, not an office E/M' }
+    const provider = fakeProvider({ ok: true, text: JSON.stringify(emObj), rawUsage: {}, durationMs: 1 })
+    const r = await emScore.runLlm(
+      { caseDir: dir, specialty: '', standardsDir: STANDARDS_DIR },
+      apiCtx(), { caseTag: path.basename(dir) }, { model: 'm', provider })
+    const manifest = JSON.parse(r.text)
+    assert.strictEqual(manifest.status, 'skipped')
+    assert.strictEqual(manifest.skipped_reason, 'procedure op-note, not an office E/M')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('emScore.runLlm returns note_not_found when no SOAP note present', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-api-'))
+  try {
+    const r = await emScore.runLlm(
+      { caseDir: dir, specialty: '', standardsDir: STANDARDS_DIR },
+      apiCtx(), {}, { model: 'm', provider: fakeProvider({ ok: true, text: '{}' }) })
+    assert.strictEqual(r.code, 1)
+    assert.strictEqual(r.errText, 'note_not_found')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('emScore.runLlm writes _em.raw.txt and fails on unparseable JSON', async () => {
+  const dir = caseWithNote()
+  try {
+    const provider = fakeProvider({ ok: true, text: 'sorry, no JSON here', rawUsage: {}, durationMs: 1 })
+    const r = await emScore.runLlm(
+      { caseDir: dir, specialty: '', standardsDir: STANDARDS_DIR },
+      apiCtx(), { caseTag: path.basename(dir) }, { model: 'm', provider })
+    assert.strictEqual(r.code, 1)
+    assert.match(r.errText, /json parse failed/)
+    assert.ok(fs.existsSync(path.join(dir, `${path.basename(dir)}_em.raw.txt`)), 'wrote raw debug file')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('emScore.runLlm surfaces an API rate limit (429) as isRateLimit', async () => {
+  const dir = caseWithNote()
+  try {
+    const provider = fakeProvider({ ok: false, statusCode: 429, errText: 'HTTP 429', rawUsage: {}, durationMs: 1 })
+    const r = await emScore.runLlm(
+      { caseDir: dir, specialty: '', standardsDir: STANDARDS_DIR },
+      apiCtx(), { caseTag: path.basename(dir) }, { model: 'm', provider })
+    assert.strictEqual(r.code, 1)
+    assert.strictEqual(r.isRateLimit, true)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('patientSummary.runLlm writes _patient_summary.json and returns an ok manifest', async () => {
+  const dir = caseWithNote()
+  try {
+    const psObj = { meta: {}, reading_level: 'grade 6', sections: { whats_going_on: 'Your knee hurts.' } }
+    const provider = fakeProvider({ ok: true, text: JSON.stringify(psObj), rawUsage: { input_tokens: 8, output_tokens: 12 }, durationMs: 3 })
+    const r = await patientSummary.runLlm(
+      { caseDir: dir }, apiCtx(), { caseTag: path.basename(dir), doctor: { name: 'Dr. Smith' } },
+      { model: 'claude-sonnet-4-6', provider })
+    assert.strictEqual(r.code, 0)
+    assert.ok(fs.existsSync(path.join(dir, `${path.basename(dir)}_patient_summary.json`)))
+    const manifest = JSON.parse(r.text)
+    assert.strictEqual(manifest.skill, 'patient-summary')
+    assert.strictEqual(manifest.status, 'ok')
+    assert.strictEqual(manifest.reading_level, 'grade 6')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 // ---- registry --------------------------------------------------------------
 
 test('registry exports [soap, icd, cdi, em-score, patient-summary] in order', () => {

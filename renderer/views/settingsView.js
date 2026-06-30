@@ -16,16 +16,18 @@ import { setVisible } from '../components/visible.js'
 
 export function createSettingsView() {
   let settingsView, btnSettingsClose,
-      chkAutoRecord, chkRealtimeTranscription,
+      chkAutoRecord, chkRealtimeTranscription, chkEnableMic,
       chkEnableIcd, chkEnableCdi, cdiModeRow, cdiModeSelect,
-      chkEnableEmScore, chkEnablePatientSummary,
+      chkEnableEmScore, chkEnablePatientSummary, chkEnableCostiganCdi,
       deviceSelect, soapModelSelect, templateModelSelect,
       btnAdvancedToggle, advancedSettingsContent,
       notesDirPath, btnChangeNotesDir,
       apiKeyMasked, apiKeyDisplayRow, apiKeyEditRow, apiKeyInput,
       btnEditApiKey, btnSaveApiKey,
       anthropicKeyMasked, anthropicKeyDisplayRow, anthropicKeyEditRow, anthropicKeyInput,
-      btnEditAnthropicKey, btnSaveAnthropicKey
+      btnEditAnthropicKey, btnSaveAnthropicKey,
+      geminiKeyMasked, geminiKeyDisplayRow, geminiKeyEditRow, geminiKeyInput,
+      btnEditGeminiKey, btnSaveGeminiKey
 
   let onCloseCb = null
 
@@ -59,6 +61,7 @@ export function createSettingsView() {
     const s = await ipc.getSettings()
     chkAutoRecord.checked = s.autoRecord || false
     if (chkRealtimeTranscription) chkRealtimeTranscription.checked = !!s.realtimeTranscription
+    if (chkEnableMic) chkEnableMic.checked = !!s.enableMic
     // ICD toggle — locked on while CDI is enabled (CDI requires ICD).
     if (chkEnableIcd) chkEnableIcd.checked = !!s.enableIcd
     // CDI toggle + mode — mode row is only visible when CDI is on.
@@ -69,6 +72,8 @@ export function createSettingsView() {
     // E/M scoring + patient summary — independent toggles, no coupling.
     if (chkEnableEmScore) chkEnableEmScore.checked = !!s.enableEmScore
     if (chkEnablePatientSummary) chkEnablePatientSummary.checked = !!s.enablePatientSummary
+    // Costigan procedure checklist — independent toggle, no coupling.
+    if (chkEnableCostiganCdi) chkEnableCostiganCdi.checked = !!s.enableCostiganCdi
     const dir = await ipc.getNotesDir()
     notesDirPath.textContent = dir
     notesDirPath.title = dir
@@ -80,6 +85,10 @@ export function createSettingsView() {
     if (anthropicKeyMasked) anthropicKeyMasked.textContent = maskApiKey(anthropicKey)
     if (anthropicKeyDisplayRow) setVisible(anthropicKeyDisplayRow, true)
     if (anthropicKeyEditRow) setVisible(anthropicKeyEditRow, false)
+    const geminiKey = await ipc.getGeminiKey()
+    if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(geminiKey)
+    if (geminiKeyDisplayRow) setVisible(geminiKeyDisplayRow, true)
+    if (geminiKeyEditRow) setVisible(geminiKeyEditRow, false)
   }
 
   async function loadDeviceList(selectedIndex) {
@@ -119,12 +128,14 @@ export function createSettingsView() {
       btnSettingsClose      = root.querySelector('#btn-settings-close')
       chkAutoRecord              = root.querySelector('#chk-auto-record')
       chkRealtimeTranscription   = root.querySelector('#chk-realtime-transcription')
+      chkEnableMic               = root.querySelector('#chk-enable-mic')
       chkEnableIcd               = root.querySelector('#chk-enable-icd')
       chkEnableCdi          = root.querySelector('#chk-enable-cdi')
       cdiModeRow            = root.querySelector('#cdi-mode-row')
       cdiModeSelect         = root.querySelector('#cdi-mode-select')
       chkEnableEmScore      = root.querySelector('#chk-enable-em-score')
       chkEnablePatientSummary = root.querySelector('#chk-enable-patient-summary')
+      chkEnableCostiganCdi  = root.querySelector('#chk-enable-costigan-cdi')
       deviceSelect          = root.querySelector('#device-select')
       soapModelSelect       = root.querySelector('#soap-model-select')
       templateModelSelect   = root.querySelector('#template-model-select')
@@ -144,6 +155,12 @@ export function createSettingsView() {
       anthropicKeyInput     = root.querySelector('#anthropic-key-input')
       btnEditAnthropicKey   = root.querySelector('#btn-edit-anthropic-key')
       btnSaveAnthropicKey   = root.querySelector('#btn-save-anthropic-key')
+      geminiKeyMasked       = root.querySelector('#gemini-key-masked')
+      geminiKeyDisplayRow   = root.querySelector('#gemini-key-display-row')
+      geminiKeyEditRow      = root.querySelector('#gemini-key-edit-row')
+      geminiKeyInput        = root.querySelector('#gemini-key-input')
+      btnEditGeminiKey      = root.querySelector('#btn-edit-gemini-key')
+      btnSaveGeminiKey      = root.querySelector('#btn-save-gemini-key')
 
       on(btnSettingsClose, 'click', close)
 
@@ -154,6 +171,12 @@ export function createSettingsView() {
       if (chkRealtimeTranscription) {
         on(chkRealtimeTranscription, 'change', () => {
           ipc.saveSettings({ realtimeTranscription: chkRealtimeTranscription.checked })
+        })
+      }
+
+      if (chkEnableMic) {
+        on(chkEnableMic, 'change', () => {
+          ipc.saveSettings({ enableMic: chkEnableMic.checked })
         })
       }
 
@@ -188,6 +211,12 @@ export function createSettingsView() {
       if (chkEnablePatientSummary) {
         on(chkEnablePatientSummary, 'change', () => {
           ipc.saveSettings({ enablePatientSummary: chkEnablePatientSummary.checked })
+        })
+      }
+
+      if (chkEnableCostiganCdi) {
+        on(chkEnableCostiganCdi, 'change', () => {
+          ipc.saveSettings({ enableCostiganCdi: chkEnableCostiganCdi.checked })
         })
       }
 
@@ -270,6 +299,32 @@ export function createSettingsView() {
 
       on(anthropicKeyInput, 'keydown', e => {
         if (e.key === 'Enter') btnSaveAnthropicKey && btnSaveAnthropicKey.click()
+      })
+
+      on(btnEditGeminiKey, 'click', () => {
+        if (!geminiKeyInput) return
+        geminiKeyInput.value = ''
+        setVisible(geminiKeyDisplayRow, false)
+        setVisible(geminiKeyEditRow, true)
+        geminiKeyInput.focus()
+      })
+
+      on(btnSaveGeminiKey, 'click', async () => {
+        if (!geminiKeyInput) return
+        const key = geminiKeyInput.value.trim()
+        if (!key) return
+        btnSaveGeminiKey.disabled = true
+        const res = await ipc.saveGeminiKey(key)
+        btnSaveGeminiKey.disabled = false
+        if (res.ok) {
+          if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(key)
+          setVisible(geminiKeyEditRow, false)
+          setVisible(geminiKeyDisplayRow, true)
+        }
+      })
+
+      on(geminiKeyInput, 'keydown', e => {
+        if (e.key === 'Enter') btnSaveGeminiKey && btnSaveGeminiKey.click()
       })
 
       on(btnChangeNotesDir, 'click', async () => {
