@@ -54,9 +54,14 @@ test('within_cap tri-state: true -> Within cap, false -> Over cap, "unclear" -> 
     summary: { procedures_in_play: 1, overall_status: 'likely_denied', likely_denied_count: 1 },
     procedures_detected: [{ procedure: 'TPI', verdict: 'likely_denied', checklist: [], coding: {}, frequency: { cap: '', prior_dates: [], within_cap: within } }],
   })
+  // booleans (defensive) …
   assert.ok(mk(true).includes('Within cap'))
   assert.ok(mk(false).includes('Over cap'))
   assert.ok(mk('unclear').includes('Unclear'))
+  // … and the string forms the skill schema actually emits ("true|false|unclear")
+  assert.ok(mk('true').includes('Within cap'), 'string "true" -> Within cap')
+  assert.ok(!mk('true').includes('>TRUE<'), 'string "true" not shown as raw TRUE')
+  assert.ok(mk('false').includes('Over cap'), 'string "false" -> Over cap')
 })
 
 test('renders denial-risk callout for likely_denied procedures', () => {
@@ -84,6 +89,35 @@ test('escapes clinical free text containing < & " so markup cannot break', () =>
   assert.ok(html.includes('&lt;Co&gt;'))
   assert.ok(html.includes('pain &lt;50% &amp; &quot;stable&quot;'))
   assert.ok(html.includes('fix &lt;this&gt; &amp; &quot;that&quot;'))
+})
+
+test('coerces objectified array fields to text (no [object Object])', () => {
+  // The model sometimes returns coding_issues / evidence_found as objects rather
+  // than strings (e.g. a coding issue as {issue, linked_proc_id}). The renderer
+  // must show the readable text, never the literal "[object Object]".
+  const html = renderCostiganHtml({
+    meta: { patient: 'P' },
+    summary: { procedures_in_play: 1, overall_status: 'needs_edits', needs_edits_count: 1 },
+    procedures_detected: [{
+      procedure: 'ESI', verdict: 'needs_edits',
+      checklist: [{ id: 'ESI-1', criterion: 'c', status: 'unclear',
+        evidence_found: [{ text: 'MRI shows stenosis' }], fix: 'do x' }],
+      coding: {
+        cpt_observed: [{ code: '64483' }],
+        icd_suggested: [{ code: 'M54.17', description: 'Radiculopathy' }],
+        coding_issues: [
+          { issue: 'No codes were stated in the note', linked_proc_id: 'proc-001' },
+          { code: 'M51.36', issue: 'non-billable header' },
+        ],
+      },
+      frequency: {},
+    }],
+  })
+  assert.ok(!html.includes('[object Object]'), 'no [object Object] anywhere')
+  assert.ok(html.includes('No codes were stated in the note'), 'object issue text rendered')
+  assert.ok(html.includes('M51.36 — non-billable header'), 'code-prefixed issue rendered')
+  assert.ok(html.includes('MRI shows stenosis'), 'object evidence text rendered')
+  assert.ok(html.includes('64483'), 'object cpt code rendered')
 })
 
 test('output is offline / has no external resource references', () => {
