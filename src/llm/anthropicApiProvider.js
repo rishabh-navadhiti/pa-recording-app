@@ -64,7 +64,7 @@ function createAnthropicApiProvider({ getKey, log }) {
       }
 
       const rawUsage = data.usage || {}
-      log(`${tag}[${label}] stop_reason=${stopReason} tokens=in:${rawUsage.input_tokens}/out:${rawUsage.output_tokens} durationMs=${durationMs}`)
+      log(`${tag}[${label}] model=${model} stop_reason=${stopReason} tokens=in:${rawUsage.input_tokens}/out:${rawUsage.output_tokens} durationMs=${durationMs}`)
 
       return { ok: true, text, rawUsage, stopReason, durationMs }
     } catch (err) {

@@ -21,6 +21,8 @@ const CHANNELS = Object.freeze({
   SAVE_ELEVENLABS_KEY:  'save-elevenlabs-key',
   GET_ANTHROPIC_KEY:    'get-anthropic-key',
   SAVE_ANTHROPIC_KEY:   'save-anthropic-key',
+  GET_GEMINI_KEY:       'get-gemini-key',
+  SAVE_GEMINI_KEY:      'save-gemini-key',
   HIDE_WINDOW:          'hide-window',
 
   // ---- session & recording ----
@@ -61,6 +63,9 @@ const CHANNELS = Object.freeze({
   LIST_RECENT_PATIENT_CASES: 'list-recent-patient-cases',
   BROWSE_PATIENT_CASE_FOLDER: 'browse-patient-case-folder',
   START_PRECHART_JOB:       'start-prechart-job',
+  // in-recording pre-chart context capture (fed into initial note generation)
+  SAVE_PRECHART_CONTEXT:    'save-prechart-context',
+  GET_PRECHART_CONTEXT:     'get-prechart-context',
 
   // ---- status window ----
   GET_SESSION_RECORDINGS:   'get-session-recordings',
@@ -77,7 +82,8 @@ const CHANNELS = Object.freeze({
   PICK_DOCTOR:              'pick-doctor',
   SERVICE_WARNING:          'service-warning',
   RECORDING_STATUS_UPDATE:  'recording-status-update',
-  TEMPLATE_JOB_STATUS:      'template-job-status'
+  TEMPLATE_JOB_STATUS:      'template-job-status',
+  COSTIGAN_REPORT_READY:    'costigan-report-ready'
 })
 
 module.exports = { CHANNELS }

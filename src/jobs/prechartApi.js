@@ -5,6 +5,8 @@ const path = require('path')
 const { parseSkillManifest }       = require('../llm/skill-io/manifest')
 const { buildSingleCallNoteEdit, splitNoteAndManifest } = require('../llm/skill-io/singleCall')
 const { resolveOption }            = require('../llm/modelOptions')
+const { normalizeApiUsage }        = require('../llm/pricing')
+const { runCostiganChecklist }     = require('./costiganChecklist')
 
 const SKILL_PATH = path.join(__dirname, '../../notes-claude/skills/edit-note-api/SKILL.md')
 
@@ -97,12 +99,14 @@ const prechartApi = {
 
     if (!result.ok) {
       const msg = result.errText || 'API error'
-      log(`[prechart][edit-note:api] ERROR API failed: ${msg}`)
+      log(`[prechart][edit-note:api] [DEV-ALERT] API failed: ${msg}`)
       return {
         code:        1,
         text:        '',
         errText:     msg,
+        statusCode:  result.statusCode,   // preserved for onFailure's auth/rate messaging
         resultEvent: null,
+        usage:       normalizeApiUsage({ model, rawUsage: result.rawUsage, durationMs: result.durationMs }),
         isRateLimit: result.statusCode === 429 || result.statusCode === 529,
       }
     }
@@ -124,7 +128,8 @@ const prechartApi = {
     } catch (e) {
       const msg = `Write failed: ${e.message}`
       log(`[prechart][edit-note:api] ERROR ${msg}`)
-      return { code: 1, text: '', errText: msg, resultEvent: null }
+      // The API call succeeded (tokens were spent) — still record usage on the failed row.
+      return { code: 1, text: '', errText: msg, usage: normalizeApiUsage({ model, rawUsage: result.rawUsage, durationMs: result.durationMs }) }
     }
 
     log(`[prechart][edit-note:api] note written successfully`)
@@ -142,7 +147,9 @@ const prechartApi = {
       code:        0,
       text:        JSON.stringify(manifest),
       errText:     '',
-      resultEvent: { rawUsage: result.rawUsage, durationMs: result.durationMs },
+      // Normalized usage record — the dispatcher writes these token/cost/duration
+      // columns to processing_events (extractUsage cannot read the API shape).
+      usage:       normalizeApiUsage({ model, rawUsage: result.rawUsage, durationMs: result.durationMs }),
     }
   },
 
@@ -197,6 +204,12 @@ const prechartApi = {
         .forEach(f => platform.hideInternal(path.join(caseDir, f)))
     } catch {}
 
+    // Costigan procedure checklist (opt-in, Costigan-only) — single API call on the final note + pasted chart.
+    if (ctx.config.get().enableCostiganCdi && extra.doctor) {
+      runCostiganChecklist({ caseDir, doctor: extra.doctor, chartText: input.chartText, caseId, ctx })
+        .catch(e => log(`[costigan] run error: ${e.message}`))
+    }
+
     const job = { type: 'prechart', status: 'success', doctorName: patientLabel, caseDir, durationMs, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
     platform.notify('Pre-chart applied', `${patientLabel}'s note has been updated.`)
@@ -206,17 +219,39 @@ const prechartApi = {
 
   onFailure(runResult, input, ctx, extra, durationMs) {
     if (extra.combinedAttachmentPath) _cleanup(extra.combinedAttachmentPath, extra.patientLabel, ctx.log)
+    _rehideNotes(input.caseDir, ctx)   // un-hidden before the write attempt on Windows; re-hide on failure
     const error = runResult.errText || `Exit ${runResult.code}`
     ctx.log?.(`[prechart][edit-note:api] job failed: ${error}`)
+
+    // Surface the real reason to the scribe (auth vs generic), mirroring the SOAP API path.
+    const opt = resolveOption(ctx.config.get().soapModel)
+    const providerName = (opt?.provider === 'gemini') ? 'Gemini' : 'Anthropic'
+    const keyEnvName   = providerName === 'Gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY'
+    const isAuthError  = !!(error.includes(`${keyEnvName} not set`) || runResult.statusCode === 401)
+    ctx.renderer.send('service-warning', isAuthError
+      ? { title: `${providerName} API key missing or invalid`, message: `Set your ${providerName} API key in Settings → Advanced.` }
+      : { title: 'Pre-chart failed', message: `The note could not be updated. ${error.slice(0, 200)}` })
+
     const job = { type: 'prechart', status: 'failed', doctorName: extra.patientLabel, caseDir: input.caseDir, error, durationMs, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
   },
 
   onError(err, input, ctx, extra) {
     if (extra.combinedAttachmentPath) _cleanup(extra.combinedAttachmentPath, extra.patientLabel, ctx.log)
+    _rehideNotes(input.caseDir, ctx)   // re-hide in case the write un-hid the note before throwing
     const job = { type: 'prechart', status: 'failed', doctorName: extra.patientLabel, caseDir: input.caseDir, error: err.message, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)
   },
+}
+
+// Re-hide every .md in the case folder (no-op on macOS). On Windows runLlm strips
+// `attrib -h` from the note before writing; onSuccess re-hides, so the failure
+// paths must re-hide too or the note is left visible to the user.
+function _rehideNotes(caseDir, ctx) {
+  try {
+    fs.readdirSync(caseDir).filter(f => f.endsWith('.md'))
+      .forEach(f => ctx.platform?.hideInternal(path.join(caseDir, f)))
+  } catch {}
 }
 
 function _cleanup(attachmentPath, label, log) {

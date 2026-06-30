@@ -21,13 +21,15 @@ contextBridge.exposeInMainWorld('api', {
   pauseRecording:    ()     => ipcRenderer.invoke('pause-recording'),
   resumeRecording:   ()     => ipcRenderer.invoke('resume-recording'),
   discardRecording:  ()     => ipcRenderer.invoke('discard-recording'),
-  submitPatientName: (name) => ipcRenderer.invoke('submit-patient-name', name),
+  submitPatientName: (name, multiPatient) => ipcRenderer.invoke('submit-patient-name', name, multiPatient),
 
   getConfigStatus:    ()     => ipcRenderer.invoke('get-config-status'),
   getElevenLabsKey:  ()     => ipcRenderer.invoke('get-elevenlabs-key'),
   saveElevenLabsKey: (key)   => ipcRenderer.invoke('save-elevenlabs-key', key),
   getAnthropicKey:   ()     => ipcRenderer.invoke('get-anthropic-key'),
   saveAnthropicKey:  (key)   => ipcRenderer.invoke('save-anthropic-key', key),
+  getGeminiKey:      ()     => ipcRenderer.invoke('get-gemini-key'),
+  saveGeminiKey:     (key)   => ipcRenderer.invoke('save-gemini-key', key),
   getDoctors:         ()     => ipcRenderer.invoke('get-doctors'),
   addDoctor:              (name) => ipcRenderer.invoke('add-doctor', name),
   updateDoctor:          (id, name) => ipcRenderer.invoke('update-doctor', id, name),
@@ -37,7 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   selectDoctor:       (id)   => ipcRenderer.invoke('select-doctor', id),
 
   browseAudioFile:    ()                       => ipcRenderer.invoke('browse-audio-file'),
-  processAudioFile:   (filePath, patientName)  => ipcRenderer.invoke('process-audio-file', filePath, patientName),
+  processAudioFile:   (filePath, patientName, multiPatient) => ipcRenderer.invoke('process-audio-file', filePath, patientName, multiPatient),
 
   browseNotesFiles:         ()                                                           => ipcRenderer.invoke('browse-notes-files'),
   browseCorrectionsFile:    ()                                                           => ipcRenderer.invoke('browse-corrections-file'),
@@ -51,7 +53,9 @@ contextBridge.exposeInMainWorld('api', {
   browsePrechartFiles:      ()                                       => ipcRenderer.invoke('browse-prechart-files'),
   listRecentPatientCases:   ()                                       => ipcRenderer.invoke('list-recent-patient-cases'),
   browsePatientCaseFolder:  ()                                       => ipcRenderer.invoke('browse-patient-case-folder'),
-  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths),
+  startPrechartJob:         (doctorId, caseDir, instructions, attachmentPaths, chartText) => ipcRenderer.invoke('start-prechart-job', doctorId, caseDir, instructions, attachmentPaths, chartText),
+  savePrechartContext:      (text, files)                            => ipcRenderer.invoke('save-prechart-context', text, files),
+  getPrechartContext:       ()                                       => ipcRenderer.invoke('get-prechart-context'),
 
   getSettings:        ()          => ipcRenderer.invoke('get-settings'),
   saveSettings:       (settings)  => ipcRenderer.invoke('save-settings', settings),
@@ -73,5 +77,6 @@ contextBridge.exposeInMainWorld('api', {
   onPickDoctor:            (cb) => ipcRenderer.on('pick-doctor',             (_, doctors) => cb(doctors)),
   onServiceWarning:        (cb) => ipcRenderer.on('service-warning',         (_, data)    => cb(data)),
   onRecordingStatusUpdate: (cb) => ipcRenderer.on('recording-status-update', (_, data)    => cb(data)),
-  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job))
+  onTemplateJobStatus:     (cb) => ipcRenderer.on('template-job-status',     (_, job)     => cb(job)),
+  onCostiganReportReady:   (cb) => ipcRenderer.on('costigan-report-ready',   (_, data)    => cb(data))
 })

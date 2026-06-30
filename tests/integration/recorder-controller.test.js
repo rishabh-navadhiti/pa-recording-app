@@ -106,17 +106,17 @@ test('resume() writes resume\\n to stdin', async () => {
 test('awaitPatientName resolves via resolvePatientName', async () => {
   const ctrl = createRecorderController()
   const p = ctrl.awaitPatientName()
-  ctrl.resolvePatientName('jane_doe')
-  const name = await p
-  assert.strictEqual(name, 'jane_doe')
+  ctrl.resolvePatientName({ name: 'jane_doe', multiPatient: false })
+  const result = await p
+  assert.deepStrictEqual(result, { name: 'jane_doe', multiPatient: false })
 })
 
-test('cancelPatientName resolves promise with null', async () => {
+test('cancelPatientName resolves promise with null name', async () => {
   const ctrl = createRecorderController()
   const p = ctrl.awaitPatientName()
   ctrl.cancelPatientName()
-  const name = await p
-  assert.strictEqual(name, null)
+  const result = await p
+  assert.deepStrictEqual(result, { name: null, multiPatient: false })
 })
 
 // ---- duration side-channel -----------------------------------------------

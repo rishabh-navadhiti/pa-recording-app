@@ -10,6 +10,7 @@ const emScore        = require('../engines/emScore')
 const patientSummary = require('../engines/patientSummary')
 // Namespace import (not destructured) so tests can stub docx.spawnDocxConversion.
 const docx = require('./docx')
+const report = require('./report')
 const { planChildCases, materializeChild } = require('./multiPatient')
 
 // ---- Single-patient post-SOAP chain ----------------------------------------
@@ -54,6 +55,15 @@ async function runCaseChain(ctx, caseCtx) {
   const cdiMdPath = cdiResult?.manifest?.md_path || null
   if (cdiMdPath && fs.existsSync(cdiMdPath)) {
     docx.spawnDocxConversion(cdiMdPath, caseTag, patientFolderName || null, caseId, ctx)
+  }
+
+  // Combined "Clinical Cockpit" report (HTML + PDF) rendered from the engine
+  // JSONs on disk. Fixed post-step like docx; best-effort, awaited so only one
+  // offscreen Chromium render runs at a time. No-op when no engine JSON exists.
+  try {
+    await report.renderCaseReport(ctx, caseCtx)
+  } catch (e) {
+    ctx.log(`${caseTag ? `[${caseTag}] ` : ''}[report] render error: ${e.message}`)
   }
 }
 
@@ -163,27 +173,39 @@ async function runMultiPatientChain(ctx, opts) {
     // Hide the audit .md (recording folder) on Windows
     ctx.platform.hideInternal(c.soap_note_md)
 
-    // Insert child cases row
-    let childCaseId = null
+    // Insert or update child cases row.
+    // If the fan-out pre-created a child row (c.case_id), reuse it and update the
+    // now-known targetDir + paths; otherwise create a fresh row with parentCaseId set.
+    let childCaseId = c.case_id || null
     try {
-      childCaseId = dbCases.createCase({
-        // Unnamed child → fall back to its folder name (slug/unknown_N default)
-        // rather than NULL, mirroring the single-patient ingest behaviour.
-        patientName:  c.patient_name || folderName,
-        doctorId:     parentDoctorId,
-        sessionId:    ctx.stores.session.get().sessionId,
-        caseDir:      targetDir,
-        source:       'recording',
-        mp3Path:      childMp3 || null,
-        recordedAt:   parentRecordedAt,
-      })
       if (childCaseId) {
         dbCases.updateCasePaths(childCaseId, {
+          case_dir:             targetDir,
           status:               'converting',
+          mp3_path:             childMp3 || null,
           soap_note_path:       childSoapMd,
           transcript_path:      fs.existsSync(path.join(targetDir, 'transcript.md')) ? path.join(targetDir, 'transcript.md') : null,
           transcript_docx_path: transcriptDocxOk ? childTranscriptDocx : null,
         })
+      } else {
+        childCaseId = dbCases.createCase({
+          patientName:  c.patient_name || folderName,
+          doctorId:     parentDoctorId,
+          sessionId:    ctx.stores.session.get().sessionId,
+          caseDir:      targetDir,
+          source:       'recording',
+          mp3Path:      childMp3 || null,
+          recordedAt:   parentRecordedAt,
+          parentCaseId: parentCaseId || null,
+        })
+        if (childCaseId) {
+          dbCases.updateCasePaths(childCaseId, {
+            status:               'converting',
+            soap_note_path:       childSoapMd,
+            transcript_path:      fs.existsSync(path.join(targetDir, 'transcript.md')) ? path.join(targetDir, 'transcript.md') : null,
+            transcript_docx_path: transcriptDocxOk ? childTranscriptDocx : null,
+          })
+        }
       }
     } catch (e) { log(`${tag}[db] createCase(child ${i + 1}) failed: ${e.message}`) }
 
@@ -208,6 +230,7 @@ async function runMultiPatientChain(ctx, opts) {
     dbCases.updateCasePaths(parentCaseId, {
       status:         'completed',
       soap_note_path: null,
+      multi_patient:  1,
       completed_at:   new Date().toISOString(),
     })
     dbSessions.bumpSessionCounters(ctx.stores.session.get().sessionId, { failed: false })

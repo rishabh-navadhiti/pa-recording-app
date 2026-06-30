@@ -2,6 +2,7 @@
 
 const path = require('path')
 const { CLAUDE_RATE_LIMITED, MCP_AUTH_ERROR } = require('../llm/skill-io/markers')
+const { resolveCliModel } = require('../llm/modelOptions')
 
 const icd = {
   id:           'icd',
@@ -11,7 +12,7 @@ const icd = {
   stage:        'coding_icd',
   completesCase: false,
 
-  model: (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  model: (cfg) => resolveCliModel(cfg.soapModel),
   effort: undefined,
 
   /**

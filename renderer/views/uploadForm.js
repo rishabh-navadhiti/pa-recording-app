@@ -17,7 +17,8 @@ import { ipc } from '../ipc/client.js'
 import { setVisible } from '../components/visible.js'
 
 export function createUploadForm() {
-  let uploadForm, uploadPatientInput, btnUploadSaveName, btnUploadSkipName, btnUploadClose
+  let uploadForm, uploadPatientInput, btnUploadSaveName, btnUploadSkipName, btnUploadClose, btnUploadPrechart, multiPatientCheckbox
+  let onPrechartCb = null
 
   // Per-show state.
   let currentFilePath = null
@@ -34,8 +35,9 @@ export function createUploadForm() {
   function submitUpload(name) {
     if (submitted) return
     submitted = true
+    const multi = multiPatientCheckbox?.checked || false
     setVisible(uploadForm, false)
-    ipc.processAudioFile(currentFilePath, name)
+    ipc.processAudioFile(currentFilePath, name, multi)
   }
 
   // clearActionButtons is invoked by the caller before show(); kept here for
@@ -44,23 +46,27 @@ export function createUploadForm() {
     currentFilePath = filePath
     onCloseCb = onClose || null
     submitted = false
-    // Hide action buttons while naming — prevent double-submits
     if (clearActionButtons) clearActionButtons()
     setVisible(uploadForm, true)
     uploadPatientInput.value = ''
+    if (multiPatientCheckbox) multiPatientCheckbox.checked = false
     uploadPatientInput.focus()
   }
 
   return {
-    mount(root) {
-      uploadForm         = root.querySelector('#upload-form')
-      uploadPatientInput = root.querySelector('#upload-patient-input')
-      btnUploadSaveName  = root.querySelector('#btn-upload-save-name')
-      btnUploadSkipName  = root.querySelector('#btn-upload-skip-name')
-      btnUploadClose     = root.querySelector('#btn-upload-close')
+    mount(root, ctx = {}) {
+      onPrechartCb         = ctx.onPrechart || null
+      uploadForm           = root.querySelector('#upload-form')
+      uploadPatientInput   = root.querySelector('#upload-patient-input')
+      btnUploadSaveName    = root.querySelector('#btn-upload-save-name')
+      btnUploadSkipName    = root.querySelector('#btn-upload-skip-name')
+      btnUploadClose       = root.querySelector('#btn-upload-close')
+      btnUploadPrechart    = root.querySelector('#btn-upload-prechart')
+      multiPatientCheckbox = root.querySelector('#upload-multi-patient')
 
       on(btnUploadSaveName, 'click', () => submitUpload(uploadPatientInput.value || null))
       on(btnUploadSkipName, 'click', () => submitUpload(null))
+      on(btnUploadPrechart, 'click', () => { if (!submitted && onPrechartCb) onPrechartCb() })
 
       on(btnUploadClose, 'click', () => {
         setVisible(uploadForm, false)

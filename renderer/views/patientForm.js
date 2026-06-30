@@ -16,7 +16,8 @@ import { setVisible } from '../components/visible.js'
 const AUTOSAVE_SECS = 30
 
 export function createPatientForm() {
-  let patientForm, patientInput, btnSaveName, btnSkipName, formCountdown, viewStatusBar
+  let patientForm, patientInput, btnSaveName, btnSkipName, btnPrechart, formCountdown, viewStatusBar, multiPatientCheckbox
+  let onPrechartCb = null
 
   // Per-show state.
   let countdownInterval = null
@@ -31,14 +32,16 @@ export function createPatientForm() {
 
   function submitName(name) {
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null }
+    const multi = multiPatientCheckbox?.checked || false
     setVisible(patientForm, false)
-    ipc.submitPatientName(name)
+    ipc.submitPatientName(name, multi)
   }
 
   function show() {
     setVisible(patientForm, true)
     setVisible(viewStatusBar, false)
     patientInput.value = ''
+    if (multiPatientCheckbox) multiPatientCheckbox.checked = false
     patientInput.focus()
 
     let secondsLeft = AUTOSAVE_SECS
@@ -61,18 +64,31 @@ export function createPatientForm() {
   }
 
   return {
-    mount(root) {
-      patientForm   = root.querySelector('#patient-form')
-      patientInput  = root.querySelector('#patient-input')
-      btnSaveName   = root.querySelector('#btn-save-name')
-      btnSkipName   = root.querySelector('#btn-skip-name')
-      formCountdown = root.querySelector('#form-countdown')
-      viewStatusBar = root.querySelector('#view-status-bar')
+    mount(root, ctx = {}) {
+      onPrechartCb         = ctx.onPrechart || null
+      patientForm          = root.querySelector('#patient-form')
+      patientInput         = root.querySelector('#patient-input')
+      btnSaveName          = root.querySelector('#btn-save-name')
+      btnSkipName          = root.querySelector('#btn-skip-name')
+      btnPrechart          = root.querySelector('#btn-patient-prechart')
+      formCountdown        = root.querySelector('#form-countdown')
+      viewStatusBar        = root.querySelector('#view-status-bar')
+      multiPatientCheckbox = root.querySelector('#patient-multi-patient')
 
       on(btnSaveName, 'click', () => {
         if (submitted) return
         submitted = true
         submitName(patientInput.value || null)
+      })
+
+      // Open the Pre-chart capture screen. Pause the auto-save countdown so the
+      // case isn't auto-submitted while the scribe is adding context; the form
+      // stays open underneath and the user submits manually on return.
+      on(btnPrechart, 'click', () => {
+        if (submitted) return
+        if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null }
+        if (formCountdown) formCountdown.textContent = ''
+        if (onPrechartCb) onPrechartCb()
       })
 
       on(btnSkipName, 'click', () => {

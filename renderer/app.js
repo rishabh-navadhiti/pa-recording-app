@@ -29,6 +29,7 @@ import { createFolderSetup } from './views/folderSetup.js'
 import { createTemplatesView } from './views/templatesView.js'
 import { createPrechartView } from './views/prechartView.js'
 import { createJobBanner } from './views/jobBanner.js'
+import { createCostiganBanner } from './views/costiganBanner.js'
 
 const root = document
 
@@ -39,6 +40,7 @@ const folderSetup  = createFolderSetup()
 const templatesView = createTemplatesView()
 const prechartView = createPrechartView()
 const jobBanner    = createJobBanner()
+const costiganBanner = createCostiganBanner()
 
 // --- Router state ---
 let currentState = STATE.IDLE
@@ -141,6 +143,7 @@ function registerAppListeners() {
   const btnViewStatus = root.getElementById('btn-view-status')
   if (btnViewStatus) btnViewStatus.addEventListener('click', () => ipc.openStatusWindow())
   ipc.onTemplateJobStatus(job => jobBanner.handleTemplateJobStatus(job))
+  ipc.onCostiganReportReady(payload => costiganBanner.show(payload))
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +176,7 @@ async function init() {
   jobBanner.mount(root, {
     onTemplateUpdated: () => templatesView.renderList().then(() => recordView.clearDoctorWarning()),
   })
+  costiganBanner.mount(root)
   templatesView.mount(root, {
     clearDoctorWarning: () => recordView.clearDoctorWarning(),
     refreshJobBanner: () => jobBanner.refreshTemplateJobBanner(),

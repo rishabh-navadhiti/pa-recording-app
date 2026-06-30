@@ -35,7 +35,7 @@ test('Process submits the file path + name via ipc.processAudioFile', async () =
   document.getElementById('upload-patient-input').value = 'Sam'
   document.getElementById('btn-upload-save-name').click()
   await flush()
-  assert.deepStrictEqual(calls, [['C:\\rec.mp3', 'Sam']])
+  assert.deepStrictEqual(calls, [['C:\\rec.mp3', 'Sam', false]])
   view.unmount()
 })
 
@@ -45,7 +45,7 @@ test('Skip submits null name', async () => {
   view.show('C:\\rec.mp3', {})
   document.getElementById('btn-upload-skip-name').click()
   await flush()
-  assert.deepStrictEqual(calls, [['C:\\rec.mp3', null]])
+  assert.deepStrictEqual(calls, [['C:\\rec.mp3', null, false]])
   view.unmount()
 })
 
