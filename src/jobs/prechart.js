@@ -2,7 +2,9 @@
 
 const fs   = require('fs')
 const path = require('path')
-const { parseSkillManifest } = require('../llm/skill-io/manifest')
+const { parseSkillManifest }   = require('../llm/skill-io/manifest')
+const { resolveCliModel }      = require('../llm/modelOptions')
+const { runCostiganChecklist } = require('./costiganChecklist')
 
 /** @type {JobDescriptor} */
 const prechart = {
@@ -12,7 +14,9 @@ const prechart = {
   jobKind:  'prechart',
   lockType: 'prechart',
 
-  model:  (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  // CLI prechart runs via `claude -p` — resolve to a CLI-valid Anthropic model
+  // (an option id like `sonnet-4-6-api` passed raw would 404). See modelOptions.
+  model:  (cfg) => resolveCliModel(cfg.soapModel),
   effort: () => 'high',
 
   onRunning(input, ctx, extra, { startedAt }) {
@@ -67,6 +71,12 @@ const prechart = {
       fs.readdirSync(caseDir).filter(f => f.endsWith('.md'))
         .forEach(f => platform.hideInternal(path.join(caseDir, f)))
     } catch {}
+
+    // Costigan procedure checklist (opt-in, Costigan-only) — single API call on the final note + pasted chart.
+    if (ctx.config.get().enableCostiganCdi && extra.doctor) {
+      runCostiganChecklist({ caseDir, doctor: extra.doctor, chartText: input.chartText, caseId, ctx })
+        .catch(e => log(`[costigan] run error: ${e.message}`))
+    }
 
     const job = { type: 'prechart', status: 'success', doctorName: patientLabel, caseDir, durationMs, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)

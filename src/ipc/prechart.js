@@ -55,7 +55,7 @@ function registerPrechartIpc(ipcMain, appCtx, deps) {
   })
 
   // ---- start-prechart-job ----
-  ipcMain.handle(CHANNELS.START_PRECHART_JOB, async (_, doctorId, caseDir, instructions, attachmentPaths) => {
+  ipcMain.handle(CHANNELS.START_PRECHART_JOB, async (_, doctorId, caseDir, instructions, attachmentPaths, chartText) => {
     if (appCtx.stores.jobs.isRunning()) return { ok: false, error: 'Another job is already running.' }
 
     const allDocs = getAllDoctors()
@@ -85,7 +85,7 @@ function registerPrechartIpc(ipcMain, appCtx, deps) {
       return { ok: false, error: `Attachment extraction failed: ${e.message}` }
     }
 
-    spawnPrechartJob(caseDir, templatePath, trimmedInstructions, combined)
+    spawnPrechartJob(caseDir, templatePath, trimmedInstructions, combined, (chartText || '').trim(), doctor)
     return { ok: true }
   })
 }

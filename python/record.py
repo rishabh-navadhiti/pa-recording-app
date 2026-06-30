@@ -545,6 +545,35 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event, r
             stream_callback=callback
         )
 
+        # Keep-alive: render continuous silence to the default output so WASAPI
+        # loopback keeps delivering frames during silent stretches. Without this,
+        # loopback DROPS silence (only emits frames while audio is playing), so its
+        # timeline compresses and no longer matches the continuous mic stream —
+        # which causes the call audio to overlap the mic in the mix and the words
+        # to interleave out of order in the transcript. Only needed when mixing
+        # with the mic; non-fatal if it fails.
+        keepalive_stream = None
+        if mic_enabled:
+            try:
+                out_info = p.get_default_output_device_info()
+                ka_idx   = out_info['index']
+                ka_rate  = int(out_info['defaultSampleRate'])
+                ka_ch    = min(int(out_info.get('maxOutputChannels', 2) or 2), 2) or 2
+
+                def ka_callback(in_data, frame_count, time_info, status):
+                    return (b'\x00' * (frame_count * ka_ch * 2), pyaudio.paContinue)
+
+                keepalive_stream = p.open(
+                    format=pyaudio.paInt16, channels=ka_ch, rate=ka_rate,
+                    output=True, output_device_index=ka_idx,
+                    frames_per_buffer=chunk, stream_callback=ka_callback)
+                keepalive_stream.start_stream()
+                log.info(f'Keep-alive silence output started [{ka_idx}]: {out_info["name"]} '
+                         f'({ka_rate}Hz, {ka_ch}ch) — loopback will capture continuously')
+            except Exception as e:
+                log.warning(f'Keep-alive output unavailable (loopback may drop silence): {e}')
+                keepalive_stream = None
+
         log.info(f'Recording started at {sample_rate}Hz, {channels}ch')
         stream.start_stream()
         if mic_stream:
@@ -561,6 +590,12 @@ def record_windows(output_mp3, device_index_override, stop_event, pause_event, r
             try:
                 mic_stream.stop_stream()
                 mic_stream.close()
+            except Exception:
+                pass
+        if keepalive_stream:
+            try:
+                keepalive_stream.stop_stream()
+                keepalive_stream.close()
             except Exception:
                 pass
         if mic_wf:

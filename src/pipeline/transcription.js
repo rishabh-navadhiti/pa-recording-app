@@ -4,7 +4,7 @@ const fs   = require('fs')
 const path = require('path')
 
 const { ELEVENLABS_AUTH_ERROR, ELEVENLABS_RATE_LIMITED } = require('../llm/skill-io/markers')
-const { transcribeToFile, ELEVENLABS_MODEL, SCRIBE_V2_COST_PER_HOUR_USD, SCRIBE_V2_REALTIME_COST_PER_HOUR_USD, readRealtimeTranscript, formatTranscript } = require('./elevenLabs')
+const { transcribeToFile, ELEVENLABS_MODEL, SCRIBE_V2_COST_PER_HOUR_USD, SCRIBE_V2_REALTIME_COST_PER_HOUR_USD, readRealtimeTranscript, formatTranscriptPlain } = require('./elevenLabs')
 
 /**
  * Transcribe an MP3 via ElevenLabs (in-process, Node — see elevenLabs.js) and
@@ -58,7 +58,9 @@ function spawnTranscription({ mp3Path, transcriptDest, soapNotePath, caseTag, te
       const realtimeData = readRealtimeTranscript(realtimeJsonPath)
       if (realtimeData) {
         log(`${tag}[transcribe] Using realtime transcript from ${realtimeJsonPath}`)
-        const markdown = formatTranscript(realtimeData)
+        // Realtime → plain transcript (no Speaker N labels). The only "speakers"
+        // here are mic-vs-call, which aren't clinically meaningful.
+        const markdown = formatTranscriptPlain(realtimeData)
         fs.mkdirSync(path.dirname(transcriptDest), { recursive: true })
         fs.writeFileSync(transcriptDest, markdown, 'utf8')
         return { markdown, isRealtime: true }

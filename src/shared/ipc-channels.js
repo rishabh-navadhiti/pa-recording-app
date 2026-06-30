@@ -63,6 +63,9 @@ const CHANNELS = Object.freeze({
   LIST_RECENT_PATIENT_CASES: 'list-recent-patient-cases',
   BROWSE_PATIENT_CASE_FOLDER: 'browse-patient-case-folder',
   START_PRECHART_JOB:       'start-prechart-job',
+  // in-recording pre-chart context capture (fed into initial note generation)
+  SAVE_PRECHART_CONTEXT:    'save-prechart-context',
+  GET_PRECHART_CONTEXT:     'get-prechart-context',
 
   // ---- status window ----
   GET_SESSION_RECORDINGS:   'get-session-recordings',
@@ -79,7 +82,8 @@ const CHANNELS = Object.freeze({
   PICK_DOCTOR:              'pick-doctor',
   SERVICE_WARNING:          'service-warning',
   RECORDING_STATUS_UPDATE:  'recording-status-update',
-  TEMPLATE_JOB_STATUS:      'template-job-status'
+  TEMPLATE_JOB_STATUS:      'template-job-status',
+  COSTIGAN_REPORT_READY:    'costigan-report-ready'
 })
 
 module.exports = { CHANNELS }

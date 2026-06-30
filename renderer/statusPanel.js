@@ -41,6 +41,20 @@ function appendCdiUi(statusRow, entry) {
   }
 }
 
+// "Report" button — opens the combined Clinical Cockpit report (CDI + E/M +
+// patient summary). Prefers the PDF; falls back to the HTML when the PDF render
+// didn't land. Both live inside the case folder (openSoapNote confines to it).
+function appendReportBtn(statusRow, entry) {
+  const reportPath = entry.reportPdfPath || entry.reportHtmlPath
+  if (!reportPath) return
+  const btn = document.createElement('button')
+  btn.className = 'open-btn open-btn--report'
+  btn.textContent = 'Report'
+  btn.title = 'Open combined CDI · E/M · patient-summary report'
+  btn.addEventListener('click', () => ipc.openSoapNote(reportPath))
+  statusRow.appendChild(btn)
+}
+
 export function renderRecordings(recordings) {
   const list = document.getElementById('recording-list')
   if (!list) return
@@ -95,6 +109,7 @@ export function renderRecordings(recordings) {
 
         if (patient.status === 'completed') appendOpenNoteBtn(statusRow, patient.soapDocxPath)
         appendCdiUi(statusRow, patient)
+        appendReportBtn(statusRow, patient)
 
         patientRow.appendChild(patientName)
         patientRow.appendChild(statusRow)
@@ -121,6 +136,7 @@ export function renderRecordings(recordings) {
 
       if (rec.status === 'completed') appendOpenNoteBtn(statusRow, rec.soapDocxPath)
       appendCdiUi(statusRow, rec)
+      appendReportBtn(statusRow, rec)
 
       item.appendChild(nameRow)
       item.appendChild(statusRow)

@@ -203,6 +203,20 @@ Scan the note/transcript for a **documented total practitioner time** on the dat
 
 Per the pack, the final `predicted_em_level` is the **higher** of the MDM result and `level_if_time`. If the time path wins, say so in `final_level_basis`.
 
+### 3f-2. Billed E/M code (parse the note's Level-of-Service placeholder)
+
+Many notes (e.g. Dr. Costigan / Dr. Sabbag) carry a **Level-of-Service billing placeholder** that states the code the provider intends to bill — typically a `.KS`-style dot-phrase token alongside a `99xxx` code, e.g. `[.KS15 — 99215 Level-of-Service billing paragraph]`. Capture what the note is **billed at** as a structured field so downstream presentation can render the billed-vs-supported story from data (not prose):
+
+- `billed_em_code` — the office/outpatient E/M code (`99202`–`99205` or `99212`–`99215`) the note is billed at, parsed from the placeholder. `null` when no billing code is found in the note.
+- `billed_em_source` — `"placeholder"` when parsed from a `.KS`/Level-of-Service dot-phrase token; `"explicit"` when the note plainly states a billed/billing code in prose; `null` when `billed_em_code` is `null`.
+
+**Parse defensively** — the placeholder format is not guaranteed stable across doctors:
+- Look for a `99xxx` code near a Level-of-Service / `.KS`-style token, a "billing"/"bill at"/"level of service" phrase, or an explicit billed-code statement.
+- Accept only a valid office/outpatient code (`99202`–`99205`, `99212`–`99215`); ignore other `99xxx` (e.g. `99080`, `99358`).
+- If nothing matches, set `billed_em_code: null` and `billed_em_source: null` — do **not** guess. When `billed_em_code` is `null`, downstream simply shows the predicted level alone with no billed-vs-supported comparison.
+
+This is a **parse of the note**, not a CPT lookup — connector-free (no ICD/CPT connector call).
+
 ### 3g. Down-code risk + upgrade path
 
 - `downcode_risk` ∈ {`low`, `moderate`, `high`} — the auditor's read of how exposed the predicted level is to being downcoded on review. **High** when the level leans on a single thinly-documented element (e.g. a 99214 resting entirely on "prescription drug management" that is asserted but the medication/decision isn't clearly documented), or when key drivers are stated as prose without the substantiating management decision. **Low** when 2+ elements are solidly documented at the scored tier with explicit drivers. **Moderate** in between.
@@ -230,6 +244,8 @@ Per the pack, the final `predicted_em_level` is the **higher** of the MDM result
   "predicted_em_level": "<99202|99203|99204|99205|99212|99213|99214|99215, or null on skip/fail>",
   "predicted_complexity": "<straightforward|low|moderate|high, or null on skip/fail>",
   "downcode_risk": "<low|moderate|high, or null on skip/fail>",
+  "billed_em_code": "<the CPT level the note is billed at, parsed from the Level-of-Service placeholder; null if none found>",
+  "billed_em_source": "<placeholder|explicit|null — where billed_em_code came from>",
   "mdm_elements": {
     "problems_addressed": {
       "score": "<straightforward|low|moderate|high>",
@@ -263,6 +279,7 @@ Per the pack, the final `predicted_em_level` is the **higher** of the MDM result
 - `predicted_em_level` is the **higher** of the MDM-mapped code and `time_alternative.level_if_time`. Never `99201` or `99211`.
 - Each `mdm_elements.*.score` ∈ {`straightforward`, `low`, `moderate`, `high`}; `drivers` is 1–4 concrete fragments; `documentation_gap` is a string when the element is the limiting factor, else `null`.
 - `downcode_risk` ∈ {`low`, `moderate`, `high`}.
+- `billed_em_code` is a valid office/outpatient code (`99202`–`99205`, `99212`–`99215`) parsed from the note, or `null` when none is found; `billed_em_source` ∈ {`placeholder`, `explicit`, `null`} and is `null` exactly when `billed_em_code` is `null`. Never guess a billed code.
 - `time_alternative.documented_minutes` is `null` unless a total is explicitly documented; `level_if_time` is `null` when minutes is `null`.
 - On a **skip** (not an office E/M): set `predicted_em_level`, `predicted_complexity`, `downcode_risk` to `null`, keep `visit_type`/`mdm_elements` best-effort or empty, and add a top-level `"skipped_reason": "<reason>"`.
 
@@ -303,6 +320,8 @@ If `JSON_INVALID`:
   "predicted_em_level": null,
   "predicted_complexity": null,
   "downcode_risk": null,
+  "billed_em_code": null,
+  "billed_em_source": null,
   "mdm_elements": { "problems_addressed": { "score": "straightforward", "drivers": [], "documentation_gap": null }, "data_reviewed": { "score": "straightforward", "drivers": [], "documentation_gap": null }, "risk": { "score": "straightforward", "drivers": [], "documentation_gap": null } },
   "final_level_basis": "E/M level could not be produced — see raw output.",
   "upgrade_path": "",

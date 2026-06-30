@@ -17,4 +17,20 @@ function resolveOption(soapModel) {
   return NOTE_GEN_OPTIONS[soapModel] || NOTE_GEN_OPTIONS[DEFAULT_OPTION_ID]
 }
 
-module.exports = { NOTE_GEN_OPTIONS, DEFAULT_OPTION_ID, resolveOption }
+// Resolve a settings value to a model id usable by the `claude` CLI.
+//
+// The post-SOAP engines (icd / cdi / em-score / patient-summary) and the CLI
+// prechart job run through `claude -p` (skills + the ICD-10 MCP connector), so
+// they can only use Anthropic models. Passing an option *id* (e.g.
+// `sonnet-4-6-api`) or a non-Anthropic model (e.g. `gemini-3.5-flash`) straight
+// to the CLI makes it 404 ("model may not exist"). This resolves the id to its
+// underlying Anthropic model for the `api`/`cli` providers, and falls back to the
+// default Anthropic model when the SOAP selection is a provider the CLI can't run
+// (Gemini) — the engines still run on Anthropic regardless of the SOAP provider.
+function resolveCliModel(soapModel) {
+  const opt = resolveOption(soapModel)
+  if (opt && (opt.provider === 'api' || opt.provider === 'cli')) return opt.model
+  return NOTE_GEN_OPTIONS[DEFAULT_OPTION_ID].model
+}
+
+module.exports = { NOTE_GEN_OPTIONS, DEFAULT_OPTION_ID, resolveOption, resolveCliModel }

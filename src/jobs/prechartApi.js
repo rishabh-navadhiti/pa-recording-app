@@ -6,6 +6,7 @@ const { parseSkillManifest }       = require('../llm/skill-io/manifest')
 const { buildSingleCallNoteEdit, splitNoteAndManifest } = require('../llm/skill-io/singleCall')
 const { resolveOption }            = require('../llm/modelOptions')
 const { normalizeApiUsage }        = require('../llm/pricing')
+const { runCostiganChecklist }     = require('./costiganChecklist')
 
 const SKILL_PATH = path.join(__dirname, '../../notes-claude/skills/edit-note-api/SKILL.md')
 
@@ -202,6 +203,12 @@ const prechartApi = {
       fs.readdirSync(caseDir).filter(f => f.endsWith('.md'))
         .forEach(f => platform.hideInternal(path.join(caseDir, f)))
     } catch {}
+
+    // Costigan procedure checklist (opt-in, Costigan-only) — single API call on the final note + pasted chart.
+    if (ctx.config.get().enableCostiganCdi && extra.doctor) {
+      runCostiganChecklist({ caseDir, doctor: extra.doctor, chartText: input.chartText, caseId, ctx })
+        .catch(e => log(`[costigan] run error: ${e.message}`))
+    }
 
     const job = { type: 'prechart', status: 'success', doctorName: patientLabel, caseDir, durationMs, finishedAt: Date.now() }
     ctx.jobState.save(job); ctx.renderer.send('template-job-status', job); ctx.sendStatus('template-job-status', job)

@@ -4,7 +4,7 @@ const { getDb } = require('./init')
 const { randomUUID } = require('crypto')
 
 // Insert a new case row right after the case folder + mp3 are in place.
-function createCase({ patientName, doctorId, sessionId, caseDir, source, mp3Path, recordedAt }) {
+function createCase({ patientName, doctorId, sessionId, caseDir, source, mp3Path, recordedAt, parentCaseId, multiPatient }) {
   const db = getDb()
   if (!db) return null
   try {
@@ -13,11 +13,13 @@ function createCase({ patientName, doctorId, sessionId, caseDir, source, mp3Path
     db.prepare(`
       INSERT INTO cases
         (id, patient_name, doctor_id, session_id, case_dir, source, mp3_path,
-         status, revision, recorded_at, created_at, updated_at)
+         status, revision, recorded_at, created_at, updated_at,
+         parent_case_id, multi_patient)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, 'transcribing', 1, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, 'transcribing', 1, ?, ?, ?, ?, ?)
     `).run(id, patientName || null, doctorId || null, sessionId || null,
-           caseDir, source, mp3Path || null, recordedAt || ts, ts, ts)
+           caseDir, source, mp3Path || null, recordedAt || ts, ts, ts,
+           parentCaseId || null, multiPatient ? 1 : 0)
     return id
   } catch (e) {
     console.error('[db] createCase failed:', e.message)
@@ -52,7 +54,9 @@ function updateCasePaths(id, fields) {
   const db = getDb()
   if (!db || !id) return
   try {
-    const allowed = ['status', 'transcript_path', 'transcript_docx_path', 'soap_note_path', 'soap_docx_path', 'completed_at']
+    const allowed = ['status', 'transcript_path', 'transcript_docx_path', 'soap_note_path', 'soap_docx_path',
+      'completed_at', 'mp3_path', 'parent_case_id', 'multi_patient', 'case_dir',
+      'report_html_path', 'report_pdf_path']
     const sets = []
     const vals = []
     for (const [k, v] of Object.entries(fields)) {

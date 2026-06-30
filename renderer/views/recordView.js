@@ -22,10 +22,11 @@ import { createPatientForm } from './patientForm.js'
 import { createUploadForm } from './uploadForm.js'
 import { createDoctorPicker } from './doctorPicker.js'
 import { createWarnings } from './warnings.js'
+import { createPrechartCapture } from './prechartCapture.js'
 
 export function createRecordView() {
   let indicator, statusLabel, timerEl, actionButtons, patientForm, uploadFormEl,
-      doctorPickerEl, viewStatusBar
+      doctorPickerEl, viewStatusBar, prechartCaptureEl
   let timer = null
 
   // Sub-views.
@@ -33,6 +34,7 @@ export function createRecordView() {
   const uploadFormView  = createUploadForm()
   const doctorPickerView = createDoctorPicker()
   const warningsView    = createWarnings()
+  const prechartCaptureView = createPrechartCapture()
 
   let currentRenderedState = STATE.IDLE
 
@@ -54,6 +56,9 @@ export function createRecordView() {
     setVisible(uploadFormEl, false)
     setVisible(doctorPickerEl, false)
     setVisible(viewStatusBar, false)
+    // Close the in-recording Pre-chart screen on any state push (e.g. recording
+    // ended). The latest context is already saved to main on every change.
+    if (prechartCaptureEl) setVisible(prechartCaptureEl, false)
 
     switch (state) {
       case STATE.IDLE: {
@@ -118,9 +123,11 @@ export function createRecordView() {
           await ipc.discardRecording()
           timer.stop()
         }, 'secondary')
+        const btnPrechart = makeButton('Pre-chart', () => prechartCaptureView.open(), 'outline')
         actionButtons.appendChild(btnPause)
         actionButtons.appendChild(btnSave)
         actionButtons.appendChild(btnDiscard)
+        actionButtons.appendChild(btnPrechart)
         break
       }
 
@@ -141,9 +148,11 @@ export function createRecordView() {
           await ipc.discardRecording()
           timer.stop()
         }, 'secondary')
+        const btnPrechart = makeButton('Pre-chart', () => prechartCaptureView.open(), 'outline')
         actionButtons.appendChild(btnResume)
         actionButtons.appendChild(btnSave)
         actionButtons.appendChild(btnDiscard)
+        actionButtons.appendChild(btnPrechart)
         break
       }
 
@@ -171,6 +180,7 @@ export function createRecordView() {
       uploadFormEl   = root.querySelector('#upload-form')
       doctorPickerEl = root.querySelector('#doctor-picker')
       viewStatusBar  = root.querySelector('#view-status-bar')
+      prechartCaptureEl = root.querySelector('#prechart-capture-view')
 
       timer = createTimer(timerEl)
 
@@ -179,10 +189,15 @@ export function createRecordView() {
       render.onNoDoctors = ctx.onNoDoctors || null
 
       // Sub-views mount against the same root (their elements live inside it).
-      patientFormView.mount(root, ctx)
-      uploadFormView.mount(root, ctx)
+      // Opening the Pre-chart capture screen — shared by the recording action
+      // row and both patient-name forms. It's a pure overlay (restores the prior
+      // controls on close), so the recording timer keeps running throughout.
+      const openPrechart = () => prechartCaptureView.open()
+      patientFormView.mount(root, { ...ctx, onPrechart: openPrechart })
+      uploadFormView.mount(root, { ...ctx, onPrechart: openPrechart })
       doctorPickerView.mount(root, ctx)
       warningsView.mount(root, ctx)
+      prechartCaptureView.mount(root)
 
       render(currentRenderedState)
     },
@@ -197,6 +212,7 @@ export function createRecordView() {
       uploadFormView.unmount()
       doctorPickerView.unmount()
       warningsView.unmount()
+      prechartCaptureView.unmount()
     },
 
     // Extra surface the router calls on push events:

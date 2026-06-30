@@ -4,6 +4,9 @@ const fs   = require('fs')
 const path = require('path')
 const { parseSkillManifest } = require('../llm/skill-io/manifest')
 const { CLAUDE_RATE_LIMITED } = require('../llm/skill-io/markers')
+const { buildSingleCallEngineJson, parseJsonResponse } = require('../llm/skill-io/singleCall')
+const { normalizeApiUsage } = require('../llm/pricing')
+const { resolveCliModel } = require('../llm/modelOptions')
 
 const patientSummary = {
   id:           'patient-summary',
@@ -13,8 +16,82 @@ const patientSummary = {
   stage:        'patient_summary',
   completesCase: false,
 
-  model: (cfg) => cfg.soapModel || 'claude-sonnet-4-6',
+  model: (cfg) => resolveCliModel(cfg.soapModel),
   effort: 'high',
+
+  /**
+   * API-only LLM runner (replaces buildPrompt + ctx.llm.runSkill in runEngine for
+   * this engine). Node reads the SOAP note, makes ONE Anthropic Messages-API call,
+   * parses the returned JSON object, writes <stem>_patient_summary.json, and returns
+   * a normalized result whose `text` IS the synthesized run manifest. Pinned to
+   * Anthropic — provider is always ctx.api.
+   *
+   * @param {object} input                buildInput() result: { caseDir }
+   * @param {AppContext} ctx
+   * @param {CaseContext} caseCtx
+   * @param {{ model: string, provider: object }} opts
+   * @returns {Promise<{ code, text, errText, usage, statusCode?, isRateLimit? }>}
+   */
+  async runLlm(input, ctx, caseCtx, { model, provider }) {
+    const { log } = ctx
+    const { caseDir } = input
+    const tag   = caseCtx?.caseTag ? `[${caseCtx.caseTag}] ` : ''
+    const label = 'patient-summary:api'
+
+    const fileStem = resolveFileStem(caseDir)
+    const jsonPath = path.join(caseDir, `${fileStem}_patient_summary.json`)
+
+    // ---- Read inputs (Node, not the model) --------------------------------
+    let noteText = '', skillText = ''
+    try {
+      const notePath = findSoapNote(caseDir)
+      if (!notePath) { log(`${tag}[${label}] ERROR: SOAP note not found in ${caseDir}`); return { code: 1, errText: 'note_not_found' } }
+      noteText = fs.readFileSync(notePath, 'utf8')
+      skillText = fs.readFileSync(path.join(ctx.paths.claudeDir, 'skills', 'patient-summary-api', 'SKILL.md'), 'utf8')
+    } catch (e) {
+      log(`${tag}[${label}] [DEV-ALERT] read inputs failed: ${e.message}`)
+      return { code: 1, errText: `read inputs: ${e.message}` }
+    }
+
+    const { system, user } = buildSingleCallEngineJson({
+      skillText,
+      instruction: 'Write the plain-language patient summary for this note.',
+      injectedFacts: [
+        `case_dir: ${caseDir}`,
+        `Patient: ${stripDateSuffix(fileStem) || '(read from note)'}`,
+        `Doctor: ${caseCtx?.doctor?.name || '(read from note)'}`,
+      ],
+      contextBlocks: [
+        { title: 'SOAP NOTE', body: noteText },
+      ],
+      closer: 'Output the _patient_summary.json JSON object now — raw JSON only, no prose, no code fences.',
+    })
+
+    const r = await provider.runSingleCall({ system, user, model, tag, label })
+    const usage = normalizeApiUsage({ model, rawUsage: r.rawUsage, durationMs: r.durationMs })
+
+    if (!r.ok) {
+      log(`${tag}[${label}] [DEV-ALERT] API call failed: ${r.errText}`)
+      return { code: 1, errText: r.errText, statusCode: r.statusCode, isRateLimit: r.statusCode === 429 || r.statusCode === 529, usage }
+    }
+
+    const parsed = parseJsonResponse(r.text)
+    if (!parsed) {
+      try { fs.writeFileSync(path.join(caseDir, `${fileStem}_patient_summary.raw.txt`), r.text || '', 'utf8') } catch {}
+      log(`${tag}[${label}] [DEV-ALERT] JSON parse failed — wrote _patient_summary.raw.txt`)
+      return { code: 1, errText: 'json parse failed', usage }
+    }
+
+    try {
+      fs.writeFileSync(jsonPath, JSON.stringify(parsed, null, 2), 'utf8')
+      log(`${tag}[${label}] wrote ${jsonPath}`)
+    } catch (e) {
+      log(`${tag}[${label}] [DEV-ALERT] write failed: ${e.message}`)
+      return { code: 1, errText: `write failed: ${e.message}`, usage }
+    }
+
+    return { code: 0, text: JSON.stringify(manifestFromPsObject(parsed, jsonPath)), errText: '', usage }
+  },
 
   /**
    * Single gate — the global enablePatientSummary setting.
@@ -128,13 +205,7 @@ const patientSummary = {
  * @returns {object|null}
  */
 function synthesizePatientSummaryFromDisk(caseDir, log) {
-  let fileStem = path.basename(caseDir)
-  try {
-    const soapMd = fs.readdirSync(caseDir).find(f => f.endsWith('_soap_note.md'))
-    if (soapMd) fileStem = soapMd.replace(/_soap_note\.md$/, '')
-  } catch {}
-  const jsonOnDisk = path.join(caseDir, `${fileStem}_patient_summary.json`)
-
+  const jsonOnDisk = path.join(caseDir, `${resolveFileStem(caseDir)}_patient_summary.json`)
   if (!fs.existsSync(jsonOnDisk)) return null
   try {
     const full = JSON.parse(fs.readFileSync(jsonOnDisk, 'utf8'))
@@ -142,18 +213,54 @@ function synthesizePatientSummaryFromDisk(caseDir, log) {
       log(`[patient-summary] fallback: _patient_summary.json present but malformed`)
       return null
     }
-    return {
-      schema_version: 1,
-      skill:          'patient-summary',
-      status:         'ok',
-      json_path:      jsonOnDisk,
-      reading_level:  full.reading_level ?? null,
-      skipped_reason: null,
-      error:          null,
-    }
+    return manifestFromPsObject(full, jsonOnDisk)
   } catch (e) {
     log(`[patient-summary] fallback parse failed: ${e.message}`)
     return null
+  }
+}
+
+/**
+ * Resolve the case file stem — anchored on the existing *_soap_note.md if present,
+ * else the case-dir basename. Shared by runLlm (output path) and the disk fallback.
+ */
+function resolveFileStem(caseDir) {
+  let fileStem = path.basename(caseDir)
+  try {
+    const soapMd = fs.readdirSync(caseDir).find(f => f.endsWith('_soap_note.md'))
+    if (soapMd) fileStem = soapMd.replace(/_soap_note\.md$/, '')
+  } catch {}
+  return fileStem
+}
+
+/** Absolute path of the case's SOAP note (excludes backups), or null. */
+function findSoapNote(caseDir) {
+  try {
+    const f = fs.readdirSync(caseDir).find(x => x.endsWith('_soap_note.md') && !/_soap_note_backup_/.test(x))
+    return f ? path.join(caseDir, f) : null
+  } catch { return null }
+}
+
+/** Strip a trailing _YYYY-MM-DD[...] date suffix from a file/case stem. */
+function stripDateSuffix(stem) {
+  return stem ? stem.replace(/_\d{4}-\d{2}-\d{2}.*$/, '') : stem
+}
+
+/**
+ * Build the engine run manifest from a parsed _patient_summary.json object.
+ * patient-summary has no skip path — a real note always yields a summary, so
+ * status is always 'ok' here (the toggle gate fires earlier in runEngine when off).
+ * Used by both runLlm (in-memory) and synthesizePatientSummaryFromDisk (recovery).
+ */
+function manifestFromPsObject(obj, jsonPath) {
+  return {
+    schema_version: 1,
+    skill:          'patient-summary',
+    status:         'ok',
+    json_path:      jsonPath,
+    reading_level:  obj?.reading_level ?? 'grade 6',
+    skipped_reason: null,
+    error:          null,
   }
 }
 

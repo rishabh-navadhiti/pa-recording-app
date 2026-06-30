@@ -52,8 +52,15 @@ function createRecordingsStore({ onChange } = {}) {
   }
 
   return {
-    add({ caseTag, displayName }) {
-      entries.push({ caseTag, displayName: displayName || null, startedAt: Date.now(), status: 'transcribing' })
+    add({ caseTag, displayName, multiPatient, patientName }) {
+      entries.push({
+        caseTag,
+        displayName:   displayName   || null,
+        multiPatient:  !!multiPatient,
+        patientName:   patientName   || null,
+        startedAt: Date.now(),
+        status: 'transcribing',
+      })
       notify()
     },
 
@@ -96,6 +103,25 @@ function createRecordingsStore({ onChange } = {}) {
       const r = find(caseTag)
       if (r) { r.soapDocxPath = docxPath; notify() }
     },
+
+    // Combined-report (Clinical Cockpit) paths — set by src/pipeline/report.js.
+    // Mirror setCdi/setPatientCdi: merge { reportPdfPath, reportHtmlPath } onto
+    // the entry so the status window can show an "Open Report" button.
+    setReport(caseTag, update) {
+      const r = find(caseTag)
+      if (r) { Object.assign(r, update); notify() }
+    },
+
+    setPatientReport(caseTag, patientFolderName, update) {
+      const r = find(caseTag)
+      if (!r || !r.patients) return
+      const p = r.patients.find(p => p.folderName === patientFolderName)
+      if (p) { Object.assign(p, update); notify() }
+    },
+
+    // Raw entry lookup by caseTag (used by generateSoapViaApi to read the
+    // multiPatient flag + entered patientName written at ingest time).
+    find,
 
     serialize,
 

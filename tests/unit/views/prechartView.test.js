@@ -97,7 +97,7 @@ test('Start calls ipc.startPrechartJob with the form values + fires onJobStarted
   document.getElementById('btn-prechart-start').click()
   await flush()
   assert.strictEqual(calls.length, 1)
-  assert.deepStrictEqual(calls[0], ['7', 'C:\\cases\\jane', 'note this', []])
+  assert.deepStrictEqual(calls[0], ['7', 'C:\\cases\\jane', 'note this', [], ''])
   assert.strictEqual(started, 1)
   view.unmount()
 })
