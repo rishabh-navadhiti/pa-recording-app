@@ -57,7 +57,29 @@ const MARK_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><p
 const FA_IC = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M13 3L4 14h6l-1 7 9-11h-6l1-7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>'
 
 // ---- helpers ----
-const esc = (s) => String(s == null ? '' : s)
+// Coerce any model-provided value to display text. The Costigan model output is
+// non-deterministic: fields the schema lists as string arrays (coding_issues,
+// evidence_found, …) sometimes come back as objects, e.g. a coding issue as
+// { issue, linked_proc_id }. Without this, esc() would stringify them to the
+// literal "[object Object]". Pull the human-readable field (prefixing a code when
+// present so nothing is lost); arrays are joined; primitives pass through.
+function asText(v) {
+  if (v == null) return ''
+  if (typeof v === 'string') return v
+  if (typeof v !== 'object') return String(v)
+  if (Array.isArray(v)) return v.map(asText).filter(Boolean).join('; ')
+  for (const k of ['issue', 'text', 'description', 'desc', 'note', 'message', 'detail', 'reason', 'value', 'label']) {
+    if (typeof v[k] === 'string' && v[k].trim()) {
+      return (typeof v.code === 'string' && v.code.trim()) ? `${v.code} — ${v[k]}` : v[k]
+    }
+  }
+  if (typeof v.code === 'string' && v.code.trim()) return v.code
+  return Object.values(v).filter(x => typeof x === 'string' && x.trim()).join(' — ')
+}
+
+// esc() routes through asText() first, so EVERY interpolation in this file is
+// object-safe — an objectified field renders as readable text, never "[object Object]".
+const esc = (s) => asText(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 const has = (v) => v !== null && v !== undefined && v !== ''
@@ -110,7 +132,7 @@ function renderCoding(c) {
   const lines = []
   if (cpt.length)    lines.push(`<div class="codechips">${cpt.map(x => codechip(x)).join('')}</div>`)
   if (icdObs.length) lines.push(`<div class="codechips">${icdObs.map(x => codechip(x)).join('')}</div>`)
-  if (icdSug.length) lines.push(`<div class="codechips">${icdSug.map(s => codechip(s.code, s.description, true)).join('')}</div>`)
+  if (icdSug.length) lines.push(`<div class="codechips">${icdSug.map(s => typeof s === 'string' ? codechip(s, '', true) : codechip(s.code, s.description, true)).join('')}</div>`)
   if (issues.length) lines.push(`<ul class="issues-list">${issues.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`)
   return `<div class="card proc-block"><h3>Coding</h3>${lines.join('')}</div>`
 }
@@ -123,9 +145,13 @@ function renderFrequency(f) {
   if (!has(f.cap) && !priors.length && !hasWithin && !has(f.note)) return ''
   let pill = ''
   if (hasWithin) {
-    const v = f.within_cap
-    const label = v === true ? 'Within cap' : v === false ? 'Over cap' : cap(v)
-    const cls = v === true ? 'good' : v === false ? 'crit' : 'warn'
+    // within_cap is a string per the skill schema ("true|false|unclear") but may
+    // also arrive as a real boolean — handle both.
+    const norm = String(f.within_cap).trim().toLowerCase()
+    const within = f.within_cap === true || norm === 'true'
+    const over = f.within_cap === false || norm === 'false'
+    const label = within ? 'Within cap' : over ? 'Over cap' : norm === 'unclear' ? 'Unclear' : cap(asText(f.within_cap))
+    const cls = within ? 'good' : over ? 'crit' : 'warn'
     pill = `<span class="freq-pill ${cls}">${esc(label)}</span>`
   }
   const lines = []
@@ -146,7 +172,7 @@ function renderProcedureSection(p, idx) {
   if (has(p.site))   meta.push(`<span class="meta-item"><span class="mi-lbl">Site</span>${esc(p.site)}</span>`)
   const metaHtml = meta.length ? `<div class="fc-meta">${meta.join('')}</div>` : ''
 
-  const denial = (p.verdict === 'likely_denied' && has(p.denial_reason))
+  const denial = (p.verdict === 'likely_denied' && has(asText(p.denial_reason)))
     ? `<div class="fc-action"><span class="fa-ic">${FA_IC}</span><span class="fa-txt"><span class="fa-kicker">Denial risk</span>${esc(p.denial_reason)}</span></div>`
     : ''
 
@@ -240,7 +266,7 @@ function renderCostiganHtml(data) {
     + `<div class="fb-num">${esc(b.n)}</div><div class="fb-lbl">${esc(b.label)}</div></div>`).join('')
 
   const calloutCls = ov.led === 'good' ? 'callout' : ov.led === 'crit' ? 'callout crit' : 'callout alert'
-  const headlineHtml = has(summary.headline)
+  const headlineHtml = has(asText(summary.headline))
     ? `<div class="${calloutCls}" style="margin-bottom:18px"><span class="co-ic">${ov.led === 'good' ? '✓' : '⚠'}</span><span class="co-body">${esc(summary.headline)}</span></div>`
     : ''
 
