@@ -62,9 +62,19 @@ test('icd.interpret ok when code=0', () => {
   assert.strictEqual(result.rateLimited, false)
 })
 
-test('icd.interpret detects ICD_SKIPPED', () => {
-  const result = icd.interpret({ code: 0, text: 'ICD_SKIPPED: no diagnoses found', errText: '' })
+test('icd.interpret reads status:skipped from the manifest', () => {
+  const manifest = JSON.stringify({ schema_version: 1, skill: 'add-icd-codes', status: 'skipped', codes_added: 0 })
+  const result = icd.interpret({ code: 0, text: manifest, errText: '' })
   assert.strictEqual(result.skipped, true)
+  assert.strictEqual(result.ok, false)
+})
+
+test('icd.interpret reads codes_added + flagged from an ok manifest', () => {
+  const manifest = JSON.stringify({ schema_version: 1, skill: 'add-icd-codes', status: 'ok', codes_added: 3, flagged: 1 })
+  const result = icd.interpret({ code: 0, text: manifest, errText: '' })
+  assert.strictEqual(result.ok, true)
+  assert.strictEqual(result.codesAdded, 3)
+  assert.strictEqual(result.flagged, 1)
 })
 
 test('icd.interpret detects rate limit', () => {
@@ -399,6 +409,55 @@ test('patientSummary.runLlm writes _patient_summary.json and returns an ok manif
     assert.strictEqual(manifest.skill, 'patient-summary')
     assert.strictEqual(manifest.status, 'ok')
     assert.strictEqual(manifest.reading_level, 'grade 6')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---- icd runLlm (API Phase A + local-codeset Phase B/C) --------------------
+
+const icdLookup = require('../../src/icd/lookup')
+const ICD_DB_OK = icdLookup.isAvailable()
+const icdOpts   = { skip: ICD_DB_OK ? false : 'local ICD codeset not available' }
+
+test('icd.runLlm validates candidates against the local codeset and appends the table', icdOpts, async () => {
+  const dir = caseWithNote()
+  try {
+    const notePath = path.join(dir, `${path.basename(dir)}_soap_note.md`)
+    const candidates = { candidates: [
+      { diagnosis: 'Low back pain', code: 'M54.50', description: 'Low back pain, unspecified', search_terms: 'low back pain unspecified' },
+    ], first_listed: 'M54.50' }
+    const provider = fakeProvider({ ok: true, text: JSON.stringify(candidates), rawUsage: { input_tokens: 12, output_tokens: 8 }, durationMs: 4 })
+    const r = await icd.runLlm({ soapNoteMdPath: notePath, caseDir: dir }, apiCtx(), { caseTag: path.basename(dir) }, { model: 'claude-sonnet-4-6', provider })
+
+    assert.strictEqual(r.code, 0)
+    const manifest = JSON.parse(r.text)
+    assert.strictEqual(manifest.skill, 'add-icd-codes')
+    assert.strictEqual(manifest.status, 'ok')
+    assert.strictEqual(manifest.codes_added, 1)
+    const note = fs.readFileSync(notePath, 'utf8')
+    assert.match(note, /## ICD-10-CM Codes/)
+    assert.match(note, /M54\.50/)
+    assert.ok(fs.existsSync(path.join(dir, `${path.basename(dir)}_icd.json`)), 'wrote _icd.json')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('icd.runLlm reports skipped + leaves the note unchanged when no codeable diagnosis', icdOpts, async () => {
+  const dir = caseWithNote()
+  try {
+    const notePath = path.join(dir, `${path.basename(dir)}_soap_note.md`)
+    const before   = fs.readFileSync(notePath, 'utf8')
+    const provider = fakeProvider({ ok: true, text: JSON.stringify({ candidates: [], first_listed: null }), rawUsage: {}, durationMs: 1 })
+    const r = await icd.runLlm({ soapNoteMdPath: notePath, caseDir: dir }, apiCtx(), { caseTag: path.basename(dir) }, { model: 'm', provider })
+    assert.strictEqual(JSON.parse(r.text).status, 'skipped')
+    assert.strictEqual(fs.readFileSync(notePath, 'utf8'), before, 'note unchanged when nothing to code')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('icd.runLlm returns note_not_found when no SOAP note present', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icd-api-'))
+  try {
+    const r = await icd.runLlm({ soapNoteMdPath: null, caseDir: dir }, apiCtx(), {}, { model: 'm', provider: fakeProvider({ ok: true, text: '{}' }) })
+    assert.strictEqual(r.code, 1)
+    assert.strictEqual(r.errText, 'note_not_found')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 

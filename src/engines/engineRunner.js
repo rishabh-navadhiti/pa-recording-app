@@ -146,10 +146,12 @@ async function runEngine(engine, ctx, caseCtx) {
   } catch (e) { log(`${tag}[${engine.id}] persist error: ${e.message}`) }
 
   // ---- 9. Service-warning surface -----------------------------------------
-  if (isMcpError && engine.id === 'icd') {
+  if (isMcpError && engine.id === 'cdi') {
+    // CDI review still validates codes via the claude.ai ICD-10 MCP connector; the
+    // ICD-coding engine no longer uses it (it runs on the bundled local codeset).
     ctx.renderer.send('service-warning', {
       title:   'ICD-10 connector unavailable',
-      message: 'Could not look up ICD-10 codes — the note was generated without codes. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled.'
+      message: 'CDI review could not validate ICD-10 codes against the connector. Check that you are logged in to Claude (`claude login`) and that the ICD-10 connector is enabled.'
     })
   } else if (isRateLimited) {
     const labels = { icd: 'ICD codes', cdi: 'CDI review', soap: 'SOAP note' }

@@ -291,7 +291,7 @@ One row per meaningful unit of background work — the ElevenLabs transcription 
 |---|---|---|
 | `transcribe` | ElevenLabs STT — Node `fetch` (`src/pipeline/transcription.js` + `elevenLabs.js`), not a child process. `model_used`/token/cost stay NULL (non-Claude). | yes |
 | `soap` | `generate-note` skill via `claude -p`. | yes (parent in multi-patient runs) |
-| `icd` | `add-icd-codes` skill via `claude -p`. | yes (per child in multi-patient runs) |
+| `icd` | `add-icd-codes-api` — one Anthropic API call + local codeset validation (`src/engines/icd.js` runLlm). | yes (per child in multi-patient runs) |
 | `cdi` | `cdi-review` skill via `claude -p`. | yes (per child in multi-patient runs) |
 | `docx` | python/md_to_docx.py invocation. | yes |
 | `prechart` | `edit-note` skill via `claude -p` (pre-chart sub-flow). | yes |

@@ -21,13 +21,10 @@ function generateNote({ templateRel, transcriptRel }) {
   return `generate a note using transcript "${transcriptRel}"`
 }
 
-/**
- * @param {object} input
- * @param {string}  input.soapRel  Relative path to the SOAP note .md
- */
-function addIcdCodes({ soapRel }) {
-  return `add ICD codes. Soap note: "${soapRel}".`
-}
+// NOTE: the agentic `add-icd-codes` CLI prompt builder was removed — ICD coding now runs
+// as a single Anthropic API call + local codeset validation (src/engines/icd.js runLlm),
+// with no `claude -p` / MCP-connector path. The skill folder is kept on disk for reference
+// only. buildPrompt('add-icd-codes', ...) therefore throws (see prompts.test.js).
 
 /**
  * @param {object} input
@@ -99,7 +96,6 @@ function patientSummary({ caseDir }) {
 
 const BUILDERS = {
   'generate-note':        generateNote,
-  'add-icd-codes':        addIcdCodes,
   'cdi-review':           cdiReview,
   'create-doctor-profile': createDoctorProfile,
   'update-doctor-profile': updateDoctorProfile,

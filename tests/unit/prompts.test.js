@@ -22,11 +22,10 @@ test('generate-note without template', () => {
   assert.match(p, /generate a note using transcript/)
 })
 
-// ---- add-icd-codes ---------------------------------------------------------
+// ---- add-icd-codes (agentic CLI path removed — ICD now runs API + local codeset) ----
 
-test('add-icd-codes builds correct format', () => {
-  const p = buildPrompt('add-icd-codes', { soapRel: 'Cases/2026-06-04/jane/jane_soap_note.md' })
-  assert.strictEqual(p, 'add ICD codes. Soap note: "Cases/2026-06-04/jane/jane_soap_note.md".')
+test('add-icd-codes CLI prompt builder is removed (agentic ICD path unsupported)', () => {
+  assert.throws(() => buildPrompt('add-icd-codes', { soapRel: 'x' }), /Unknown skillId/)
 })
 
 // ---- cdi-review ------------------------------------------------------------

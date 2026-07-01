@@ -38,61 +38,55 @@ function fakeCaseCtx() {
   }
 }
 
-// A minimal engine descriptor for testing the runner boilerplate.
+// A minimal AGENTIC engine descriptor for testing the runner boilerplate. Uses a real
+// skillId ('cdi-review') so prompts.buildPrompt() resolves; no runLlm → agentic path.
+// (ICD is no longer an agentic engine, so it can't stand in here anymore.)
 function fakeEngine(interpretResult = { ok: true }) {
   return {
     id: 'fake',
-    skillId: 'fake-skill',
+    skillId: 'cdi-review',
     jobKind: 'fake',
     stage: 'coding_icd',
     completesCase: false,
     model: () => 'claude-test',
     effort: null,
     gates: () => [],
-    buildInput: () => ({ soapRel: 'Cases/x/soap.md' }),
+    buildInput: () => ({ caseDir: '/tmp/notes/Cases/x' }),
     interpret: () => interpretResult,
     persist: () => {},
     render: () => null,
   }
 }
 
-// We need prompts.js to know about 'fake-skill' — easiest to use 'add-icd-codes' instead.
-function icdEngine() {
-  return require('../../src/engines/icd')
-}
-
 test('runEngine returns null when gate fires', async () => {
   const ctx = fakeCtx()
-  const engine = { ...icdEngine(), gates: () => [{ reason: 'disabled' }] }
+  const engine = { ...fakeEngine(), gates: () => [{ reason: 'disabled' }] }
   const result = await runEngine(engine, ctx, fakeCaseCtx())
   assert.strictEqual(result, null)
 })
 
 test('runEngine calls llm.runSkill and returns interpret result', async () => {
-  const llmResult = { code: 0, text: 'ICD codes added OK', resultEvent: null, errText: '' }
+  const llmResult = { code: 0, text: 'ok', resultEvent: null, errText: '' }
   const ctx = fakeCtx(llmResult)
-  const engine = icdEngine()
-  const caseCtx = fakeCaseCtx()
-  caseCtx.soapNoteMdPath = '/tmp/notes/Cases/x/soap.md'
-  const result = await runEngine(engine, ctx, caseCtx)
+  const result = await runEngine(fakeEngine(), ctx, fakeCaseCtx())
   assert.ok(result, 'should return interpret result')
   assert.strictEqual(result.ok, true)
 })
 
 test('runEngine returns null and continues on interpret error', async () => {
   const ctx = fakeCtx()
-  const engine = { ...icdEngine(), interpret: () => { throw new Error('parse failed') } }
+  const engine = { ...fakeEngine(), interpret: () => { throw new Error('parse failed') } }
   const result = await runEngine(engine, ctx, fakeCaseCtx())
   // returns null but does not throw
   assert.strictEqual(result, null)
 })
 
-test('runEngine sends service-warning on MCP error for ICD', async () => {
+test('runEngine sends service-warning on MCP error for CDI (the connector user)', async () => {
   const warnings = []
   const ctx = fakeCtx({ code: 1, text: '', errText: 'Needs authentication: MCP connection error', resultEvent: null })
   ctx.renderer.send = (ch, data) => warnings.push({ ch, data })
-  const result = await runEngine(icdEngine(), ctx, fakeCaseCtx())
-  assert.ok(warnings.some(w => w.ch === 'service-warning' && w.data.title.includes('ICD')))
+  await runEngine({ ...fakeEngine(), id: 'cdi' }, ctx, fakeCaseCtx())
+  assert.ok(warnings.some(w => w.ch === 'service-warning' && w.data.title.includes('ICD-10 connector')))
 })
 
 // ---- API-only engine branch (runLlm) ---------------------------------------
