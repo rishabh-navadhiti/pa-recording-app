@@ -17,6 +17,7 @@ const { createJobRunner }     = require('../jobs/jobRunner')
 const { createClaudeCliProvider }    = require('../src/llm/claudeCliProvider')
 const { createAnthropicApiProvider } = require('../src/llm/anthropicApiProvider')
 const { createGeminiApiProvider }    = require('../src/llm/geminiApiProvider')
+const { createOpenRouterProvider }   = require('../src/llm/openRouterProvider')
 
 /**
  * Atomic file write with EPERM/EBUSY retry (shared across config modules).
@@ -112,6 +113,10 @@ function createAppContext(notesDir) {
   // Gemini API provider — routes to generativelanguage.googleapis.com with AIzaSy... key.
   const gemini = createGeminiApiProvider({ getKey: () => secrets.getGeminiKey(), log })
 
+  // OpenRouter provider — one OpenAI-compatible endpoint fronting many models
+  // (DeepSeek V4 Pro etc.); the model slug in NOTE_GEN_OPTIONS selects which.
+  const openrouter = createOpenRouterProvider({ getKey: () => secrets.getOpenRouterKey(), log })
+
   // ---- context object -------------------------------------------------------
   const ctx = {
     paths,
@@ -124,6 +129,7 @@ function createAppContext(notesDir) {
     llm,
     api,
     gemini,
+    openrouter,
 
     get db() { return _db },
     setDb(db) { _db = db },

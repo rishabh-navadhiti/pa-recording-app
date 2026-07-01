@@ -176,6 +176,9 @@ Renderer can call ONLY these methods on `window.api`. Source of truth: [preload.
 | `getConfigStatus()` | `{elevenLabsKeyMissing, elevenLabsKeyInvalid, noDoctors, notesDirMissing}` |
 | `getElevenLabsKey()` | Returns the configured ElevenLabs key for the Settings view |
 | `saveElevenLabsKey(key)` | Writes to repo `.env` |
+| `getAnthropicKey() / saveAnthropicKey(key)` | Anthropic API key for the Settings view / writes to repo `.env` (validated) |
+| `getGeminiKey() / saveGeminiKey(key)` | Gemini API key for the Settings view / writes to repo `.env` (validated) |
+| `getOpenRouterKey() / saveOpenRouterKey(key)` | OpenRouter API key for the Settings view / writes `OPENROUTER_API_KEY` to repo `.env` (optional, no network validation — used by DeepSeek/OpenRouter SOAP models) |
 | `getDoctors() / addDoctor(name) / updateDoctor(id, name) / updateDoctorTemplate(id) / updateDoctorSpecialty(id, specialty) / removeDoctor(id) / selectDoctor(id)` | Doctor CRUD + picker resolution |
 | `browseAudioFile() / processAudioFile(filePath, patientName)` | Audio-file upload flow |
 | `browseNotesFiles() / startTemplateCreation(doctorName, filePaths) / getTemplateJobStatus() / cancelTemplateCreation() / dismissTemplateJob()` | Template-creation flow |

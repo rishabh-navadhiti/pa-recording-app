@@ -23,6 +23,8 @@ const CHANNELS = Object.freeze({
   SAVE_ANTHROPIC_KEY:   'save-anthropic-key',
   GET_GEMINI_KEY:       'get-gemini-key',
   SAVE_GEMINI_KEY:      'save-gemini-key',
+  GET_OPENROUTER_KEY:   'get-openrouter-key',
+  SAVE_OPENROUTER_KEY:  'save-openrouter-key',
   HIDE_WINDOW:          'hide-window',
 
   // ---- session & recording ----

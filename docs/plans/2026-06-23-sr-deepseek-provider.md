@@ -3,7 +3,25 @@
 **Date:** 2026-06-23  
 **Author:** sr  
 **Branch:** `feature/deepseek-provider`  
-**Status:** Ready to implement
+**Status:** Implemented 2026-06-30 (see "Implementation corrections" below)
+
+---
+
+## Implementation as shipped — pivoted to OpenRouter (2026-06-30)
+
+The original plan targeted the **official `api.deepseek.com`** and explicitly rejected OpenRouter. That was reversed after reconciling with the `API_USAGE_single_call_notes.md` reference, whose only DeepSeek path (§7) is **OpenRouter** — it ships a working `sk-or-v1-…` key and, importantly, supports pinning **US-hosted** upstreams to keep PHI off China servers. Decision confirmed with the user. DeepSeek V4 Pro now runs **through OpenRouter**.
+
+Shipped design (a generic, slug-driven OpenRouter provider; DeepSeek is its first option):
+
+1. **Provider:** `src/llm/openRouterProvider.js` (`createOpenRouterProvider`) — endpoint `https://openrouter.ai/api/v1/chat/completions`, `Bearer <OPENROUTER_API_KEY>`, OpenAI body. One provider fronts any OpenRouter model; the slug in `modelOptions` selects which.
+2. **Thinking OFF** via OpenRouter's `reasoning: { enabled: false }` — NOT DeepSeek-native `thinking:{type:'disabled'}` and NOT Gemini's `reasoning_effort`.
+3. **Slug is the OpenRouter slug `deepseek/deepseek-v4-pro`** (option id stays `deepseek-v4-pro`). Pricing $0.435 in / $0.87 out (~$0.016/note) confirmed against the reference.
+4. **Key:** `OPENROUTER_API_KEY` in `.env` (not `DEEPSEEK_API_KEY`) — `secrets.getOpenRouterKey()`.
+5. **ctx.openrouter** instantiated in `appContext.js`; `main.js` dispatches `opt.provider === 'openrouter'`.
+6. **`pricing.js`** keyed by the slug `deepseek/deepseek-v4-pro` (calcCost keys off `opt.model`); includes `cacheRead:0, cacheWrite:0` to avoid a `0 * undefined = NaN` cost.
+7. Also fixed the plan's original step-6 arg-order bug (`generateSoapViaApi(…, caseId, model, provider, providerName)`).
+
+**Open (deferred per user):** PHI / China-hosting. The provider has a commented one-liner to pin US hosts (`provider:{order:['fireworks','deepinfra','together'],data_collection:'deny'}`) — enable before real-PHI use.
 
 ---
 

@@ -64,6 +64,12 @@ function createSecretStore(envPath) {
     getGeminiBaseUrl() {
       return readEnv()['GOOGLE_AI_BASE_URL'] || null
     },
+    getOpenRouterKey() {
+      return readEnv()['OPENROUTER_API_KEY'] || null
+    },
+    setOpenRouterKey(key) {
+      writeKey('OPENROUTER_API_KEY', key)
+    },
   }
 }
 

@@ -5,6 +5,11 @@ const PRICE_TABLE = {
   'claude-sonnet-4-6':         { in: 3,    out: 15,  cacheRead: 0.30, cacheWrite: 3.75  },
   'claude-opus-4-8':           { in: 15,   out: 75,  cacheRead: 1.50, cacheWrite: 18.75 },
   'claude-haiku-4-5-20251001': { in: 0.80, out: 4,   cacheRead: 0.08, cacheWrite: 1     },
+  // DeepSeek V4 Pro via OpenRouter, June 2026. Keyed by the OpenRouter slug
+  // (calcCost keys off opt.model). cache fields 0 — the OpenRouter provider
+  // doesn't report a cache-token breakdown, so they only exist to keep
+  // calcCost() from multiplying by undefined (NaN).
+  'deepseek/deepseek-v4-pro':  { in: 0.435, out: 0.87, cacheRead: 0, cacheWrite: 0     },
 }
 
 function calcCost(model, rawUsage) {

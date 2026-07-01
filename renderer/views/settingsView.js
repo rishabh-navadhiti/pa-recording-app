@@ -27,7 +27,9 @@ export function createSettingsView() {
       anthropicKeyMasked, anthropicKeyDisplayRow, anthropicKeyEditRow, anthropicKeyInput,
       btnEditAnthropicKey, btnSaveAnthropicKey,
       geminiKeyMasked, geminiKeyDisplayRow, geminiKeyEditRow, geminiKeyInput,
-      btnEditGeminiKey, btnSaveGeminiKey
+      btnEditGeminiKey, btnSaveGeminiKey,
+      openRouterKeyMasked, openRouterKeyDisplayRow, openRouterKeyEditRow, openRouterKeyInput,
+      btnEditOpenRouterKey, btnSaveOpenRouterKey
 
   let onCloseCb = null
 
@@ -89,6 +91,10 @@ export function createSettingsView() {
     if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(geminiKey)
     if (geminiKeyDisplayRow) setVisible(geminiKeyDisplayRow, true)
     if (geminiKeyEditRow) setVisible(geminiKeyEditRow, false)
+    const openRouterKey = await ipc.getOpenRouterKey()
+    if (openRouterKeyMasked) openRouterKeyMasked.textContent = maskApiKey(openRouterKey)
+    if (openRouterKeyDisplayRow) setVisible(openRouterKeyDisplayRow, true)
+    if (openRouterKeyEditRow) setVisible(openRouterKeyEditRow, false)
   }
 
   async function loadDeviceList(selectedIndex) {
@@ -161,6 +167,12 @@ export function createSettingsView() {
       geminiKeyInput        = root.querySelector('#gemini-key-input')
       btnEditGeminiKey      = root.querySelector('#btn-edit-gemini-key')
       btnSaveGeminiKey      = root.querySelector('#btn-save-gemini-key')
+      openRouterKeyMasked     = root.querySelector('#openrouter-key-masked')
+      openRouterKeyDisplayRow = root.querySelector('#openrouter-key-display-row')
+      openRouterKeyEditRow    = root.querySelector('#openrouter-key-edit-row')
+      openRouterKeyInput      = root.querySelector('#openrouter-key-input')
+      btnEditOpenRouterKey    = root.querySelector('#btn-edit-openrouter-key')
+      btnSaveOpenRouterKey    = root.querySelector('#btn-save-openrouter-key')
 
       on(btnSettingsClose, 'click', close)
 
@@ -325,6 +337,32 @@ export function createSettingsView() {
 
       on(geminiKeyInput, 'keydown', e => {
         if (e.key === 'Enter') btnSaveGeminiKey && btnSaveGeminiKey.click()
+      })
+
+      on(btnEditOpenRouterKey, 'click', () => {
+        if (!openRouterKeyInput) return
+        openRouterKeyInput.value = ''
+        setVisible(openRouterKeyDisplayRow, false)
+        setVisible(openRouterKeyEditRow, true)
+        openRouterKeyInput.focus()
+      })
+
+      on(btnSaveOpenRouterKey, 'click', async () => {
+        if (!openRouterKeyInput) return
+        const key = openRouterKeyInput.value.trim()
+        if (!key) return
+        btnSaveOpenRouterKey.disabled = true
+        const res = await ipc.saveOpenRouterKey(key)
+        btnSaveOpenRouterKey.disabled = false
+        if (res.ok) {
+          if (openRouterKeyMasked) openRouterKeyMasked.textContent = maskApiKey(key)
+          setVisible(openRouterKeyEditRow, false)
+          setVisible(openRouterKeyDisplayRow, true)
+        }
+      })
+
+      on(openRouterKeyInput, 'keydown', e => {
+        if (e.key === 'Enter') btnSaveOpenRouterKey && btnSaveOpenRouterKey.click()
       })
 
       on(btnChangeNotesDir, 'click', async () => {

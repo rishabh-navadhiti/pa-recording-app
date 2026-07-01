@@ -153,9 +153,22 @@
             <div class="setting-hint">Used for SOAP note generation (Gemini models)</div>
           </div>
           <div class="advanced-settings-inner">
+            <label class="setting-label">OpenRouter API Key</label>
+            <div id="openrouter-key-display-row" class="notes-dir-row">
+              <span id="openrouter-key-masked" class="notes-dir-path"></span>
+              <button id="btn-edit-openrouter-key" class="small">Edit</button>
+            </div>
+            <div id="openrouter-key-edit-row" class="notes-dir-row hidden">
+              <input id="openrouter-key-input" type="text" placeholder="sk-or-v1-..." autocomplete="off" spellcheck="false" style="flex:1;min-width:0;" />
+              <button id="btn-save-openrouter-key" class="small">Save</button>
+            </div>
+            <div class="setting-hint">Optional — used for SOAP note generation (DeepSeek / OpenRouter models)</div>
+          </div>
+          <div class="advanced-settings-inner">
             <label class="setting-label">Note Generation Model</label>
             <select id="soap-model-select">
               <option value="gemini-3.5-flash">Gemini 3.5 Flash — recommended</option>
+              <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
               <option value="sonnet-4-6-api">Sonnet 4.6 (API)</option>
               <option value="sonnet-4-6-agentic">Sonnet 4.6 (Agentic)</option>
             </select>

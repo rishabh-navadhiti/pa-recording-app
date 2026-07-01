@@ -316,6 +316,11 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     return
   }
 
+  if (opt.provider === 'openrouter') {
+    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model, ctx.openrouter, 'DeepSeek')
+    return
+  }
+
   const tag = caseTag ? `[${caseTag}] ` : ''
   if (caseTag) updateRecordingStatus(caseTag, 'generating_note')
   const relTranscript = path.relative(ctx.paths.notesDir, transcriptAbsPath).replace(/\\/g, '/')

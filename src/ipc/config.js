@@ -134,6 +134,27 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
     }
   })
 
+  // ---- get-openrouter-key ----
+  ipcMain.handle(CHANNELS.GET_OPENROUTER_KEY, () => {
+    return appCtx.secrets.getOpenRouterKey() || ''
+  })
+
+  // ---- save-openrouter-key ----
+  // No network validation (OpenRouter has no cheap validate endpoint and the key
+  // is optional — only needed when a DeepSeek/OpenRouter SOAP model is selected).
+  ipcMain.handle(CHANNELS.SAVE_OPENROUTER_KEY, async (_, key) => {
+    try {
+      const trimmed = (key || '').trim()
+      if (!trimmed) return { ok: false, error: 'Key cannot be empty' }
+      appCtx.secrets.setOpenRouterKey(trimmed)
+      log('OpenRouter API key saved')
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving OpenRouter key: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
   // ---- list-audio-devices ----
   ipcMain.handle(CHANNELS.LIST_AUDIO_DEVICES, () => {
     return new Promise(resolve => {
