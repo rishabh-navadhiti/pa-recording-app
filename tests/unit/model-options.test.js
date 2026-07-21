@@ -43,3 +43,19 @@ test('the default option resolves to an Anthropic model (the CLI fallback target
   assert.ok(opt.provider === 'api' || opt.provider === 'cli', 'default must be an Anthropic provider')
   assert.match(opt.model, /^claude-/)
 })
+
+test('resolveOption maps the luna option id to the openai provider + model', () => {
+  const opt = resolveOption('gpt-5.6-luna')
+  assert.equal(opt.provider, 'openai')
+  assert.equal(opt.model, 'gpt-5.6-luna')
+})
+
+test('resolveCliModel falls back to the default Anthropic model for the openai SOAP provider', () => {
+  // The CLI can't run OpenAI; the post-SOAP engines still run on Anthropic, so a
+  // luna SOAP selection must not leak the gpt id to the CLI (it would 404).
+  assert.equal(resolveCliModel('gpt-5.6-luna'), 'claude-sonnet-4-6')
+})
+
+test('adding luna did not change the default option', () => {
+  assert.equal(DEFAULT_OPTION_ID, 'sonnet-4-6-api')
+})

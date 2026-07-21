@@ -153,9 +153,22 @@
             <div class="setting-hint">Used for SOAP note generation (Gemini models)</div>
           </div>
           <div class="advanced-settings-inner">
+            <label class="setting-label">OpenAI API Key</label>
+            <div id="openai-key-display-row" class="notes-dir-row">
+              <span id="openai-key-masked" class="notes-dir-path"></span>
+              <button id="btn-edit-openai-key" class="small">Edit</button>
+            </div>
+            <div id="openai-key-edit-row" class="notes-dir-row hidden">
+              <input id="openai-key-input" type="text" placeholder="sk-..." autocomplete="off" spellcheck="false" style="flex:1;min-width:0;" />
+              <button id="btn-save-openai-key" class="small">Save</button>
+            </div>
+            <div class="setting-hint">Used for SOAP note generation (OpenAI models)</div>
+          </div>
+          <div class="advanced-settings-inner">
             <label class="setting-label">Note Generation Model</label>
             <select id="soap-model-select">
               <option value="gemini-3.5-flash">Gemini 3.5 Flash — recommended</option>
+              <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
               <option value="sonnet-4-6-api">Sonnet 4.6 (API)</option>
               <option value="sonnet-4-6-agentic">Sonnet 4.6 (Agentic)</option>
             </select>
