@@ -3,18 +3,7 @@
 const { buildPrompt } = require('../llm/skill-io/prompts')
 const { extractUsage, logSkillStream } = require('../llm/usage')
 const { CLAUDE_RATE_LIMITED, MCP_AUTH_ERROR } = require('../llm/skill-io/markers')
-const { resolveOption, DEFAULT_OPTION_ID, NOTE_GEN_OPTIONS } = require('../llm/modelOptions')
-
-/**
- * The Anthropic model an API-only engine (em-score, patient-summary) should use.
- * The API path is pinned to Anthropic, so a Gemini SOAP selection (which has no
- * Anthropic model) falls back to the default Anthropic option's model.
- */
-function pinnedAnthropicModel(cfg) {
-  const opt = resolveOption(cfg.soapModel)
-  if (opt && (opt.provider === 'api' || opt.provider === 'cli')) return opt.model
-  return NOTE_GEN_OPTIONS[DEFAULT_OPTION_ID].model
-}
+const { engineModel } = require('../llm/modelOptions')
 
 /**
  * Run a single engine against one case.
@@ -36,10 +25,15 @@ async function runEngine(engine, ctx, caseCtx) {
   const tag   = caseTag ? `[${caseTag}] ` : ''
 
   // Engines exposing runLlm run API-only (single Anthropic Messages-API call);
-  // the rest run agentically via ctx.llm.runSkill. The API path is pinned to
-  // Anthropic, so its recorded model is resolved here (not engine.model()).
-  const isApiEngine    = !!engine.runLlm
-  const effectiveModel = isApiEngine ? pinnedAnthropicModel(ctx.config.get()) : engine.model(ctx.config.get())
+  // the rest run agentically via ctx.llm.runSkill.
+  const isApiEngine = !!engine.runLlm
+
+  // All post-SOAP engines (ICD / CDI / em-score / patient-summary) are pinned to a
+  // fixed model, decoupled from the note-gen selection: they are analysis/coding
+  // steps, not note generation, so a newer note-gen model (e.g. Sonnet 5) must not
+  // silently move them onto it. This is the single choke point — engine.model() is
+  // intentionally NOT consulted (see modelOptions.engineModel()).
+  const effectiveModel = engineModel()
 
   // ---- 1. Gates -----------------------------------------------------------
   const skips = engine.gates(ctx, caseCtx)

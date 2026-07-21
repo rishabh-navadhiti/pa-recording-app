@@ -7,9 +7,19 @@ const NOTE_GEN_OPTIONS = {
   'gemini-3.5-flash':   { label: 'Gemini 3.5 Flash',     provider: 'gemini', model: 'gemini-3.5-flash' },
   'sonnet-4-6-api':     { label: 'Sonnet 4.6 (API)',     provider: 'api',    model: 'claude-sonnet-4-6' },
   'sonnet-4-6-agentic': { label: 'Sonnet 4.6 (Agentic)', provider: 'cli',    model: 'claude-sonnet-4-6' },
+  'sonnet-5-api':       { label: 'Sonnet 5 (API)',       provider: 'api',    model: 'claude-sonnet-5' },
 }
 
 const DEFAULT_OPTION_ID = 'sonnet-4-6-api'
+
+// The Anthropic model the post-SOAP engines (ICD / CDI / em-score / patient-summary)
+// are pinned to, decoupled from the note-gen selection. A newer note-gen model
+// (e.g. Sonnet 5) is for note generation ONLY — it must not silently change coding,
+// CDI, or scoring output. This is the stable model those engines + the standards
+// packs were validated against. If the engines ever get their own model setting,
+// this becomes its default.
+const ENGINE_MODEL = 'claude-sonnet-4-6'
+function engineModel() { return ENGINE_MODEL }
 
 // Resolve a settings value (option id OR legacy raw model id) to an option object.
 // Unknown / legacy values fall back to the API default.
@@ -33,4 +43,4 @@ function resolveCliModel(soapModel) {
   return NOTE_GEN_OPTIONS[DEFAULT_OPTION_ID].model
 }
 
-module.exports = { NOTE_GEN_OPTIONS, DEFAULT_OPTION_ID, resolveOption, resolveCliModel }
+module.exports = { NOTE_GEN_OPTIONS, DEFAULT_OPTION_ID, ENGINE_MODEL, resolveOption, resolveCliModel, engineModel }

@@ -8,7 +8,7 @@
 
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const { resolveOption, resolveCliModel, NOTE_GEN_OPTIONS, DEFAULT_OPTION_ID } = require('../../src/llm/modelOptions')
+const { resolveOption, resolveCliModel, engineModel, NOTE_GEN_OPTIONS, DEFAULT_OPTION_ID } = require('../../src/llm/modelOptions')
 
 test('resolveOption maps the API option id to its underlying model', () => {
   assert.equal(resolveOption('sonnet-4-6-api').model, 'claude-sonnet-4-6')
@@ -42,4 +42,16 @@ test('the default option resolves to an Anthropic model (the CLI fallback target
   const opt = NOTE_GEN_OPTIONS[DEFAULT_OPTION_ID]
   assert.ok(opt.provider === 'api' || opt.provider === 'cli', 'default must be an Anthropic provider')
   assert.match(opt.model, /^claude-/)
+})
+
+test('Sonnet 5 (API) is a selectable note-gen option mapping to claude-sonnet-5', () => {
+  assert.equal(resolveOption('sonnet-5-api').model, 'claude-sonnet-5')
+  assert.equal(resolveOption('sonnet-5-api').provider, 'api')
+})
+
+test('engineModel is pinned to Sonnet 4.6 regardless of the note-gen selection', () => {
+  // The post-SOAP engines (ICD/CDI/em-score/patient-summary) must NOT follow the
+  // note-gen model. engineModel() ignores soapModel entirely — picking Sonnet 5 for
+  // notes leaves coding/CDI/scoring on Sonnet 4.6.
+  assert.equal(engineModel(), 'claude-sonnet-4-6')
 })
