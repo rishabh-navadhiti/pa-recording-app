@@ -28,7 +28,7 @@ const prechartApi = {
     const { caseDir, templatePath, attachmentPath, instructions } = input
     const cfg = ctx.config.get()
     const opt = resolveOption(cfg.soapModel)
-    const provider = (opt?.provider === 'gemini') ? ctx.gemini : ctx.api
+    const provider = (opt?.provider === 'openai') ? ctx.openai : ctx.api
 
     // Find existing soap note (glob: *_soap_note.md, exclude backups)
     let existingNotePath = null
@@ -225,11 +225,11 @@ const prechartApi = {
 
     // Surface the real reason to the scribe (auth vs generic), mirroring the SOAP API path.
     const opt = resolveOption(ctx.config.get().soapModel)
-    const providerName = (opt?.provider === 'gemini') ? 'Gemini' : 'Anthropic'
-    const keyEnvName   = providerName === 'Gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY'
+    const providerName = (opt?.provider === 'openai') ? 'OpenAI' : 'Anthropic'
+    const keyEnvName   = providerName === 'OpenAI' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY'
     const isAuthError  = !!(error.includes(`${keyEnvName} not set`) || runResult.statusCode === 401)
     ctx.renderer.send('service-warning', isAuthError
-      ? { title: `${providerName} API key missing or invalid`, message: `Set your ${providerName} API key in Settings → Advanced.` }
+      ? { title: 'Anthropic API key missing or invalid', message: 'Set your Anthropic API key in Settings → Advanced.' }
       : { title: 'Pre-chart failed', message: `The note could not be updated. ${error.slice(0, 200)}` })
 
     const job = { type: 'prechart', status: 'failed', doctorName: extra.patientLabel, caseDir: input.caseDir, error, durationMs, finishedAt: Date.now() }

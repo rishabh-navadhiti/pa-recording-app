@@ -3,8 +3,8 @@
 // Tests for src/llm/modelOptions.js — especially resolveCliModel, which guards the
 // "engines 404 because they got an option-id instead of a CLI model" bug: the
 // post-SOAP engines + CLI prechart run via `claude -p` and can only use Anthropic
-// models, so the option id (e.g. 'sonnet-4-6-api') and non-Anthropic providers
-// (Gemini) must resolve to a CLI-valid Anthropic model.
+// models, so the option id (e.g. 'sonnet-4-6-api') and unknown/legacy values must
+// resolve to a CLI-valid Anthropic model.
 
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
@@ -23,14 +23,6 @@ test('resolveCliModel resolves the API option id to a CLI-valid Anthropic model 
 
 test('resolveCliModel passes through the agentic (cli) option', () => {
   assert.equal(resolveCliModel('sonnet-4-6-agentic'), 'claude-sonnet-4-6')
-})
-
-test('resolveCliModel falls back to the default Anthropic model for a non-Anthropic SOAP provider (Gemini)', () => {
-  // The CLI can't run Gemini; the engines still run on Anthropic regardless of
-  // the SOAP provider, so a Gemini SOAP selection must not leak a Gemini id to
-  // the CLI.
-  assert.equal(resolveOption('gemini-3.5-flash').provider, 'gemini')
-  assert.equal(resolveCliModel('gemini-3.5-flash'), 'claude-sonnet-4-6')
 })
 
 test('resolveCliModel falls back to the default Anthropic model for unknown/legacy values', () => {
@@ -54,4 +46,20 @@ test('engineModel is pinned to Sonnet 4.6 regardless of the note-gen selection',
   // note-gen model. engineModel() ignores soapModel entirely — picking Sonnet 5 for
   // notes leaves coding/CDI/scoring on Sonnet 4.6.
   assert.equal(engineModel(), 'claude-sonnet-4-6')
+})
+
+test('resolveOption maps the luna option id to the openai provider + model', () => {
+  const opt = resolveOption('gpt-5.6-luna')
+  assert.equal(opt.provider, 'openai')
+  assert.equal(opt.model, 'gpt-5.6-luna')
+})
+
+test('resolveCliModel falls back to the default Anthropic model for the openai SOAP provider', () => {
+  // The CLI can't run OpenAI; the post-SOAP engines still run on Anthropic, so a
+  // luna SOAP selection must not leak the gpt id to the CLI (it would 404).
+  assert.equal(resolveCliModel('gpt-5.6-luna'), 'claude-sonnet-4-6')
+})
+
+test('adding luna did not change the default option', () => {
+  assert.equal(DEFAULT_OPTION_ID, 'sonnet-4-6-api')
 })

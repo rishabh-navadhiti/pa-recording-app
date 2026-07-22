@@ -26,8 +26,8 @@ export function createSettingsView() {
       btnEditApiKey, btnSaveApiKey,
       anthropicKeyMasked, anthropicKeyDisplayRow, anthropicKeyEditRow, anthropicKeyInput,
       btnEditAnthropicKey, btnSaveAnthropicKey,
-      geminiKeyMasked, geminiKeyDisplayRow, geminiKeyEditRow, geminiKeyInput,
-      btnEditGeminiKey, btnSaveGeminiKey
+      openaiKeyMasked, openaiKeyDisplayRow, openaiKeyEditRow, openaiKeyInput,
+      btnEditOpenAiKey, btnSaveOpenAiKey
 
   let onCloseCb = null
 
@@ -85,10 +85,10 @@ export function createSettingsView() {
     if (anthropicKeyMasked) anthropicKeyMasked.textContent = maskApiKey(anthropicKey)
     if (anthropicKeyDisplayRow) setVisible(anthropicKeyDisplayRow, true)
     if (anthropicKeyEditRow) setVisible(anthropicKeyEditRow, false)
-    const geminiKey = await ipc.getGeminiKey()
-    if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(geminiKey)
-    if (geminiKeyDisplayRow) setVisible(geminiKeyDisplayRow, true)
-    if (geminiKeyEditRow) setVisible(geminiKeyEditRow, false)
+    const openaiKey = await ipc.getOpenAiKey()
+    if (openaiKeyMasked) openaiKeyMasked.textContent = maskApiKey(openaiKey)
+    if (openaiKeyDisplayRow) setVisible(openaiKeyDisplayRow, true)
+    if (openaiKeyEditRow) setVisible(openaiKeyEditRow, false)
   }
 
   async function loadDeviceList(selectedIndex) {
@@ -155,12 +155,12 @@ export function createSettingsView() {
       anthropicKeyInput     = root.querySelector('#anthropic-key-input')
       btnEditAnthropicKey   = root.querySelector('#btn-edit-anthropic-key')
       btnSaveAnthropicKey   = root.querySelector('#btn-save-anthropic-key')
-      geminiKeyMasked       = root.querySelector('#gemini-key-masked')
-      geminiKeyDisplayRow   = root.querySelector('#gemini-key-display-row')
-      geminiKeyEditRow      = root.querySelector('#gemini-key-edit-row')
-      geminiKeyInput        = root.querySelector('#gemini-key-input')
-      btnEditGeminiKey      = root.querySelector('#btn-edit-gemini-key')
-      btnSaveGeminiKey      = root.querySelector('#btn-save-gemini-key')
+      openaiKeyMasked       = root.querySelector('#openai-key-masked')
+      openaiKeyDisplayRow   = root.querySelector('#openai-key-display-row')
+      openaiKeyEditRow      = root.querySelector('#openai-key-edit-row')
+      openaiKeyInput        = root.querySelector('#openai-key-input')
+      btnEditOpenAiKey      = root.querySelector('#btn-edit-openai-key')
+      btnSaveOpenAiKey      = root.querySelector('#btn-save-openai-key')
 
       on(btnSettingsClose, 'click', close)
 
@@ -230,7 +230,7 @@ export function createSettingsView() {
           btnAdvancedToggle.classList.add('open')
           const s = await ipc.getSettings()
           await loadDeviceList(s.selectedDeviceIndex)
-          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'gemini-3.5-flash'
+          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'sonnet-4-6-api'
           if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
         }
       })
@@ -301,30 +301,30 @@ export function createSettingsView() {
         if (e.key === 'Enter') btnSaveAnthropicKey && btnSaveAnthropicKey.click()
       })
 
-      on(btnEditGeminiKey, 'click', () => {
-        if (!geminiKeyInput) return
-        geminiKeyInput.value = ''
-        setVisible(geminiKeyDisplayRow, false)
-        setVisible(geminiKeyEditRow, true)
-        geminiKeyInput.focus()
+      on(btnEditOpenAiKey, 'click', () => {
+        if (!openaiKeyInput) return
+        openaiKeyInput.value = ''
+        setVisible(openaiKeyDisplayRow, false)
+        setVisible(openaiKeyEditRow, true)
+        openaiKeyInput.focus()
       })
 
-      on(btnSaveGeminiKey, 'click', async () => {
-        if (!geminiKeyInput) return
-        const key = geminiKeyInput.value.trim()
+      on(btnSaveOpenAiKey, 'click', async () => {
+        if (!openaiKeyInput) return
+        const key = openaiKeyInput.value.trim()
         if (!key) return
-        btnSaveGeminiKey.disabled = true
-        const res = await ipc.saveGeminiKey(key)
-        btnSaveGeminiKey.disabled = false
+        btnSaveOpenAiKey.disabled = true
+        const res = await ipc.saveOpenAiKey(key)
+        btnSaveOpenAiKey.disabled = false
         if (res.ok) {
-          if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(key)
-          setVisible(geminiKeyEditRow, false)
-          setVisible(geminiKeyDisplayRow, true)
+          if (openaiKeyMasked) openaiKeyMasked.textContent = maskApiKey(key)
+          setVisible(openaiKeyEditRow, false)
+          setVisible(openaiKeyDisplayRow, true)
         }
       })
 
-      on(geminiKeyInput, 'keydown', e => {
-        if (e.key === 'Enter') btnSaveGeminiKey && btnSaveGeminiKey.click()
+      on(openaiKeyInput, 'keydown', e => {
+        if (e.key === 'Enter') btnSaveOpenAiKey && btnSaveOpenAiKey.click()
       })
 
       on(btnChangeNotesDir, 'click', async () => {

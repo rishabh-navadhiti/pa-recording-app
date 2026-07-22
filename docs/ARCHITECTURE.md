@@ -58,7 +58,8 @@ The Phase 0–5 refactor turned a 3,555-line `main.js` monolith (with ~18 module
 | `ctx.secrets` | `.env` reader/writer (`config/secrets.js`) — ElevenLabs key |
 | `ctx.paths` | Resolved paths (`config/paths.js`) — `notesDir`, `casesDir`, `logFile`, … |
 | `ctx.platform` | Platform seam (`platform/index.js` → `windows.js`/`macos.js`) — `hideInternal`, `notify`, `isStaging`, … |
-| `ctx.llm` | LLM provider (`src/llm/claudeCliProvider.js`) — `ctx.llm.runSkill({prompt, model, effort, …})`, `shell:false` arg-array spawn. The single LLM seam; there is no `spawnClaude`. |
+| `ctx.llm` | Agentic LLM provider (`src/llm/claudeCliProvider.js`) — `ctx.llm.runSkill({prompt, model, effort, …})`, `shell:false` arg-array spawn. The `claude -p` seam; there is no `spawnClaude`. |
+| `ctx.api` / `ctx.gemini` / `ctx.openai` | Single-call HTTP API providers — `runSingleCall({system, user, model, …})`, `fetch`, no tools, always-resolves. `ctx.api` = Anthropic Messages (`anthropicApiProvider.js`), `ctx.gemini` = Gemini OpenAI-compat (`geminiApiProvider.js`), `ctx.openai` = OpenAI Chat Completions (`openaiApiProvider.js`, gpt-5.6-luna — `max_completion_tokens` + `reasoning_effort:'minimal'`). The SOAP note-gen API path picks one by `resolveOption(soapModel).provider`; usage is normalized by `src/llm/pricing.js`. |
 | `ctx.log` / `ctx.logger` | The `log()` helper writing to `<NOTES_DIR>/app.log` |
 | `ctx.db` / `ctx.setDb` | The `better-sqlite3` handle (set by bootstrap after `initDb`) |
 | `ctx.stores.state` | State machine (`context/stateMachine.js`) — the `IDLE…PROCESSING` enum + transitions |
@@ -83,7 +84,7 @@ gates → status(running) → startEvent → run-the-LLM → classify(rate-limit
       → interpret → finishEvent → persist → service-warning → status(complete)
 ```
 
-**run-the-LLM has two modes.** Engines with no `runLlm` method (SOAP, ICD, CDI) run agentically via `ctx.llm.runSkill` (`claude -p`). Engines that expose `runLlm(input, ctx, caseCtx, {model, provider})` (em-score, patient-summary) instead run as a single Anthropic Messages-API call: `runEngine` branches on `!!engine.runLlm`, passes `ctx.api` (pinned Anthropic — never Gemini, model via `pinnedAnthropicModel()`), and the engine's `runLlm` reads inputs, calls `provider.runSingleCall`, writes its `_em.json`/`_patient_summary.json`, and returns a normalized `{code, text(=synthesized manifest), usage}` so the rest of the lifecycle is identical for both modes. See DECISIONS 2026-06-29. (These two need `ANTHROPIC_API_KEY` even on the "Agentic" SOAP option.)
+**run-the-LLM has two modes.** Engines with no `runLlm` method (SOAP, ICD, CDI) run agentically via `ctx.llm.runSkill` (`claude -p`). Engines that expose `runLlm(input, ctx, caseCtx, {model, provider})` (em-score, patient-summary) instead run as a single Anthropic Messages-API call: `runEngine` branches on `!!engine.runLlm`, passes `ctx.api` (pinned Anthropic, model via `pinnedAnthropicModel()`), and the engine's `runLlm` reads inputs, calls `provider.runSingleCall`, writes its `_em.json`/`_patient_summary.json`, and returns a normalized `{code, text(=synthesized manifest), usage}` so the rest of the lifecycle is identical for both modes. See DECISIONS 2026-06-29. (These two need `ANTHROPIC_API_KEY` even on the "Agentic" SOAP option.)
 
 If `gates()` returns a reason the step is skipped (logged + reported `skipped`, no skill call). Engines are best-effort: a failure returns `null` and the chain continues. `src/engines/registry.js` declares the canonical order `[soap, icd, cdi, em-score, patient-summary]`.
 

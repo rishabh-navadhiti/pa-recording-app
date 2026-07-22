@@ -275,12 +275,12 @@ function validateAnthropicKey(apiKey) {
   })
 }
 
-function validateGeminiKey(apiKey) {
+function validateOpenAiKey(apiKey) {
   return new Promise(resolve => {
     const req = https.request(
-      { hostname: 'generativelanguage.googleapis.com', path: '/v1beta/models', method: 'GET',
-        headers: { 'x-goog-api-key': apiKey } },
-      res => resolve(res.statusCode === 200 ? 'valid' : (res.statusCode === 400 || res.statusCode === 403) ? 'invalid' : 'unknown')
+      { hostname: 'api.openai.com', path: '/v1/models', method: 'GET',
+        headers: { 'Authorization': `Bearer ${apiKey}` } },
+      res => resolve(res.statusCode === 200 ? 'valid' : res.statusCode === 401 ? 'invalid' : 'unknown')
     )
     req.on('error', () => resolve('unknown'))
     req.end()
@@ -311,8 +311,8 @@ function spawnSoapGeneration(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry
     return
   }
 
-  if (opt.provider === 'gemini') {
-    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model, ctx.gemini, 'Gemini')
+  if (opt.provider === 'openai') {
+    generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, isRetry, templatePath, caseId, opt.model, ctx.openai, 'OpenAI')
     return
   }
 
@@ -531,7 +531,7 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
     const dUsage  = normalizeApiUsage({ model, rawUsage: dResult.rawUsage, durationMs: dResult.durationMs })
 
     if (!dResult.ok) {
-      const keyEnvName = providerName === 'Gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY'
+      const keyEnvName = providerName === 'OpenAI' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY'
       const isAuthErr  = !!(dResult.errText?.includes(`${keyEnvName} not set`) || dResult.statusCode === 401)
       const isRateLim  = dResult.statusCode === 429 || dResult.statusCode === 529
       ctx.renderer.send('service-warning', {
@@ -575,7 +575,7 @@ async function generateSoapViaApi(transcriptAbsPath, soapNoteMdPath, caseTag, is
   const usageFields = normalizeApiUsage({ model, rawUsage, durationMs })
 
   if (!ok) {
-    const keyEnvName = providerName === 'Gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY'
+    const keyEnvName = providerName === 'OpenAI' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY'
     const isAuthError = !!(errText?.includes(`${keyEnvName} not set`) || statusCode === 401)
     const isRateLimit = statusCode === 429 || statusCode === 529
     const title   = isAuthError ? `${providerName} API key missing or invalid`
@@ -1065,7 +1065,7 @@ function registerIpcHandlers(appCtx) {
   const deps = {
     log, setState, STATE, nowIso,
     getAllDoctors, createSessionFolder,
-    readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, validateGeminiKey,
+    readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, validateOpenAiKey,
     extractLastname, sanitizeName, notifyUser,
     readSettings, writeSettings, copyDirSync, waitForExit,
     readTemplateJob, writeTemplateJob,
