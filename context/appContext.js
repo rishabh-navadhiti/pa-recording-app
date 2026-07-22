@@ -16,7 +16,6 @@ const { createRecorderController } = require('./recorderController')
 const { createJobRunner }     = require('../jobs/jobRunner')
 const { createClaudeCliProvider }    = require('../src/llm/claudeCliProvider')
 const { createAnthropicApiProvider } = require('../src/llm/anthropicApiProvider')
-const { createGeminiApiProvider }    = require('../src/llm/geminiApiProvider')
 const { createOpenAiApiProvider }    = require('../src/llm/openaiApiProvider')
 
 /**
@@ -110,9 +109,6 @@ function createAppContext(notesDir) {
   // is picked up without requiring an app restart.
   const api = createAnthropicApiProvider({ getKey: () => secrets.getAnthropicKey(), log })
 
-  // Gemini API provider — routes to generativelanguage.googleapis.com with AIzaSy... key.
-  const gemini = createGeminiApiProvider({ getKey: () => secrets.getGeminiKey(), log })
-
   // OpenAI API provider — routes to api.openai.com with a Bearer sk-... key.
   const openai = createOpenAiApiProvider({ getKey: () => secrets.getOpenAiKey(), log })
 
@@ -127,7 +123,6 @@ function createAppContext(notesDir) {
     jobState,
     llm,
     api,
-    gemini,
     openai,
 
     get db() { return _db },

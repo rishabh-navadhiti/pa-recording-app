@@ -21,8 +21,6 @@ const CHANNELS = Object.freeze({
   SAVE_ELEVENLABS_KEY:  'save-elevenlabs-key',
   GET_ANTHROPIC_KEY:    'get-anthropic-key',
   SAVE_ANTHROPIC_KEY:   'save-anthropic-key',
-  GET_GEMINI_KEY:       'get-gemini-key',
-  SAVE_GEMINI_KEY:      'save-gemini-key',
   GET_OPENAI_KEY:       'get-openai-key',
   SAVE_OPENAI_KEY:      'save-openai-key',
   HIDE_WINDOW:          'hide-window',
