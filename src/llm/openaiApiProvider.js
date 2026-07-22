@@ -8,16 +8,19 @@
  * Always resolves (never rejects) — mirrors the Anthropic/Gemini provider contract.
  *
  * Cloned from geminiApiProvider.js. Two load-bearing differences from the Gemini
- * OpenAI-compat clone (validated by the gpt-5.6-luna bake-off):
+ * OpenAI-compat clone:
  *   1. `max_completion_tokens` — the gpt-5 family REJECTS `max_tokens` on the real
  *      OpenAI endpoint (Gemini's compat endpoint tolerated it).
- *   2. `reasoning_effort: 'minimal'` — pinned. The bake-off showed higher effort
- *      degrades notes (the plan leaks into the HPI), so effort is never exposed as
- *      a setting. NB: some GPT-5.6 docs list effort values without `minimal`, but
- *      the 27-run bake-off confirmed `minimal` is accepted and behaves as minimal
- *      for gpt-5.6-luna; `'none'` is deliberately avoided (documented to misbehave
- *      alongside max_completion_tokens on some GPT-5 versions). If the API ever
- *      rejects `minimal` for this model, revisit here — do not silently fall back.
+ *   2. `reasoning_effort: 'low'` — pinned to the LOWEST reasoning the model
+ *      actually accepts. The bake-off's finding was that HIGHER effort degrades
+ *      notes (the plan leaks into the HPI), so we want the least reasoning; effort
+ *      is never exposed as a setting. The handoff called for `'minimal'`, but the
+ *      live API rejects it for this model with HTTP 400 ("does not support
+ *      'minimal' with this model. Supported values are: 'none', 'low', 'medium',
+ *      'high', 'xhigh'"). Of the supported values, `'low'` is the closest to the
+ *      intended minimal. `'none'` is deliberately avoided — it is documented to be
+ *      silently ignored alongside `max_completion_tokens` on some GPT-5 versions,
+ *      which would raise effort back up (the exact regression we're avoiding).
  *
  * Usage is emitted in the same Anthropic-shaped `rawUsage` keys that
  * src/llm/pricing.js (calcCost/normalizeApiUsage) already consumes, so no changes
@@ -47,7 +50,7 @@ function createOpenAiApiProvider({ getKey, log }) {
         model,
         max_completion_tokens: maxTokens,
         messages,
-        reasoning_effort: 'minimal',
+        reasoning_effort: 'low',
       }
 
       const response = await fetch(ENDPOINT, {
