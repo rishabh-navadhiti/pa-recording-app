@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 })
 
 // Valid soapModel option ids. Kept inline to avoid a runtime require in the normalizer.
-const VALID_SOAP_OPTIONS = new Set(['gemini-3.5-flash', 'sonnet-4-6-api', 'sonnet-4-6-agentic', 'sonnet-5-api'])
+const VALID_SOAP_OPTIONS = new Set(['sonnet-4-6-api', 'sonnet-4-6-agentic', 'sonnet-5-api'])
 
 /**
  * Atomic write with retry for transient Windows AV / file-indexer locks.

@@ -25,9 +25,7 @@ export function createSettingsView() {
       apiKeyMasked, apiKeyDisplayRow, apiKeyEditRow, apiKeyInput,
       btnEditApiKey, btnSaveApiKey,
       anthropicKeyMasked, anthropicKeyDisplayRow, anthropicKeyEditRow, anthropicKeyInput,
-      btnEditAnthropicKey, btnSaveAnthropicKey,
-      geminiKeyMasked, geminiKeyDisplayRow, geminiKeyEditRow, geminiKeyInput,
-      btnEditGeminiKey, btnSaveGeminiKey
+      btnEditAnthropicKey, btnSaveAnthropicKey
 
   let onCloseCb = null
 
@@ -85,10 +83,6 @@ export function createSettingsView() {
     if (anthropicKeyMasked) anthropicKeyMasked.textContent = maskApiKey(anthropicKey)
     if (anthropicKeyDisplayRow) setVisible(anthropicKeyDisplayRow, true)
     if (anthropicKeyEditRow) setVisible(anthropicKeyEditRow, false)
-    const geminiKey = await ipc.getGeminiKey()
-    if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(geminiKey)
-    if (geminiKeyDisplayRow) setVisible(geminiKeyDisplayRow, true)
-    if (geminiKeyEditRow) setVisible(geminiKeyEditRow, false)
   }
 
   async function loadDeviceList(selectedIndex) {
@@ -155,12 +149,6 @@ export function createSettingsView() {
       anthropicKeyInput     = root.querySelector('#anthropic-key-input')
       btnEditAnthropicKey   = root.querySelector('#btn-edit-anthropic-key')
       btnSaveAnthropicKey   = root.querySelector('#btn-save-anthropic-key')
-      geminiKeyMasked       = root.querySelector('#gemini-key-masked')
-      geminiKeyDisplayRow   = root.querySelector('#gemini-key-display-row')
-      geminiKeyEditRow      = root.querySelector('#gemini-key-edit-row')
-      geminiKeyInput        = root.querySelector('#gemini-key-input')
-      btnEditGeminiKey      = root.querySelector('#btn-edit-gemini-key')
-      btnSaveGeminiKey      = root.querySelector('#btn-save-gemini-key')
 
       on(btnSettingsClose, 'click', close)
 
@@ -230,7 +218,7 @@ export function createSettingsView() {
           btnAdvancedToggle.classList.add('open')
           const s = await ipc.getSettings()
           await loadDeviceList(s.selectedDeviceIndex)
-          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'gemini-3.5-flash'
+          if (soapModelSelect)     soapModelSelect.value     = s.soapModel     || 'sonnet-4-6-api'
           if (templateModelSelect) templateModelSelect.value = s.templateModel || 'claude-opus-4-8'
         }
       })
@@ -299,32 +287,6 @@ export function createSettingsView() {
 
       on(anthropicKeyInput, 'keydown', e => {
         if (e.key === 'Enter') btnSaveAnthropicKey && btnSaveAnthropicKey.click()
-      })
-
-      on(btnEditGeminiKey, 'click', () => {
-        if (!geminiKeyInput) return
-        geminiKeyInput.value = ''
-        setVisible(geminiKeyDisplayRow, false)
-        setVisible(geminiKeyEditRow, true)
-        geminiKeyInput.focus()
-      })
-
-      on(btnSaveGeminiKey, 'click', async () => {
-        if (!geminiKeyInput) return
-        const key = geminiKeyInput.value.trim()
-        if (!key) return
-        btnSaveGeminiKey.disabled = true
-        const res = await ipc.saveGeminiKey(key)
-        btnSaveGeminiKey.disabled = false
-        if (res.ok) {
-          if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(key)
-          setVisible(geminiKeyEditRow, false)
-          setVisible(geminiKeyDisplayRow, true)
-        }
-      })
-
-      on(geminiKeyInput, 'keydown', e => {
-        if (e.key === 'Enter') btnSaveGeminiKey && btnSaveGeminiKey.click()
       })
 
       on(btnChangeNotesDir, 'click', async () => {

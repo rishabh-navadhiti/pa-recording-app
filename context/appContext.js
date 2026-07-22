@@ -16,7 +16,6 @@ const { createRecorderController } = require('./recorderController')
 const { createJobRunner }     = require('../jobs/jobRunner')
 const { createClaudeCliProvider }    = require('../src/llm/claudeCliProvider')
 const { createAnthropicApiProvider } = require('../src/llm/anthropicApiProvider')
-const { createGeminiApiProvider }    = require('../src/llm/geminiApiProvider')
 
 /**
  * Atomic file write with EPERM/EBUSY retry (shared across config modules).
@@ -109,9 +108,6 @@ function createAppContext(notesDir) {
   // is picked up without requiring an app restart.
   const api = createAnthropicApiProvider({ getKey: () => secrets.getAnthropicKey(), log })
 
-  // Gemini API provider — routes to generativelanguage.googleapis.com with AIzaSy... key.
-  const gemini = createGeminiApiProvider({ getKey: () => secrets.getGeminiKey(), log })
-
   // ---- context object -------------------------------------------------------
   const ctx = {
     paths,
@@ -123,7 +119,6 @@ function createAppContext(notesDir) {
     jobState,
     llm,
     api,
-    gemini,
 
     get db() { return _db },
     setDb(db) { _db = db },
