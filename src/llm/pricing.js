@@ -1,7 +1,11 @@
 'use strict'
 
-// Per-million-token pricing (USD). Source: Anthropic pricing page, June 2026.
+// Per-million-token pricing (USD). Anthropic rows: Anthropic pricing page, June 2026.
 // Sonnet 5 row added 2026-07-21 from platform.claude.com/docs/en/about-claude/pricing.
+// OpenAI rows: OpenAI pricing (gpt-5.6-luna, per the luna handoff). OpenAI has no
+// cache-write concept, so cacheWrite is 0. calcCost reads Anthropic-shaped rawUsage
+// keys, which openaiApiProvider maps into (input_tokens/output_tokens/
+// cache_read_input_tokens), so no per-provider calcCost branch is needed.
 const PRICE_TABLE = {
   'claude-sonnet-4-6':         { in: 3,    out: 15,  cacheRead: 0.30, cacheWrite: 3.75  },
   'claude-opus-4-8':           { in: 15,   out: 75,  cacheRead: 1.50, cacheWrite: 18.75 },
@@ -9,6 +13,7 @@ const PRICE_TABLE = {
   // Sonnet 5 introductory pricing (in effect through 2026-08-31). Standard pricing
   // from 2026-09-01 is $3 in / $15 out / $0.30 read / $3.75 write — update then.
   'claude-sonnet-5':           { in: 2,    out: 10,  cacheRead: 0.20, cacheWrite: 2.50  },
+  'gpt-5.6-luna':              { in: 1,    out: 6,   cacheRead: 0.10, cacheWrite: 0     },
 }
 
 function calcCost(model, rawUsage) {
