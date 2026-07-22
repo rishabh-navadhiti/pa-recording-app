@@ -10,6 +10,7 @@ const { createPaths } = require('../../config/paths')
 const { createSettingsStore, DEFAULT_SETTINGS } = require('../../config/settings')
 const { createSecretStore } = require('../../config/secrets')
 const { createJobStateStore } = require('../../config/jobState')
+const { NOTE_GEN_OPTIONS } = require('../../src/llm/modelOptions')
 
 // ---- paths -----------------------------------------------------------------
 
@@ -81,6 +82,37 @@ test('settings CDI→ICD invariant enforced on save()', () => {
   const store = createSettingsStore(f)
   store.save({ enableCdi: true, enableIcd: false })
   assert.strictEqual(store.get().enableIcd, true)
+  fs.unlinkSync(f)
+})
+
+test('settings save() preserves a valid soapModel option id (gpt-5.6-luna)', () => {
+  const f = tmpSettingsPath()
+  const store = createSettingsStore(f)
+  store.save({ soapModel: 'gpt-5.6-luna' })
+  assert.strictEqual(store.get().soapModel, 'gpt-5.6-luna',
+    'a registered option id must survive the normalizer, not reset to the default')
+  fs.unlinkSync(f)
+})
+
+test('every NOTE_GEN_OPTIONS id survives the settings normalizer (whitelist drift guard)', () => {
+  // The VALID_SOAP_OPTIONS whitelist in config/settings.js is a hand-maintained
+  // copy of the registry. If a new option is added to modelOptions.js without
+  // updating that set, save() silently resets it to the default and the picker
+  // "doesn't stick". This asserts they stay in sync.
+  for (const id of Object.keys(NOTE_GEN_OPTIONS)) {
+    const f = tmpSettingsPath()
+    const store = createSettingsStore(f)
+    store.save({ soapModel: id })
+    assert.strictEqual(store.get().soapModel, id, `option '${id}' must be in VALID_SOAP_OPTIONS`)
+    fs.unlinkSync(f)
+  }
+})
+
+test('settings save() resets an unknown soapModel to the default', () => {
+  const f = tmpSettingsPath()
+  const store = createSettingsStore(f)
+  store.save({ soapModel: 'not-a-real-option' })
+  assert.strictEqual(store.get().soapModel, 'sonnet-4-6-api')
   fs.unlinkSync(f)
 })
 
