@@ -19,8 +19,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   enableMic: false,
 })
 
-// Valid soapModel option ids. Kept inline to avoid a runtime require in the normalizer.
-const VALID_SOAP_OPTIONS = new Set(['gemini-3.5-flash', 'sonnet-4-6-api', 'sonnet-4-6-agentic', 'sonnet-5-api'])
+// Valid soapModel option ids. Kept inline to avoid a runtime require in the
+// normalizer — MUST stay in sync with NOTE_GEN_OPTIONS in src/llm/modelOptions.js
+// (guarded by tests/unit/config.test.js). An id missing here is silently reset to
+// the default on save, so the renderer selection appears not to stick.
+const VALID_SOAP_OPTIONS = new Set(['gemini-3.5-flash', 'gpt-5.6-luna', 'sonnet-4-6-api', 'sonnet-4-6-agentic', 'sonnet-5-api'])
 
 /**
  * Atomic write with retry for transient Windows AV / file-indexer locks.

@@ -21,7 +21,7 @@ const { spawn } = require('child_process')
 //      byte-equivalent in behavior.
 function registerConfigIpc(ipcMain, appCtx, deps) {
   const {
-    log, appRoot, readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, validateGeminiKey, getAllDoctors,
+    log, appRoot, readEnv, writeEnvKey, validateElevenLabsKey, validateAnthropicKey, validateGeminiKey, validateOpenAiKey, getAllDoctors,
     readSettings, writeSettings, copyDirSync, extractLastname,
     resetDb, migrateDoctorsFromSettings, tryRestoreDoctorsFromBackup, setGlobalCtx,
   } = deps
@@ -130,6 +130,27 @@ function registerConfigIpc(ipcMain, appCtx, deps) {
       return { ok: true }
     } catch (e) {
       log(`ERROR saving Gemini key: ${e.message}`)
+      return { ok: false, error: e.message }
+    }
+  })
+
+  // ---- get-openai-key ----
+  ipcMain.handle(CHANNELS.GET_OPENAI_KEY, () => {
+    return appCtx.secrets.getOpenAiKey() || ''
+  })
+
+  // ---- save-openai-key ----
+  ipcMain.handle(CHANNELS.SAVE_OPENAI_KEY, async (_, key) => {
+    try {
+      const trimmed = (key || '').trim()
+      if (!trimmed) return { ok: false, error: 'Key cannot be empty' }
+      const status = await validateOpenAiKey(trimmed)
+      if (status === 'invalid') return { ok: false, error: 'Key rejected by OpenAI — check it and try again' }
+      appCtx.secrets.setOpenAiKey(trimmed)
+      log('OpenAI API key saved')
+      return { ok: true }
+    } catch (e) {
+      log(`ERROR saving OpenAI key: ${e.message}`)
       return { ok: false, error: e.message }
     }
   })

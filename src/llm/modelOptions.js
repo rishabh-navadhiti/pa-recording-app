@@ -5,6 +5,7 @@
 // The renderer shows label; settings.json stores id.
 const NOTE_GEN_OPTIONS = {
   'gemini-3.5-flash':   { label: 'Gemini 3.5 Flash',     provider: 'gemini', model: 'gemini-3.5-flash' },
+  'gpt-5.6-luna':       { label: 'GPT-5.6 Luna',         provider: 'openai', model: 'gpt-5.6-luna' },
   'sonnet-4-6-api':     { label: 'Sonnet 4.6 (API)',     provider: 'api',    model: 'claude-sonnet-4-6' },
   'sonnet-4-6-agentic': { label: 'Sonnet 4.6 (Agentic)', provider: 'cli',    model: 'claude-sonnet-4-6' },
   'sonnet-5-api':       { label: 'Sonnet 5 (API)',       provider: 'api',    model: 'claude-sonnet-5' },

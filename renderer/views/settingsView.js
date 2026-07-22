@@ -27,7 +27,9 @@ export function createSettingsView() {
       anthropicKeyMasked, anthropicKeyDisplayRow, anthropicKeyEditRow, anthropicKeyInput,
       btnEditAnthropicKey, btnSaveAnthropicKey,
       geminiKeyMasked, geminiKeyDisplayRow, geminiKeyEditRow, geminiKeyInput,
-      btnEditGeminiKey, btnSaveGeminiKey
+      btnEditGeminiKey, btnSaveGeminiKey,
+      openaiKeyMasked, openaiKeyDisplayRow, openaiKeyEditRow, openaiKeyInput,
+      btnEditOpenAiKey, btnSaveOpenAiKey
 
   let onCloseCb = null
 
@@ -89,6 +91,10 @@ export function createSettingsView() {
     if (geminiKeyMasked) geminiKeyMasked.textContent = maskApiKey(geminiKey)
     if (geminiKeyDisplayRow) setVisible(geminiKeyDisplayRow, true)
     if (geminiKeyEditRow) setVisible(geminiKeyEditRow, false)
+    const openaiKey = await ipc.getOpenAiKey()
+    if (openaiKeyMasked) openaiKeyMasked.textContent = maskApiKey(openaiKey)
+    if (openaiKeyDisplayRow) setVisible(openaiKeyDisplayRow, true)
+    if (openaiKeyEditRow) setVisible(openaiKeyEditRow, false)
   }
 
   async function loadDeviceList(selectedIndex) {
@@ -161,6 +167,12 @@ export function createSettingsView() {
       geminiKeyInput        = root.querySelector('#gemini-key-input')
       btnEditGeminiKey      = root.querySelector('#btn-edit-gemini-key')
       btnSaveGeminiKey      = root.querySelector('#btn-save-gemini-key')
+      openaiKeyMasked       = root.querySelector('#openai-key-masked')
+      openaiKeyDisplayRow   = root.querySelector('#openai-key-display-row')
+      openaiKeyEditRow      = root.querySelector('#openai-key-edit-row')
+      openaiKeyInput        = root.querySelector('#openai-key-input')
+      btnEditOpenAiKey      = root.querySelector('#btn-edit-openai-key')
+      btnSaveOpenAiKey      = root.querySelector('#btn-save-openai-key')
 
       on(btnSettingsClose, 'click', close)
 
@@ -325,6 +337,32 @@ export function createSettingsView() {
 
       on(geminiKeyInput, 'keydown', e => {
         if (e.key === 'Enter') btnSaveGeminiKey && btnSaveGeminiKey.click()
+      })
+
+      on(btnEditOpenAiKey, 'click', () => {
+        if (!openaiKeyInput) return
+        openaiKeyInput.value = ''
+        setVisible(openaiKeyDisplayRow, false)
+        setVisible(openaiKeyEditRow, true)
+        openaiKeyInput.focus()
+      })
+
+      on(btnSaveOpenAiKey, 'click', async () => {
+        if (!openaiKeyInput) return
+        const key = openaiKeyInput.value.trim()
+        if (!key) return
+        btnSaveOpenAiKey.disabled = true
+        const res = await ipc.saveOpenAiKey(key)
+        btnSaveOpenAiKey.disabled = false
+        if (res.ok) {
+          if (openaiKeyMasked) openaiKeyMasked.textContent = maskApiKey(key)
+          setVisible(openaiKeyEditRow, false)
+          setVisible(openaiKeyDisplayRow, true)
+        }
+      })
+
+      on(openaiKeyInput, 'keydown', e => {
+        if (e.key === 'Enter') btnSaveOpenAiKey && btnSaveOpenAiKey.click()
       })
 
       on(btnChangeNotesDir, 'click', async () => {

@@ -58,7 +58,8 @@ The Phase 0–5 refactor turned a 3,555-line `main.js` monolith (with ~18 module
 | `ctx.secrets` | `.env` reader/writer (`config/secrets.js`) — ElevenLabs key |
 | `ctx.paths` | Resolved paths (`config/paths.js`) — `notesDir`, `casesDir`, `logFile`, … |
 | `ctx.platform` | Platform seam (`platform/index.js` → `windows.js`/`macos.js`) — `hideInternal`, `notify`, `isStaging`, … |
-| `ctx.llm` | LLM provider (`src/llm/claudeCliProvider.js`) — `ctx.llm.runSkill({prompt, model, effort, …})`, `shell:false` arg-array spawn. The single LLM seam; there is no `spawnClaude`. |
+| `ctx.llm` | Agentic LLM provider (`src/llm/claudeCliProvider.js`) — `ctx.llm.runSkill({prompt, model, effort, …})`, `shell:false` arg-array spawn. The `claude -p` seam; there is no `spawnClaude`. |
+| `ctx.api` / `ctx.gemini` / `ctx.openai` | Single-call HTTP API providers — `runSingleCall({system, user, model, …})`, `fetch`, no tools, always-resolves. `ctx.api` = Anthropic Messages (`anthropicApiProvider.js`), `ctx.gemini` = Gemini OpenAI-compat (`geminiApiProvider.js`), `ctx.openai` = OpenAI Chat Completions (`openaiApiProvider.js`, gpt-5.6-luna — `max_completion_tokens` + `reasoning_effort:'minimal'`). The SOAP note-gen API path picks one by `resolveOption(soapModel).provider`; usage is normalized by `src/llm/pricing.js`. |
 | `ctx.log` / `ctx.logger` | The `log()` helper writing to `<NOTES_DIR>/app.log` |
 | `ctx.db` / `ctx.setDb` | The `better-sqlite3` handle (set by bootstrap after `initDb`) |
 | `ctx.stores.state` | State machine (`context/stateMachine.js`) — the `IDLE…PROCESSING` enum + transitions |
